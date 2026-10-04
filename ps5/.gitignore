@@ -1,0 +1,10 @@
+# Genesis Plus GX PS5 build outputs
+build/
+proto/native/build/
+*.o
+*.part
+
+# release files (published as GitHub Releases, not in the source)
+*.elf
+*.bundle
+*-src.zip
