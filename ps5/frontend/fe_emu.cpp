@@ -179,6 +179,7 @@ struct State
 	double frac = 0;
 	int16_t prev_l = 0, prev_r = 0;
 	std::vector<int16_t> out;
+	std::vector<int16_t> silence; // the zeros that refill a dry ring
 
 	// pads
 	ps5input::PadState pads[ps5input::kMaxPads];
@@ -444,7 +445,16 @@ void FlushAudio()
 		g.in.clear();
 		return;
 	}
-	const int queued = ps5audio::Queued();
+	int queued = ps5audio::Queued();
+	if (queued < kTargetQueued / 4)
+	{
+		// the ring ran (nearly) dry: a game just started, or came back from a menu, or the frame was late. Fill
+		// it with silence up to the target at once; the rate control alone (0.5%) would take ~10 s to get there,
+		// and play crackling meanwhile.
+		g.silence.assign(size_t(kTargetQueued - queued) * 2, 0);
+		ps5audio::Push(g.silence.data(), kTargetQueued - queued);
+		queued = kTargetQueued;
+	}
 	double adj = double(kTargetQueued - queued) / kTargetQueued;
 	adj = 1.0 + std::max(-1.0, std::min(1.0, adj)) * 0.005;
 	const double step = g.sample_rate / (ps5audio::kRate * adj); // input frames per output frame
