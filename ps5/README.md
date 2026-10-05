@@ -117,12 +117,14 @@ running. Send `GenesisPlusGXPS5.elf` and open the icon again.
   eboot.bin              Genesis Plus GX (a native app, signed as PS5SX2's is), with the helper inside
   sce_module/libc.prx    the native app's C runtime (the same as PS5SX2's and ps5-native-app-boilerplate's)
   sce_sys/param.json     title "Genesis Plus GX PS5", ID PPSA99011
-  sce_sys/icon0.png      the icon: the Genesis Plus GX logo (512x512; ps5/app/sce_sys/icon0.png in the source)
+  sce_sys/icon0.png      the icon: the "Genesis Plus GX for PS5" art (512x512; ps5/app/sce_sys/icon0.png in the source)
   sce_sys/pic0.dds       the home-screen background while the icon is selected (3840x2160, BC7)
   sce_sys/pic1.dds       the launch background (the same image)
 ```
 
-To change the icon, replace `ps5/app/sce_sys/icon0.png` (512x512 PNG) and rebuild. The background comes from
+The icon is the project's official art, `ps5/app/sce_sys/icon-source.png` (1254x1254): a Mega Drive pad under
+the "Genesis Plus GX for PS5" title. `icon0.png` is that image at 512x512. To change the icon, replace
+`ps5/app/sce_sys/icon0.png` (512x512 PNG) and rebuild. The background comes from
 `ps5/app/sce_sys/background-source.png`, encoded to `pic0.dds`/`pic1.dds` as BC7 (bc7enc_rdo, as
 ps5-native-app-boilerplate's `tools/prepare-assets.sh --background` does). For another title ID:
 `make ps5 TITLE_ID=XXXX00000`.
@@ -355,7 +357,9 @@ The build has three stages:
 - **UI fonts**, the same as PS5SX2's, in `frontend/assets/fonts/` with their licenses: Roboto Regular (Google,
   Apache 2.0), PromptFont (Yukari "Shinmera" Hafner, SIL OFL 1.1), Font Awesome Brands (Fonticons, Inc.; font
   SIL OFL 1.1, icons CC BY 4.0).
-- **Icon:** the Genesis Plus GX logo (`gx/images/Main_logo.png`). The background is drawn from it.
+- **Icon:** the "Genesis Plus GX for PS5" art chosen for the project (`app/sce_sys/icon-source.png`). The
+  home-screen background is drawn from it (the art on the right, a blurred copy behind). SEGA and Mega Drive are
+  trademarks of SEGA; this port is not affiliated with or endorsed by SEGA.
 - **Covers:** [libretro-thumbnails](https://github.com/libretro-thumbnails), downloaded on the console, not
   included. **Names and CRCs:** [libretro-database](https://github.com/libretro/libretro-database) (No-Intro,
   Redump).
