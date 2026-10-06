@@ -26,6 +26,7 @@ int Clamp(int v, int lo, int hi)
 const char* const kButtonKeys[Settings::kButtons] = {"btn_a", "btn_b", "btn_c", "btn_x", "btn_y", "btn_z", "btn_start",
 	"btn_mode"};
 constexpr int kPs5ButtonChoices = 9; // emu::kPs5ButtonCount
+constexpr int kShaderCount = 12; // ps5crt::Shader::Count
 } // namespace
 
 constexpr int Settings::kDefaultButtons[Settings::kButtons];
@@ -60,6 +61,8 @@ void Settings::Load()
 		const int n = atoi(val);
 		if (key == "scale")
 			scale = Clamp(n, 0, 2);
+		else if (key == "shader")
+			shader = Clamp(n, 0, kShaderCount - 1);
 		else if (key == "aspect")
 			aspect = Clamp(n, 0, 3);
 		else if (key == "ntsc")
@@ -124,6 +127,7 @@ void Settings::Save() const
 	}
 	fprintf(f, "# Genesis Plus GX PS5\n");
 	fprintf(f, "scale=%d\n", scale);
+	fprintf(f, "shader=%d\n", shader);
 	fprintf(f, "aspect=%d\n", aspect);
 	fprintf(f, "ntsc=%d\n", ntsc);
 	fprintf(f, "borders=%d\n", borders);

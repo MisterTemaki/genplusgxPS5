@@ -629,7 +629,7 @@ ps5video::Rect DrawLast()
 	const fe::Settings& cfg = fe::Config();
 	const int base_h = g.fh > 300 ? g.fh / 2 : g.fh; // interlaced (double field) pictures: the 224-line grid
 	return ps5video::DrawFrame(g.frame.data(), g.fw, g.fh, base_h, FrameAspect(), ps5video::Scale(cfg.scale), cfg.smooth,
-		cfg.scanlines);
+		cfg.scanlines, cfg.shader);
 }
 
 void RewindPush()
@@ -1097,9 +1097,10 @@ FrameResult RunFrame()
 	{
 		g.stats_reports++;
 		g.next_stats = now + (g.stats_reports < 3 ? 5.0 : 60.0);
-		OrbisLog("[emu] frame %llu, %.1f fps, audio queued %d (%.0f ms), underruns %llu", (unsigned long long)g.frames,
-			g.fps_shown, ps5audio::Queued(), ps5audio::Queued() * 1000.0 / ps5audio::kRate,
-			(unsigned long long)ps5audio::Underruns());
+		const double shader_ms = ps5video::TakeShaderMs();
+		OrbisLog("[emu] frame %llu, %.1f fps, audio queued %d (%.0f ms), underruns %llu, shader %.1f ms",
+			(unsigned long long)g.frames, g.fps_shown, ps5audio::Queued(), ps5audio::Queued() * 1000.0 / ps5audio::kRate,
+			(unsigned long long)ps5audio::Underruns(), shader_ms);
 	}
 	return FrameResult::Continue;
 }

@@ -32,6 +32,7 @@ want() { [ -z "$ONLY" ] || [[ " $ONLY " == *" $1 "* ]]; }
 newroot() {
 	local t=$WORK/$1
 	rm -rf "$t" && mkdir -p "$t/root/roms" "$t/dump"
+	echo "shader=0" >"$t/root/genplus-ps5.ini" # the plain picture: the colour checks expect it (group 21 tests the shaders)
 	echo "$t"
 }
 
@@ -144,7 +145,7 @@ if want 6; then
 echo "== 6. integer scale and scanlines from the settings file; load state with L2 + Down"
 T=$(newroot t6)
 $ROM "$T/root/roms/test.md" ntsc >/dev/null
-printf 'scale=1\nscanlines=1\n' >"$T/root/genplus-ps5.ini"
+printf 'scale=1\nscanlines=1\n' >>"$T/root/genplus-ps5.ini"
 rc=$(run "$T" "0:0;60:$L2UP;62:0;80:$L2DOWN;82:0;$(QUITAT 100)" "50" "$T/root/roms/test.md")
 expect "[ $rc = 0 ]" "exit code 0 (got $rc)"
 expect "grep -q 'Integer scale, scanlines' $T/root/logs/boot.log" "integer scale with scanlines"
@@ -303,8 +304,8 @@ if want 13; then
 echo "== 13. settings from the shelf (Triangle); fast forward (R2) and rewind (L2 + R2); the pause menu saves a state"
 T=$(newroot t13)
 $ROM "$T/root/roms/Alpha (USA).md" ntsc >/dev/null
-# Triangle -> settings ("Screen size" first), Right -> integer scale, Circle -> back; Cross -> play
-rc=$(GENPLUS_HOST_REALTIME=1 run "$T" "0:0;30:$TRIANGLE;32:0;40:$RIGHT;42:0;50:$CIRCLE;52:0;70:$CROSS;72:0;150:$R2;250:0;300:$L2R2;340:0;360:$L3R3;362:0;370:$DOWN;372:0;380:$CROSS;382:0;400:$CIRCLE;402:0;$(QUITAT 440)" "45")
+# Triangle -> settings ("Shader" first, Down -> "Screen size"), Right -> integer scale, Circle -> back; Cross -> play
+rc=$(GENPLUS_HOST_REALTIME=1 run "$T" "0:0;30:$TRIANGLE;32:0;36:$DOWN;38:0;40:$RIGHT;42:0;50:$CIRCLE;52:0;70:$CROSS;72:0;150:$R2;250:0;300:$L2R2;340:0;360:$L3R3;362:0;370:$DOWN;372:0;380:$CROSS;382:0;400:$CIRCLE;402:0;$(QUITAT 440)" "45")
 expect "[ $rc = 0 ]" "exit code 0 (got $rc)"
 expect "grep -q 'scale=1' $T/root/genplus-ps5.ini" "the settings screen changed the screen size"
 expect "grep -q 'fast forward on' $T/root/logs/boot.log && grep -q 'fast forward off' $T/root/logs/boot.log" "R2 held: fast forward"
@@ -448,7 +449,7 @@ echo "== 20. controls: pad type and 4-player adapter, the button layout (Setting
 T=$(newroot t20)
 $ROM "$T/root/roms/test.md" ntsc >/dev/null
 # B moved from Cross to Triangle: Cross does nothing, Triangle is B (green)
-printf 'btn_b=3\npad_type=2\n' >"$T/root/genplus-ps5.ini"
+printf 'btn_b=3\npad_type=2\n' >>"$T/root/genplus-ps5.ini"
 rc=$(run "$T" "0:0;100:$CROSS;140:0;160:$TRIANGLE;200:0;$(QUITAT 220)" "130,190" "$T/root/roms/test.md")
 expect "[ $rc = 0 ]" "exit code 0 (got $rc)"
 expect "$CHECK $T/dump/flip00130.ppm 960 540 red >/dev/null" "B on Triangle: Cross no longer presses B"
@@ -456,21 +457,57 @@ expect "$CHECK $T/dump/flip00190.ppm 960 540 green >/dev/null" "B on Triangle: T
 expect "grep -q 'controllers: 6 buttons pad' $T/root/logs/boot.log" "pad_type=2: a 6-button pad"
 T=$(newroot t20b)
 $ROM "$T/root/roms/test.sms" >/dev/null
-printf 'pad_type=2\nmultitap=2\n' >"$T/root/genplus-ps5.ini"
+printf 'pad_type=2\nmultitap=2\n' >>"$T/root/genplus-ps5.ini"
 rc=$(GENPLUS_HOST_QUIT_AFTER=3 run "$T" "0:0" "" "$T/root/roms/test.sms")
 expect "grep -q 'controllers: Auto (the game.s) pad$' $T/root/logs/boot.log" "a Master System game keeps its own pad"
 T=$(newroot t20c)
 $ROM "$T/root/roms/test.md" ntsc >/dev/null
-printf 'multitap=2\n' >"$T/root/genplus-ps5.ini"
+printf 'multitap=2\n' >>"$T/root/genplus-ps5.ini"
 rc=$(GENPLUS_HOST_QUIT_AFTER=3 run "$T" "0:0" "" "$T/root/roms/test.md")
 expect "grep -q 'controllers: Auto (the game.s) pad, Team Player (Sega)' $T/root/logs/boot.log" "Team Player plugged in"
 T=$(newroot t20d)
 $ROM "$T/root/roms/Alpha (USA).md" ntsc >/dev/null
-rc=$(run "$T" "0:0;30:$TRIANGLE;32:0;40:$DOWN;42:0;46:$DOWN;48:0;52:$DOWN;54:0;58:$DOWN;60:0;64:$DOWN;66:0;70:$DOWN;72:0;76:$DOWN;78:0;82:$DOWN;84:0;88:$DOWN;90:0;94:$DOWN;96:0;100:$DOWN;102:0;106:$DOWN;108:0;112:$DOWN;114:0;118:$DOWN;120:0;124:$DOWN;126:0;130:$DOWN;132:0;136:$RIGHT;138:0;142:$RIGHT;144:0;148:$DOWN;150:0;154:$RIGHT;156:0;160:$DOWN;162:0;166:$RIGHT;168:0;176:$CIRCLE;178:0;186:$OPTIONS;188:0;194:$CROSS;196:0" "172")
+rc=$(run "$T" "0:0;30:$TRIANGLE;32:0;40:$DOWN;42:0;46:$DOWN;48:0;52:$DOWN;54:0;58:$DOWN;60:0;64:$DOWN;66:0;70:$DOWN;72:0;76:$DOWN;78:0;82:$DOWN;84:0;88:$DOWN;90:0;94:$DOWN;96:0;100:$DOWN;102:0;106:$DOWN;108:0;112:$DOWN;114:0;118:$DOWN;120:0;124:$DOWN;126:0;130:$DOWN;132:0;136:$DOWN;138:0;142:$RIGHT;144:0;148:$RIGHT;150:0;154:$DOWN;156:0;160:$RIGHT;162:0;166:$DOWN;168:0;172:$RIGHT;174:0;182:$CIRCLE;184:0;192:$OPTIONS;194:0;200:$CROSS;202:0" "178")
 expect "[ $rc = 0 ]" "settings screen: exit code 0 (got $rc)"
 expect "grep -q '^pad_type=2$' $T/root/genplus-ps5.ini && grep -q '^multitap=1$' $T/root/genplus-ps5.ini" "the settings screen set a 6-button pad and the 4 Way Play"
 expect "grep -q '^btn_a=3$' $T/root/genplus-ps5.ini" "the settings screen moved A to Triangle"
 nosan "$T"
+fi
+
+if want 21; then
+echo "== 21. CRT shaders: CRT Easymode style by default, every shader draws, the choice is kept"
+SHADERS=("Off" "CRT Easymode style" "crt-lottes" "crt-lottes-fast" "crt-1tap" "crt-2tap" "crt-hyllian-fast" "crt-nobody" "newpixie-mini" "crt-blurPi-sharp" "crt-blurPi-soft" "monoCRT")
+T=$(newroot t21)
+rm -f "$T/root/genplus-ps5.ini" # a first start: no settings file yet
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+rc=$(run "$T" "0:0;100:$CROSS;140:0;$(QUITAT 160)" "90,130" "$T/root/roms/test.md")
+expect "[ $rc = 0 ]" "exit code 0 (got $rc)"
+expect "grep -q 'shader CRT Easymode style' $T/root/logs/boot.log" "a first start draws the game through CRT Easymode style"
+expect "python3 - $T/dump/flip00090.ppm <<'PY'
+import sys
+d = open(sys.argv[1], 'rb').read().split(b'\n', 3)
+w, h = map(int, d[1].split()); px = d[3]
+R = lambda x, y: px[(y * w + x) * 3]
+col = [R(960, y) for y in range(400, 460)] # down the middle: scanlines
+row = [R(x, 540) for x in range(900, 960)] # across: the aperture grille
+sys.exit(0 if max(col) > 150 and min(col) < 0.85 * max(col) and len(set(row)) > 1 else 1)
+PY" "scanlines and a phosphor mask on the red picture"
+expect "$CHECK $T/dump/flip00130.ppm 960 540 green >/dev/null || python3 -c \"import sys; d=open('$T/dump/flip00130.ppm','rb').read().split(b'\\n',3); w=int(d[1].split()[0]); p=d[3]; sys.exit(0 if max(p[(y*w+960)*3+1] for y in range(520,560)) > 150 else 1)\"" "Cross -> green through the shader"
+expect "grep -q 'shader [0-9.]* ms' $T/root/logs/boot.log" "the shader's drawing time is logged"
+nosan "$T"
+for s in $(seq 1 11); do
+	T=$(newroot t21s$s)
+	echo "shader=$s" >>"$T/root/genplus-ps5.ini"
+	$ROM "$T/root/roms/test.md" ntsc >/dev/null
+	rc=$(run "$T" "0:0;$(QUITAT 100)" "90" "$T/root/roms/test.md")
+	expect "[ $rc = 0 ] && grep -q 'shader ${SHADERS[$s]})' $T/root/logs/boot.log && python3 -c \"import sys; d=open('$T/dump/flip00090.ppm','rb').read().split(b'\\n',3); w=int(d[1].split()[0]); p=d[3]; sys.exit(0 if max(p[(y*w+960)*3] for y in range(500,580)) > 60 else 1)\"" "${SHADERS[$s]} draws the picture"
+	expect "! grep -q 'runtime error\|AddressSanitizer' $T/out.txt" "${SHADERS[$s]}: no sanitizer reports"
+done
+T=$(newroot t21m)
+$ROM "$T/root/roms/Alpha (USA).md" ntsc >/dev/null
+# Triangle -> settings, the first row is Shader: Right twice -> crt-lottes-fast; Circle -> back; Options + Cross -> quit
+rc=$(run "$T" "0:0;30:$TRIANGLE;32:0;40:$RIGHT;42:0;46:$RIGHT;48:0;52:$RIGHT;54:0;60:$CIRCLE;62:0;70:$OPTIONS;72:0;80:$CROSS;82:0" "50")
+expect "grep -q '^shader=3$' $T/root/genplus-ps5.ini" "the settings screen's Shader row is saved (shader=0 -> 3)"
 fi
 
 echo

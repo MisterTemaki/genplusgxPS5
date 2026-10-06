@@ -31,7 +31,7 @@ compiled as they are: all 100 of their C files build for the PS5 without a singl
 core through its libretro interface -- the most complete of its ports -- and plays the part RetroArch plays on a
 PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
 
-> **Status (1.0):** builds with the ps5-payload-dev SDK into a signed native app, and passes 147 host tests, which
+> **Status (1.0):** builds with the ps5-payload-dev SDK into a signed native app, and passes 176 host tests, which
 > run the same code (the Genesis Plus GX core included) on Linux with the PS5 calls simulated: a test program for
 > each of Mega Drive, Master System and Game Gear is played through the whole chain -- the shelf, the pad, the
 > core, the video and sound output. Not yet confirmed on a console. If something fails, the logs in
@@ -242,10 +242,11 @@ up to four: players 2 to 4 are the other signed-in users. The light bar shows th
 
 Triangle on the shelf, or "Settings" in the pause menu:
 
-- **Video:** screen size (fit to screen, integer scale, stretch to 16:9), aspect ratio (TV -- the core's own pixel
-  aspect --, square pixels, 4:3, 16:9), **NTSC filter** (Blargg's: composite, S-Video, RGB, monochrome), show
-  the borders (overscan: off, top and bottom, left and right, all), smooth picture, scanlines, Game Gear LCD
-  ghosting, FPS counter.
+- **Video:** **shader** (see [CRT shaders](#crt-shaders); CRT Easymode style by default), screen size (fit to
+  screen, integer scale, stretch to 16:9), aspect ratio (TV -- the core's own pixel aspect --, square pixels, 4:3,
+  16:9), **NTSC filter** (Blargg's: composite, S-Video, RGB, monochrome), show the borders (overscan: off, top and
+  bottom, left and right, all), smooth picture and scanlines (for the plain picture, with the shader Off), Game
+  Gear LCD ghosting, FPS counter.
 - **Audio:** sound on/off, volume, **FM sound chip** (MAME YM2612, MAME ASIC YM3438, Nuked YM2612, Nuked YM3438
   -- the Nuked cores are cycle-accurate and heavier), low-pass filter.
 - **Emulation:** fast-forward speed (150% to unlimited), rewind on/off, console region (auto, USA, Europe, Japan),
@@ -266,6 +267,40 @@ Triangle on the shelf, or "Settings" in the pause menu:
 - **Library:** download covers.
 
 The settings go to the core as its libretro options (`genesis_plus_gx_*`), so they behave as in RetroArch.
+
+## CRT shaders
+
+Every game starts through a CRT shader -- **CRT Easymode style** unless you pick another one. **Settings ->
+Shader** (the first row) changes it at once, in the game too; **Off** gives the plain picture (with the "Smooth
+picture" and "Scanlines" options). The choice is saved in `genplus-ps5.ini` (`shader=`).
+
+| Shader | Look | From |
+|---|---|---|
+| **CRT Easymode style** (default) | flat screen, sharp, scanlines that widen on bright colours, aperture grille | written for this port, after the look of EasyMode's crt-easymode |
+| crt-lottes | curved screen, Gaussian beam, shadow mask, a little bloom | Timothy Lottes (public domain) |
+| crt-lottes-fast | lighter Lottes: curved, 4-tap beam, aperture mask, tone mapping | Timothy Lottes (public domain) |
+| crt-1tap | very light, contrasty dynamic scanlines | fishku (CC0) |
+| crt-2tap | crt-1tap with exact blending between two lines | fishku (CC0) |
+| crt-hyllian-fast | sharp Catmull-Rom picture, strong scanlines, magenta/green dot mask | Hyllian (MIT) |
+| crt-nobody | curved screen with rounded corners, beam scanlines, magenta/green mask | Hyllian (MIT) |
+| newpixie-mini | strongly curved TV, colour bleed, vignette, film tone | Mattias Gustavsson (Unlicense) |
+| crt-blurPi-sharp / crt-blurPi-soft | light blur and screen-space scanlines (sharp or bilinear) | Oriol Ferrer Mesià (MIT) |
+| monoCRT | a monochrome monitor (made for black-and-white pictures) | hunterk (public domain) |
+
+They come from libretro's [slang-shaders](https://github.com/libretro/slang-shaders) (`crt/`), with their default
+parameters. Why these: the PS5 build draws the picture with the CPU (there is no GPU driver for homebrew apps), so
+only single-pass shaders are fast enough, and only shaders whose licence fits Genesis Plus GX's (public domain,
+CC0, Unlicense, MIT) can be built in. crt-easymode itself is GPL, which the Genesis Plus GX licence can't take in,
+so "CRT Easymode style" is original code aiming at the same look. Multi-pass shaders (crt-royale, crt-guest-advanced,
+the Mega Bezel...) need a GPU.
+
+How they run: each shader is rewritten in C++ (`ps5/coreorbis/orbis-shims/ProsperoCrt.cpp`). What depends only on
+a source line and a screen column (the horizontal filter) is computed once per source line; per screen pixel only
+the vertical blend, the beam, the mask and a gamma table remain; curved screens use a per-pixel map built once per
+picture size. The work is shared by up to six threads. Every minute in a game, `boot.log` says how long the shader
+took per frame (`shader N ms`); if a heavy one (crt-lottes, crt-nobody, newpixie-mini) makes a game slow down,
+pick a lighter one. Differences from the GPU versions: curved shaders read the horizontal filter between two
+screen columns, monoCRT has no beam jitter.
 
 ## Picture and sound
 
@@ -290,7 +325,7 @@ If something fails, send the files in `/data/genplus/logs/`: `boot.log` (the app
 - the controller handle and its first read;
 - the games found, with their system and name;
 - the core's own log (`[core] ...`: the ROM it loaded, its header, the BIOS, its errors) and any missing BIOS;
-- frames per second, queued audio and underruns, every minute in a game.
+- frames per second, queued audio and underruns, and the shader's time per frame, every minute in a game.
 
 If the app dies on a signal (the PS5's "Game or App Error" screen), a `== CRASH ==` block is written at the end
 of `boot.log`: the signal, the address, the **stage** each part of the program was in (`stage[...]`: boot, shelf,
@@ -317,7 +352,7 @@ make ps5 -j$(nproc)              # build/ps5/GenesisPlusGXPS5.elf (installer + h
 make send PS5_HOST=192.168.0.10  # sends it to elfldr (port 9021)
 make dist                        # build/dist/GenesisPlusGXPS5-v<version>.elf + the source zip
 make app                         # only build/app/PPSA99011/, to copy by hand
-make test                        # Linux builds (app, installer, helper) + 147 host tests (ASan/UBSan)
+make test                        # Linux builds (app, installer, helper) + 176 host tests (ASan/UBSan)
 ```
 
 The build has three stages:
@@ -344,6 +379,7 @@ The build has three stages:
 - **`ps5/coreorbis/orbis-shims/`**: the PS5 layer.
   - `ProsperoVideo.cpp`: `libSceVideoOut`, direct memory, two scan-out buffers, AVX2 tiling, the scaler (fit /
     integer / stretch, smoothing, scanlines) and the HUD overlay;
+  - `ProsperoCrt.cpp`: the CRT shaders on the CPU, and their thread pool;
   - `ProsperoAudio.cpp`: `libSceAudioOut`, lock-free ring buffer, output thread;
   - `ProsperoInput.cpp`: `libScePad` + `libSceUserService`, several players, read from any thread;
   - `ProsperoJailbreak.cpp` / `ProsperoHelper.cpp`: both sides of the sandbox request and the covers list;
@@ -370,9 +406,11 @@ The build has three stages:
 - **`ps5/app/sce_sys/`**: param.json, icon and backgrounds.
 - **`ps5/host/sce_host.cpp`** and **`ps5/tests/`**: the PS5 functions implemented on Linux, test programs for
   Mega Drive (NTSC and PAL), Master System and Game Gear (`make_test_rom.py`, tiny hand-assembled 68000 and Z80
-  programs), and the 147 tests: picture and input on each system, the Sega CD BIOS message and `.cue` tracks,
+  programs), and the 176 tests: picture and input on each system, the Sega CD BIOS message and `.cue` tracks,
   save states, PAL timing, zip, sound latency, integer scale and scanlines, the shelf's tabs, the system
-  folders, the controls (pad type, 4-player adapter, button layout), settings, fast forward and rewind, covers per system, install, helper and sandbox request.
+  folders, the controls (pad type, 4-player adapter, button layout), the CRT shaders (the default, each one
+  drawing under ASan/UBSan, the menu), settings, fast forward and rewind, covers per system, install, helper and
+  sandbox request.
 
 ## License and credits
 
@@ -391,6 +429,12 @@ The build has three stages:
   `app_cpp_runtime.cpp`, `ps5-pie.ld` and the `libc.prx` generator, via PS5SX2 and PS5_Vulkan (mihawk-99).
 - The VideoOut tiling and setup follow the SDK's SDL2 port (zlib license).
 - **minizip** (Gilles Vollant): zlib license.
+- **CRT shaders** from libretro's [slang-shaders](https://github.com/libretro/slang-shaders), rewritten for the CPU:
+  crt-lottes and crt-lottes-fast (Timothy Lottes, public domain), crt-1tap and crt-2tap (fishku, CC0), monoCRT
+  (hunterk, public domain), newpixie-mini (Mattias Gustavsson, Unlicense), crt-hyllian-fast and crt-nobody
+  (Hyllian, MIT), crt-blurPi (Oriol Ferrer Mesià, MIT). Their notices are in
+  `ps5/THIRD_PARTY_SHADERS.md`. "CRT Easymode style" is original code; the look it follows is EasyMode's
+  crt-easymode.
 - **stb_image / stb_image_resize2 / stb_truetype** (Sean Barrett): public domain or MIT.
 - **UI fonts**, the same as PS5SX2's, in `ps5/frontend/assets/fonts/` with their licenses: Roboto Regular (Google,
   Apache 2.0), PromptFont (Yukari "Shinmera" Hafner, SIL OFL 1.1), Font Awesome Brands (Fonticons, Inc.; font

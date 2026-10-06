@@ -50,7 +50,12 @@ struct Rect
 // scale and the scanlines follow it). smooth: bilinear when the scale isn't whole; scanlines: darkens the
 // last screen row of every console line, CRT style, when each line gets 3 rows or more. Returns the
 // rectangle that changed so the caller can Present just that (everything when the geometry changed).
-Rect DrawFrame(const uint32_t* argb, int w, int h, int base_h, double aspect, Scale scale, bool smooth, bool scanlines);
+// shader: a ps5crt::Shader (0 = none: the plain scaler with smooth / scanlines); with one, the CRT shader draws the
+// picture instead (ProsperoCrt.h).
+Rect DrawFrame(const uint32_t* argb, int w, int h, int base_h, double aspect, Scale scale, bool smooth, bool scanlines,
+	int shader = 0);
+// The shader's average drawing time since the last call, in ms (0 when no shader drew).
+double TakeShaderMs();
 // The last rectangle DrawFrame covered (to darken it for the menu, or to clear around it).
 Rect LastFrameRect();
 // Forget the cached geometry: the next DrawFrame clears the borders.

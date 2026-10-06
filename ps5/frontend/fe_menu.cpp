@@ -12,6 +12,7 @@
 #include "fe_text.h"
 
 #include "OrbisPaths.h"
+#include "ProsperoCrt.h"
 #include "ProsperoInput.h"
 #include "ProsperoSce.h"
 #include "ProsperoVideo.h"
@@ -197,6 +198,7 @@ const char* OnOff(bool b)
 enum SettingRow
 {
 	H_VIDEO,
+	S_SHADER,
 	S_SCALE,
 	S_ASPECT,
 	S_NTSC,
@@ -236,12 +238,13 @@ Row SettingRowFor(int s)
 	switch (s)
 	{
 		case H_VIDEO: return {"VIDEO", "", true, true};
+		case S_SHADER: return {"Shader", ps5crt::Name(ps5crt::Shader(c.shader))};
 		case S_SCALE: return {"Screen size", ps5video::ScaleName(ps5video::Scale(c.scale))};
 		case S_ASPECT: return {"Aspect ratio", emu::kAspects[c.aspect % emu::kAspectCount].name};
 		case S_NTSC: return {"NTSC filter (Blargg)", emu::kNtscFilters[c.ntsc % emu::kNtscFilterCount].name};
 		case S_BORDERS: return {"Show the borders (overscan)", emu::kBorders[c.borders % emu::kBorderCount].name};
-		case S_SMOOTH: return {"Smooth picture", OnOff(c.smooth)};
-		case S_SCANLINES: return {"Scanlines (CRT effect)", OnOff(c.scanlines)};
+		case S_SMOOTH: return {"Smooth picture", c.shader ? "(shader)" : OnOff(c.smooth), c.shader == 0};
+		case S_SCANLINES: return {"Scanlines (CRT effect)", c.shader ? "(shader)" : OnOff(c.scanlines), c.shader == 0};
 		case S_GGLCD: return {"Game Gear LCD ghosting", OnOff(c.gg_lcd)};
 		case S_FPS: return {"Show FPS", OnOff(c.show_fps)};
 		case H_AUDIO: return {"AUDIO", "", true, true};
@@ -286,6 +289,7 @@ void ChangeSetting(int s, int dir)
 	Settings& c = Config();
 	switch (s)
 	{
+		case S_SHADER: c.shader = Cycle(c.shader, dir, int(ps5crt::Shader::Count)); break;
 		case S_SCALE: c.scale = Cycle(c.scale, dir, int(ps5video::Scale::Count)); break;
 		case S_ASPECT: c.aspect = Cycle(c.aspect, dir, emu::kAspectCount); break;
 		case S_NTSC: c.ntsc = Cycle(c.ntsc, dir, emu::kNtscFilterCount); break;
@@ -350,7 +354,7 @@ void Background(bool over_game)
 void SettingsScreen(bool over_game)
 {
 	NavReader nav;
-	int sel = S_SCALE;
+	int sel = S_SHADER;
 	for (;;)
 	{
 		const std::vector<Row> rows = SettingRows();

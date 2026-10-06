@@ -16,6 +16,7 @@
 #include "ProsperoVideo.h"
 
 #include "OrbisPaths.h"
+#include "ProsperoCrt.h"
 #include "ProsperoSce.h"
 
 #include <immintrin.h>
@@ -27,6 +28,7 @@
 #include <cstdlib>
 #include <cmath>
 #include <cstring>
+#include <ctime>
 #include <vector>
 
 namespace ps5video
@@ -483,6 +485,7 @@ namespace
 {
 struct FrameGeom
 {
+	int shader = 0;
 	int src_w = 0, src_h = 0, base_h = 0;
 	double aspect = 0;
 	Scale scale = Scale::Count;
@@ -547,8 +550,13 @@ Rect ComputeRect(int base_h, double aspect, Scale scale)
 	return Rect{(kWidth - dw) / 2, (kHeight - dh) / 2, dw, dh};
 }
 
-void Setup(int w, int h, int base_h, double aspect, Scale scale, bool smooth, bool scanlines)
+double s_shader_ms = 0;
+int s_shader_frames = 0;
+uint64_t s_frame_no = 0;
+
+void Setup(int w, int h, int base_h, double aspect, Scale scale, bool smooth, bool scanlines, int shader)
 {
+	s_geom.shader = shader;
 	s_geom.src_w = w;
 	s_geom.src_h = h;
 	s_geom.base_h = base_h;
@@ -598,8 +606,12 @@ void Setup(int w, int h, int base_h, double aspect, Scale scale, bool smooth, bo
 		}
 	}
 	FillRect(0, 0, kWidth, kHeight, Rgb(0, 0, 0));
-	OrbisLog("[video] picture %dx%d (%d lines, aspect %.4f, %s%s%s) -> %d,%d %dx%d", w, h, base_h, aspect,
-		ScaleName(scale), lerp ? ", smooth" : "", scanlines ? ", scanlines" : "", d.x, d.y, d.w, d.h);
+	if (shader > 0)
+		OrbisLog("[video] picture %dx%d (%d lines, aspect %.4f, %s, shader %s) -> %d,%d %dx%d", w, h, base_h, aspect,
+			ScaleName(scale), ps5crt::Name(ps5crt::Shader(shader)), d.x, d.y, d.w, d.h);
+	else
+		OrbisLog("[video] picture %dx%d (%d lines, aspect %.4f, %s%s%s) -> %d,%d %dx%d", w, h, base_h, aspect,
+			ScaleName(scale), lerp ? ", smooth" : "", scanlines ? ", scanlines" : "", d.x, d.y, d.w, d.h);
 }
 } // namespace
 
@@ -624,7 +636,16 @@ void InvalidateFrame()
 	s_geom.src_w = 0;
 }
 
-Rect DrawFrame(const uint32_t* argb, int w, int h, int base_h, double aspect, Scale scale, bool smooth, bool scanlines)
+double TakeShaderMs()
+{
+	const double ms = s_shader_frames ? s_shader_ms / s_shader_frames : 0.0;
+	s_shader_ms = 0;
+	s_shader_frames = 0;
+	return ms;
+}
+
+Rect DrawFrame(const uint32_t* argb, int w, int h, int base_h, double aspect, Scale scale, bool smooth, bool scanlines,
+	int shader)
 {
 	if (!g.surface || !argb || w <= 0 || h <= 0)
 		return Rect{0, 0, 0, 0};
@@ -633,13 +654,24 @@ Rect DrawFrame(const uint32_t* argb, int w, int h, int base_h, double aspect, Sc
 
 	bool cleared = false;
 	if (w != s_geom.src_w || h != s_geom.src_h || base_h != s_geom.base_h || std::fabs(aspect - s_geom.aspect) > 1e-6 ||
-		scale != s_geom.scale || smooth != s_geom.smooth || scanlines != s_geom.scanlines)
+		scale != s_geom.scale || smooth != s_geom.smooth || scanlines != s_geom.scanlines || shader != s_geom.shader)
 	{
-		Setup(w, h, base_h, aspect, scale, smooth, scanlines);
+		Setup(w, h, base_h, aspect, scale, smooth, scanlines, shader);
 		cleared = true;
 	}
 
 	const Rect& d = s_geom.dst;
+	s_frame_no++;
+	if (shader > 0 && shader < int(ps5crt::Shader::Count))
+	{
+		timespec t0, t1;
+		clock_gettime(CLOCK_MONOTONIC, &t0);
+		ps5crt::Render(ps5crt::Shader(shader), argb, w, h, g.surface, kWidth, d.x, d.y, d.w, d.h, s_frame_no);
+		clock_gettime(CLOCK_MONOTONIC, &t1);
+		s_shader_ms += (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
+		s_shader_frames++;
+		return cleared ? Rect{0, 0, kWidth, kHeight} : d;
+	}
 	const uint32_t* xs = s_geom.xsrc.data();
 	const uint16_t* xw = s_geom.xw.data();
 	const bool lerp = smooth && !((d.w % w) == 0 && (d.h % h) == 0);

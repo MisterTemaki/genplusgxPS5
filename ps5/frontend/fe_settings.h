@@ -10,6 +10,7 @@ struct Settings
 {
 	// video
 	int scale = 0; // ps5video::Scale: fit, integer, stretch
+	int shader = 1; // ps5crt::Shader: 0 off, 1 "CRT Easymode style" (the default for every game), ...
 	int aspect = 0; // emu::kAspects: the core's (TV), square pixels, 4:3, 16:9
 	int ntsc = 0; // emu::kNtscFilters: off, composite, S-Video, RGB, monochrome (Blargg's NTSC filter)
 	int borders = 0; // emu::kBorders: off, top/bottom, left/right, full (the core's overscan option)
