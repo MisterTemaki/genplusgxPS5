@@ -896,11 +896,11 @@ std::string Shelf()
 		else
 		{
 			CenterText(300, "No games found.", 5, Rgb(240, 240, 250));
-			CenterText(400, "Copy your games (sub-folders are fine) to", 3, Rgb(200, 200, 220));
+			CenterText(400, "Copy your games to their system's folder in", 3, Rgb(200, 200, 220));
 			CenterText(450, "/data/genplus/roms   or   genplus/roms  on a USB drive", 4, Rgb(200, 190, 255));
-			CenterText(540, "Mega Drive / Genesis .md .gen .bin .smd   Sega CD .cue .chd .iso", 3, Rgb(185, 180, 210));
-			CenterText(590, "Master System .sms   Game Gear .gg   SG-1000 .sg   (cartridges also inside .zip)", 3,
+			CenterText(520, "MegaDrive  .md .gen .bin .smd     SegaCD  .cue .chd .iso     MasterSystem  .sms", 3,
 				Rgb(185, 180, 210));
+			CenterText(570, "GameGear  .gg     SG1000  .sg     (cartridges also inside .zip)", 3, Rgb(185, 180, 210));
 			CenterText(640, "Sega CD needs its BIOS in /data/genplus/bios.  Then open Genesis Plus GX PS5 again.", 3,
 				Rgb(200, 200, 220));
 		}

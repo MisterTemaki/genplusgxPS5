@@ -114,9 +114,10 @@ fi
 if want 5; then
 echo "== 5. Sega CD without its BIOS: the screen names the files; the tracks of a .cue are not games of their own"
 T=$(newroot t5)
-head -c $((2352 * 300)) /dev/zero >"$T/root/roms/Game (USA) (Track 1).bin"
-head -c $((2352 * 100)) /dev/zero >"$T/root/roms/Game (USA) (Track 2).bin"
-cat >"$T/root/roms/Game (USA).cue" <<'CUE'
+mkdir -p "$T/root/roms/SegaCD" "$T/root/roms/MegaDrive"
+head -c $((2352 * 300)) /dev/zero >"$T/root/roms/SegaCD/Game (USA) (Track 1).bin"
+head -c $((2352 * 100)) /dev/zero >"$T/root/roms/SegaCD/Game (USA) (Track 2).bin"
+cat >"$T/root/roms/SegaCD/Game (USA).cue" <<'CUE'
 FILE "Game (USA) (Track 1).bin" BINARY
   TRACK 01 MODE1/2352
     INDEX 01 00:00:00
@@ -125,7 +126,7 @@ FILE "Game (USA) (Track 2).bin" BINARY
     INDEX 00 00:00:00
     INDEX 01 00:02:00
 CUE
-$ROM "$T/root/roms/Alpha (USA).md" ntsc >/dev/null
+$ROM "$T/root/roms/MegaDrive/Alpha (USA).md" ntsc >/dev/null
 # the shelf: Alpha, then Game; Right -> Game, Cross -> the BIOS message, Cross -> back, Options -> quit
 rc=$(run "$T" "0:0;30:$RIGHT;32:0;50:$CROSS;52:0;90:$CROSS;92:0;110:$OPTIONS;112:0;120:$CROSS;122:0" "70")
 expect "[ $rc = 0 ]" "exit code 0 (got $rc)"
@@ -134,7 +135,7 @@ expect "grep -q 'missing firmware: Sega CD BIOS' $T/root/logs/boot.log" "logged:
 expect "grep -q 'could not start .*Game (USA).cue: missing the Sega CD BIOS' $T/root/logs/boot.log" "the game wasn't started"
 expect "[ -f $T/dump/flip00070.ppm ]" "a message was on the screen"
 mkdir -p "$T/root/bios" && head -c 131072 /dev/zero >"$T/root/bios/bios_CD_U.bin"
-rc=$(GENPLUS_HOST_QUIT_AFTER=3 run "$T" "0:0" "" "$T/root/roms/Game (USA).cue")
+rc=$(GENPLUS_HOST_QUIT_AFTER=3 run "$T" "0:0" "" "$T/root/roms/SegaCD/Game (USA).cue")
 expect "grep -q 'loading .*Game (USA).cue' $T/root/logs/boot.log && ! grep -q 'missing firmware' $T/root/logs/boot.log" "with bios/bios_CD_U.bin the disc goes to the core"
 nosan "$T"
 fi
@@ -233,7 +234,7 @@ if want 10; then
 echo "== 10. covers per system: download, git-symlink, name by CRC, your own cover first, 404 remembered"
 T=$(newroot t10)
 MDREPO=Sega_-_Mega_Drive_-_Genesis; SMSREPO=Sega_-_Master_System_-_Mark_III
-mkdir -p "$T/srv/$MDREPO/Named_Boxarts" "$T/srv/$SMSREPO/Named_Boxarts" "$T/root/covers"
+mkdir -p "$T/srv/$MDREPO/Named_Boxarts" "$T/srv/$SMSREPO/Named_Boxarts" "$T/root/covers/MegaDrive" "$T/root/roms/MegaDrive" "$T/root/roms/MasterSystem"
 python3 - "$T/srv" "$T/root/covers" "$MDREPO" "$SMSREPO" <<'PY'
 import sys
 from PIL import Image
@@ -243,13 +244,13 @@ Image.new('RGB', (512, 357), (255, 0, 0)).save(m + '/Sonic The Hedgehog (USA, Eu
 Image.new('RGB', (512, 357), (0, 255, 0)).save(m + '/Streets of Rage 2 (Europe).png')
 open(m + '/Streets of Rage 2 (USA).png', 'w').write('Streets of Rage 2 (Europe).png')
 Image.new('RGB', (512, 357), (255, 255, 0)).save(m + '/Golden Axe (World).png')
-Image.new('RGB', (360, 512), (0, 0, 255)).save(covers + '/Golden Axe (World).png')
+Image.new('RGB', (360, 512), (0, 0, 255)).save(covers + '/MegaDrive/Golden Axe (World).png')
 Image.new('RGB', (360, 512), (255, 0, 255)).save(s + '/Alex Kidd in Miracle World (USA, Europe).png')
 PY
-for n in "Sonic The Hedgehog (USA, Europe)" "Comix Zone (USA)" "Golden Axe (World)"; do $ROM "$T/root/roms/$n.md" ntsc >/dev/null; done
-$ROM "$T/root/roms/Alex Kidd in Miracle World (USA, Europe).sms" >/dev/null
-$ROM "$T/root/roms/sor2.md" ntsc >/dev/null
-python3 tests/forge_crc.py "$T/root/roms/sor2.md" $(grep -P "^md\t[0-9A-F]{8}\tStreets of Rage 2 \(USA\)$" frontend/data/nointro.tsv | cut -f2) >/dev/null
+for n in "Sonic The Hedgehog (USA, Europe)" "Comix Zone (USA)" "Golden Axe (World)"; do $ROM "$T/root/roms/MegaDrive/$n.md" ntsc >/dev/null; done
+$ROM "$T/root/roms/MasterSystem/Alex Kidd in Miracle World (USA, Europe).sms" >/dev/null
+$ROM "$T/root/roms/MegaDrive/sor2.md" ntsc >/dev/null
+python3 tests/forge_crc.py "$T/root/roms/MegaDrive/sor2.md" $(grep -P "^md\t[0-9A-F]{8}\tStreets of Rage 2 \(USA\)$" frontend/data/nointro.tsv | cut -f2) >/dev/null
 PORT=18080
 (cd "$T/srv" && exec python3 -m http.server $PORT --bind 127.0.0.1 >/dev/null 2>&1) &
 SRVPID=$!
@@ -260,11 +261,11 @@ rc=$(OFFLINE= COVER_URL="http://127.0.0.1:$PORT/\${repo}/Named_Boxarts/\${name}.
 kill $SRVPID 2>/dev/null
 expect "[ $rc = 0 ]" "exit code 0 (got $rc)"
 expect "grep -q 'sor2.md \[md\] -> \"Streets of Rage 2 (USA)\" (by CRC)' $T/root/logs/boot.log" "sor2.md named by its CRC"
-expect "[ -f '$T/root/covers/md - Sonic The Hedgehog (USA, Europe).png' ]" "a Mega Drive cover in the cache, tagged with its system"
-expect "[ -f '$T/root/covers/sms - Alex Kidd in Miracle World (USA, Europe).png' ]" "a Master System cover from the Master System repository"
-expect "[ -f '$T/root/covers/md - Comix Zone (USA).missing' ]" "a 404 is remembered (.missing)"
+expect "[ -f '$T/root/covers/MegaDrive/Sonic The Hedgehog (USA, Europe).png' ]" "a Mega Drive cover saved in covers/MegaDrive"
+expect "[ -f '$T/root/covers/MasterSystem/Alex Kidd in Miracle World (USA, Europe).png' ]" "a Master System cover from its repository, in covers/MasterSystem"
+expect "[ -f '$T/root/covers/MegaDrive/Comix Zone (USA).missing' ]" "a 404 is remembered (.missing)"
 expect "grep -q 'is a link to Streets of Rage 2 (Europe).png' $T/root/logs/boot.log" "a git-symlink cover is followed"
-expect "! grep -q 'GET .*Golden%20Axe' $T/root/logs/boot.log" "your own cover: nothing downloaded for it"
+expect "! grep -q 'GET .*Golden%20Axe' $T/root/logs/boot.log" "your own cover (covers/MegaDrive/<ROM name>.png): nothing downloaded for it"
 expect "$CHECK $T/dump/flip00170.ppm 960 420 255 0 255 >/dev/null" "Alex Kidd shows the Master System (magenta) cover"
 expect "! $CHECK $T/dump/flip00220.ppm 960 420 255 0 0 >/dev/null 2>&1 && ! $CHECK $T/dump/flip00220.ppm 960 420 0 255 0 >/dev/null 2>&1" "no cover online: a placeholder card"
 expect "$CHECK $T/dump/flip00270.ppm 960 420 0 0 255 >/dev/null" "Golden Axe shows your own (blue) cover, not the server's"
@@ -408,18 +409,37 @@ waitfor "$T/root/logs/helper.log" "listening" || sleep 1
 URL="http://127.0.0.1:$PORT/\${repo}/Named_Boxarts/\${name}.png"
 SHELFQUIT="0:0;30:$OPTIONS;32:0;40:$CROSS;42:0"
 rc=$(OFFLINE= COVER_URL="$URL" run "$T" "$SHELFQUIT" "")
-expect "grep -q 'md - Sonic The Hedgehog (USA, Europe).png' $T/root/covers/wanted.txt" "first start: the missing cover goes to covers/wanted.txt"
+expect "grep -q 'MegaDrive/Sonic The Hedgehog (USA, Europe).png' $T/root/covers/wanted.txt" "first start: the missing cover goes to covers/wanted.txt"
 expect "grep -q 'restarting .* so the prefetch gets them' $T/root/logs/boot*.log" "first start: the app restarts itself for the new cover"
-expect "[ ! -f '$T/root/covers/md - Sonic The Hedgehog (USA, Europe).png' ]" "first start: nothing downloaded on the shelf (as PS5SX2)"
+expect "[ ! -f '$T/root/covers/MegaDrive/Sonic The Hedgehog (USA, Europe).png' ]" "first start: nothing downloaded on the shelf (as PS5SX2)"
 rm -f "$T/root/covers/restart.stamp"
 rc=$(OFFLINE= COVER_URL="$URL" run "$T" "$SHELFQUIT" "")
 expect "[ $rc = 0 ]" "second start: exit code 0 (got $rc)"
-expect "cmp -s '$T/root/covers/md - Sonic The Hedgehog (USA, Europe).png' '$SRV/Sonic The Hedgehog (USA, Europe).png'" "second start: the cover was prefetched and saved"
+expect "cmp -s '$T/root/covers/MegaDrive/Sonic The Hedgehog (USA, Europe).png' '$SRV/Sonic The Hedgehog (USA, Europe).png'" "second start: the cover was prefetched and saved"
 expect "awk '/\[prefetch\] 1 of 1 fetched/{p=NR} /\[jailbreak\] pid/{j=NR} END{exit !(p && j && p<j)}' $T/root/logs/boot.log" "the download happened before the request for /data"
 expect "! grep -q 'restarting' $T/root/logs/boot.log" "second start: no restart (nothing new)"
 expect "[ ! -s $T/root/covers/wanted.txt ]" "second start: the wanted list is empty"
 kill $SRVPID 2>/dev/null
 stop_helpers
+fi
+
+if want 19; then
+echo "== 19. the system folders: made in roms/ and covers/ at start; covers cached by older builds are moved"
+T=$(newroot t19)
+mkdir -p "$T/root/covers"
+$ROM "$T/root/roms/Sonic The Hedgehog (USA, Europe).md" ntsc >/dev/null
+python3 -c "from PIL import Image; Image.new('RGB',(512,357),(0,0,255)).save('$T/root/covers/md - Sonic The Hedgehog (USA, Europe).png')"
+echo x >"$T/root/covers/gg - Some Game (USA).missing"
+rc=$(run "$T" "0:0;60:$OPTIONS;62:0;70:$CROSS;72:0" "50")
+expect "[ $rc = 0 ]" "exit code 0 (got $rc)"
+for d in MegaDrive SegaCD MasterSystem GameGear SG1000; do
+	expect "[ -d $T/root/roms/$d ] && [ -d $T/root/covers/$d ]" "roms/$d and covers/$d made"
+done
+expect "[ -f '$T/root/covers/MegaDrive/Sonic The Hedgehog (USA, Europe).png' ] && [ ! -f '$T/root/covers/md - Sonic The Hedgehog (USA, Europe).png' ]" "an old 'md - ' cover moved to covers/MegaDrive"
+expect "[ -f '$T/root/covers/GameGear/Some Game (USA).missing' ]" "an old .missing marker moved too"
+expect "$CHECK $T/dump/flip00050.ppm 960 420 0 0 255 >/dev/null" "the moved cover is on the shelf"
+expect "grep -q 'moved 2 cached cover file(s)' $T/root/logs/boot.log" "logged the move"
+nosan "$T"
 fi
 
 echo

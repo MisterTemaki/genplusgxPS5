@@ -305,9 +305,19 @@ std::string CoverUrlFor(const GameInfo& g)
 	return url;
 }
 
+std::string OwnCover(const GameInfo& g)
+{
+	// your own: covers/<system folder>/<ROM name>.png|jpg, or covers/<ROM name>.png|jpg
+	const std::string covers = OrbisDir("covers");
+	std::string own = FindWithExts(covers + "/" + Info(g.system).folder + "/" + g.file_base);
+	if (own.empty())
+		own = FindWithExts(covers + "/" + g.file_base);
+	return own;
+}
+
 std::string CoverFileFor(const GameInfo& g)
 {
-	return std::string(Info(g.system).id) + " - " + ThumbnailName(g.nointro) + ".png";
+	return std::string(Info(g.system).folder) + "/" + ThumbnailName(g.nointro) + ".png";
 }
 
 int FetchCoverUrl(Http& http, std::string url, const std::string& label, std::vector<uint8_t>& data)
@@ -352,7 +362,7 @@ std::vector<WantedCover> MissingCovers(const std::vector<GameInfo>& games)
 		const std::string cache = covers + "/" + file;
 		if (NonEmptyFile(cache) || RecentlyMissing(cache.substr(0, cache.size() - 4) + ".missing"))
 			continue;
-		if (!FindWithExts(covers + "/" + g.file_base).empty())
+		if (!OwnCover(g).empty())
 			continue; // your own cover
 		const std::string dir = g.path.substr(0, g.path.find_last_of('/'));
 		if (!FindWithExts(dir + "/" + g.file_base).empty())
@@ -400,7 +410,7 @@ void CoverService::Start(const std::vector<GameInfo>& games, bool allow_download
 			const GameInfo& g = games[i];
 			const std::string cache = CachePath(int(i));
 			if (!cache.empty() && !NonEmptyFile(cache) && !RecentlyMissing(cache.substr(0, cache.size() - 4) + ".missing") &&
-				FindWithExts(OrbisDir("covers") + "/" + g.file_base).empty())
+				OwnCover(g).empty())
 				need++;
 		}
 	m_to_download = need;
@@ -473,6 +483,7 @@ bool CoverService::Download(int i)
 	const int status = FetchCoverUrl(m_http, url, ThumbnailName(g.nointro), data);
 	if (status == 200)
 	{
+		OrbisMkdirs(cache.substr(0, cache.find_last_of('/')));
 		WriteFileAtomic(cache, data);
 		m_downloaded++;
 		return true;
@@ -501,7 +512,7 @@ CoverPtr CoverService::Load(int i, bool* downloaded)
 		const char* source;
 	};
 	std::vector<Cand> cands;
-	const std::string manual = FindWithExts(OrbisDir("covers") + "/" + g.file_base);
+	const std::string manual = OwnCover(g);
 	if (!manual.empty())
 		cands.push_back({manual, "manual"});
 	const std::string dir = g.path.substr(0, g.path.find_last_of('/'));
@@ -579,7 +590,7 @@ void CoverService::Run()
 					m_fetched[size_t(i)] = 1;
 					const GameInfo& g = m_games[size_t(i)];
 					const std::string cache = CachePath(int(i));
-					if (cache.empty() || NonEmptyFile(cache) || !FindWithExts(OrbisDir("covers") + "/" + g.file_base).empty())
+					if (cache.empty() || NonEmptyFile(cache) || !OwnCover(g).empty())
 						continue;
 					fetch = int(i);
 				}

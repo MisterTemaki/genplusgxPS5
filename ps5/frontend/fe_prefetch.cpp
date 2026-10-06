@@ -14,6 +14,7 @@
 #include "ProsperoSce.h"
 
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <unistd.h>
 
@@ -31,9 +32,17 @@ double Now()
 // A file name we accept from the list: a plain name in the covers folder, ending in .png.
 bool SafeName(const std::string& f)
 {
-	// no folder part at all ('/' refused), so no way out of the covers folder
-	return f.size() > 4 && f.size() < 250 && f.find('/') == std::string::npos && f.find('\\') == std::string::npos &&
-		   f.compare(f.size() - 4, 4, ".png") == 0;
+	// "<system folder>/<name>.png": one of our system folders, then a name with no folder part, so no way out of
+	// the covers folder
+	const size_t slash = f.find('/');
+	if (slash == std::string::npos)
+		return false;
+	bool known = false;
+	for (int s = 0; s < int(System::Count); s++)
+		known = known || (strlen(Info(System(s)).folder) == slash && f.compare(0, slash, Info(System(s)).folder) == 0);
+	const std::string name = f.substr(slash + 1);
+	return known && name.size() > 4 && name.size() < 250 && name.find('/') == std::string::npos &&
+		   name.find('\\') == std::string::npos && name != ".png" && name.compare(name.size() - 4, 4, ".png") == 0;
 }
 
 bool WriteAtomic(const std::string& path, const std::vector<uint8_t>& data)
@@ -209,6 +218,7 @@ void SavePrefetched(const PrefetchResult& result)
 	for (const PrefetchItem& it : result.items)
 	{
 		const std::string path = dir + "/" + it.file;
+		OrbisMkdirs(path.substr(0, path.find_last_of('/')));
 		if (it.status == 200 && !it.data.empty())
 		{
 			if (WriteAtomic(path, it.data))

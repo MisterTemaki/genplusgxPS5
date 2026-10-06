@@ -50,9 +50,11 @@ std::string ThumbnailName(const std::string& nointro);
 // The download address of a game's box art: libretro-thumbnails/<its system's repository>/Named_Boxarts/<name>.png
 // (GENPLUS_COVER_URL on the host, with ${repo} and ${name}).
 std::string CoverUrlFor(const GameInfo& g);
-// Its file in the cover cache: "<system id> - <No-Intro name>.png" ("snes - Super Mario World (USA).png"), so the
-// same name on two systems doesn't collide.
+// Its file in the cover cache, relative to /data/genplus/covers: "<system folder>/<No-Intro name>.png"
+// ("MegaDrive/Sonic The Hedgehog (USA, Europe).png"), so the same name on two systems doesn't collide.
 std::string CoverFileFor(const GameInfo& g);
+// Your own cover for a game, or "": covers/<system folder>/<ROM name>.png|jpg, else covers/<ROM name>.png|jpg.
+std::string OwnCover(const GameInfo& g);
 // One GET, following libretro-thumbnails' git symlinks (an "image" that is the real file's name). The HTTP
 // status; `data` is the image when it is 200.
 int FetchCoverUrl(Http& http, std::string url, const std::string& label, std::vector<uint8_t>& data);
@@ -61,7 +63,7 @@ int FetchCoverUrl(Http& http, std::string url, const std::string& label, std::ve
 // covers/wanted.txt ("file<TAB>url" lines), which the next start's prefetch reads (fe_prefetch.h).
 struct WantedCover
 {
-	std::string file; // "snes - Super Mario World (USA).png"
+	std::string file; // "MegaDrive/Sonic The Hedgehog (USA, Europe).png"
 	std::string url;
 };
 std::vector<WantedCover> MissingCovers(const std::vector<GameInfo>& games);

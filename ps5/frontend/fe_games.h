@@ -47,9 +47,14 @@ struct SystemInfo
 	const char* name; // "Mega Drive"
 	const char* thumbs; // the libretro-thumbnails repository
 	Family family;
+	const char* folder; // "MegaDrive": its folder in roms/ and in covers/
 };
 const SystemInfo& Info(System s);
 const char* FamilyName(Family f); // "All games", "Mega Drive", "Sega CD"...
+
+// Creates roms/<folder> and covers/<folder> for every system (MegaDrive, SegaCD, MasterSystem, GameGear, SG1000)
+// and moves covers cached by an older build ("md - <name>.png" in covers/) into their system's folder.
+void PrepareFolders();
 
 // ".md" -> System::Md; false for anything that isn't a game we list.
 bool SystemForExt(const std::string& ext, System* out);

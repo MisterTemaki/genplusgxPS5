@@ -28,7 +28,7 @@ compiled as they are: all 100 of their C files build for the PS5 without a singl
 core through its libretro interface -- the most complete of its ports -- and plays the part RetroArch plays on a
 PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
 
-> **Status (1.0):** builds with the ps5-payload-dev SDK into a signed native app, and passes 126 host tests, which
+> **Status (1.0):** builds with the ps5-payload-dev SDK into a signed native app, and passes 137 host tests, which
 > run the same code (the Genesis Plus GX core included) on Linux with the PS5 calls simulated: a test program for
 > each of Mega Drive, Master System and Game Gear is played through the whole chain -- the shelf, the pad, the
 > core, the video and sound output. Not yet confirmed on a console. If something fails, the logs in
@@ -87,8 +87,21 @@ Every screen and notification of Genesis Plus GX PS5 is in English.
    icon and the backgrounds), shows **"Genesis Plus GX PS5 1.0 installed. Open it from the Genesis Plus GX PS5
    icon on the home screen."** and stays running as the helper.
 2. **Open the Genesis Plus GX PS5 icon.** The game shelf appears and the controller works.
-3. **Copy your games** to `/data/genplus/roms`, over FTP for example, or to a `genplus/roms` folder on a USB drive.
-   Subfolders work, and the systems can be mixed. The Sega CD BIOS goes to `/data/genplus/bios/`.
+3. **Copy your games** to their system's folder, over FTP for example. The app makes the folders on its first
+   start:
+
+   | System | Games in | Your covers in |
+   |---|---|---|
+   | Mega Drive / Genesis | `/data/genplus/roms/MegaDrive` | `/data/genplus/covers/MegaDrive` |
+   | Sega CD | `/data/genplus/roms/SegaCD` | `/data/genplus/covers/SegaCD` |
+   | Master System | `/data/genplus/roms/MasterSystem` | `/data/genplus/covers/MasterSystem` |
+   | Game Gear | `/data/genplus/roms/GameGear` | `/data/genplus/covers/GameGear` |
+   | SG-1000 | `/data/genplus/roms/SG1000` | `/data/genplus/covers/SG1000` |
+
+   On a USB drive the same layout goes under `genplus/roms` (`genplus/roms/MegaDrive`...). Subfolders inside
+   them are fine (`roms/MegaDrive/RPG/`). The game's system comes from its extension, so a game left directly in
+   `roms/` or in another folder is still found. A Sega CD `.cue` must sit next to its `.bin` tracks. The Sega CD
+   BIOS goes to `/data/genplus/bios/`.
 
 Tip: put `GenesisPlusGXPS5.elf` in your autoload, as PS5SX2 recommends for its payloads.
 
@@ -102,11 +115,11 @@ running. Send `GenesisPlusGXPS5.elf` and open the icon again.
 
 | Folder | Contents |
 |---|---|
-| `/data/genplus/roms` | your games |
+| `/data/genplus/roms/<system>` | your games: `MegaDrive`, `SegaCD`, `MasterSystem`, `GameGear`, `SG1000` |
 | `/data/genplus/bios` | `bios_CD_U.bin` / `bios_CD_E.bin` / `bios_CD_J.bin` for the Sega CD |
 | `/data/genplus/saves` | battery saves (`<game>.srm`, written within 3 seconds of a change and when the game closes) and the Sega CD backup RAM (`scd_U.brm`...) |
 | `/data/genplus/states` | save states, `<game>.state1` to `<game>.state10` |
-| `/data/genplus/covers` | downloaded covers and your own |
+| `/data/genplus/covers/<system>` | downloaded covers and your own, one folder per system (the same names as in `roms/`); `covers/` itself keeps `wanted.txt` and `crc-cache.txt` |
 | `/data/genplus/logs` | `boot.log` (the app), `installer.log` (installer/helper), `helper.log` (the helper the app starts), and the previous session's `.prev.log` files |
 | `/data/genplus/genplus-ps5.ini` | the menu settings |
 
@@ -142,8 +155,8 @@ changed, register it again once: select **Genesis Plus GX PS5** on the home scre
 The start screen is a 3D shelf of game covers, like PS5SX2's and Snes9x PS5's, with the author's line under the
 wordmark: **github.com/MisterTemaki**.
 
-- **All your games at once:** the shelf gathers the games in `/data/genplus/roms` and on USB drives
-  (`genplus/roms`), subfolders included, sorted by name. Each game's line says its system and region.
+- **All your games at once:** the shelf gathers the games in `/data/genplus/roms` (its system folders) and on USB
+  drives (`genplus/roms`), subfolders included, sorted by name. Each game's line says its system and region.
 - **One system at a time:** **Up / Down** switch between "All games" and each system that has games (Mega Drive,
   Sega CD, Master System -- SG-1000 included -- and Game Gear). The shelf remembers the last one.
 - **Official names:** a game is identified by its file name or, when that doesn't match, by the ROM's CRC32,
@@ -163,11 +176,14 @@ wordmark: **github.com/MisterTemaki**.
     app at the next start, and the prefetch fetches them.
   - **New games:** when the app finds covers it hasn't tried yet, it shows "Downloading covers..." and
     **restarts itself** (as PS5SX2 re-executes its own eboot); the covers arrive on that start.
-  - Covers are saved as `covers/<system> - <name>.png` and never downloaded twice. A cover the server doesn't
+  - Covers are saved in their system's folder, `covers/<system>/<name>.png`
+    (`covers/MegaDrive/Sonic The Hedgehog (USA, Europe).png`), and never downloaded twice. Covers cached by an
+    earlier build as `covers/md - <name>.png` are moved there at the next start. A cover the server doesn't
     have is marked (`.missing`) and only looked for again after 30 days; **Square** forces a new try.
   - Without a network nothing is tried and the shelf works the same.
-- **Your own covers:** a `.png` or `.jpg` named after the game, in `/data/genplus/covers/` or next to the ROM,
-  takes priority over downloads.
+- **Your own covers:** a `.png` or `.jpg` named after the ROM file, in `/data/genplus/covers/<system>/`
+  (`covers/MegaDrive/Sonic.png` for `roms/MegaDrive/Sonic.md`), in `covers/` itself, or next to the ROM, takes
+  priority over downloads.
 - **No cover:** the game gets a card with its title and system.
 - **Turning downloads off:** Settings, "Download covers".
 
@@ -281,7 +297,7 @@ make ps5 -j$(nproc)              # build/ps5/GenesisPlusGXPS5.elf (installer + h
 make send PS5_HOST=192.168.0.10  # sends it to elfldr (port 9021)
 make dist                        # build/dist/GenesisPlusGXPS5-v<version>.elf + the source zip
 make app                         # only build/app/PPSA99011/, to copy by hand
-make test                        # Linux builds (app, installer, helper) + 126 host tests (ASan/UBSan)
+make test                        # Linux builds (app, installer, helper) + 137 host tests (ASan/UBSan)
 ```
 
 The build has three stages:
@@ -334,9 +350,9 @@ The build has three stages:
 - **`ps5/app/sce_sys/`**: param.json, icon and backgrounds.
 - **`ps5/host/sce_host.cpp`** and **`ps5/tests/`**: the PS5 functions implemented on Linux, test programs for
   Mega Drive (NTSC and PAL), Master System and Game Gear (`make_test_rom.py`, tiny hand-assembled 68000 and Z80
-  programs), and the 126 tests: picture and input on each system, the Sega CD BIOS message and `.cue` tracks,
-  save states, PAL timing, zip, sound latency, integer scale and scanlines, the shelf's tabs, settings, fast
-  forward and rewind, covers per system, install, helper and sandbox request.
+  programs), and the 137 tests: picture and input on each system, the Sega CD BIOS message and `.cue` tracks,
+  save states, PAL timing, zip, sound latency, integer scale and scanlines, the shelf's tabs, the system
+  folders, settings, fast forward and rewind, covers per system, install, helper and sandbox request.
 
 ## License and credits
 

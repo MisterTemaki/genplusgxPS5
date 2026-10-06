@@ -35,11 +35,11 @@ namespace fe
 namespace
 {
 const SystemInfo kSystems[size_t(System::Count)] = {
-	{"md", "Mega Drive", "Sega_-_Mega_Drive_-_Genesis", Family::Md},
-	{"scd", "Sega CD", "Sega_-_Mega-CD_-_Sega_CD", Family::SegaCd},
-	{"sms", "Master System", "Sega_-_Master_System_-_Mark_III", Family::Sms},
-	{"gg", "Game Gear", "Sega_-_Game_Gear", Family::Gg},
-	{"sg", "SG-1000", "Sega_-_SG-1000", Family::Sms},
+	{"md", "Mega Drive", "Sega_-_Mega_Drive_-_Genesis", Family::Md, "MegaDrive"},
+	{"scd", "Sega CD", "Sega_-_Mega-CD_-_Sega_CD", Family::SegaCd, "SegaCD"},
+	{"sms", "Master System", "Sega_-_Master_System_-_Mark_III", Family::Sms, "MasterSystem"},
+	{"gg", "Game Gear", "Sega_-_Game_Gear", Family::Gg, "GameGear"},
+	{"sg", "SG-1000", "Sega_-_SG-1000", Family::Sms, "SG1000"},
 };
 
 struct ExtSys
@@ -568,8 +568,43 @@ bool RomCrc32(const std::string& path, uint32_t* whole, uint32_t* body, std::str
 	return true;
 }
 
+void PrepareFolders()
+{
+	const std::string roms = OrbisDir("roms"), covers = OrbisDir("covers");
+	for (const SystemInfo& s : kSystems)
+	{
+		OrbisMkdirs(roms + "/" + s.folder);
+		OrbisMkdirs(covers + "/" + s.folder);
+	}
+	// covers cached by 1.0's first builds: covers/"md - Sonic The Hedgehog (USA, Europe).png" (and .missing)
+	DIR* d = opendir(covers.c_str());
+	if (!d)
+		return;
+	std::vector<std::pair<std::string, std::string>> moves;
+	while (dirent* e = readdir(d))
+	{
+		const std::string name = e->d_name;
+		for (const SystemInfo& s : kSystems)
+		{
+			const std::string tag = std::string(s.id) + " - ";
+			if (name.size() > tag.size() && name.compare(0, tag.size(), tag) == 0)
+			{
+				moves.push_back({covers + "/" + name, covers + "/" + s.folder + "/" + name.substr(tag.size())});
+				break;
+			}
+		}
+	}
+	closedir(d);
+	for (const auto& m : moves)
+		if (rename(m.first.c_str(), m.second.c_str()) != 0)
+			OrbisLog("[games] can't move %s to %s", m.first.c_str(), m.second.c_str());
+	if (!moves.empty())
+		OrbisLog("[games] moved %zu cached cover file(s) into covers/<system>/", moves.size());
+}
+
 std::vector<GameInfo> ScanGames()
 {
+	PrepareFolders();
 	std::vector<GameInfo> games;
 	for (const std::string& root : OrbisRomRoots())
 		Walk(root, 0, root.rfind("/mnt/", 0) == 0, games);
