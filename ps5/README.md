@@ -34,7 +34,7 @@ PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
 > core, the video and sound output. Not yet confirmed on a console. If something fails, the logs in
 > `/data/genplus/logs/` say where.
 
-## How it works (the PS5SX2 model)
+## How it works
 
 The PS5 gives the controller only to the app in front, so Genesis Plus GX runs as a native app opened from its
 icon, and the payload you send is its installer:
