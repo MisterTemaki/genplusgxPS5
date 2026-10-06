@@ -22,7 +22,19 @@ int Clamp(int v, int lo, int hi)
 {
 	return v < lo ? lo : (v > hi ? hi : v);
 }
+
+const char* const kButtonKeys[Settings::kButtons] = {"btn_a", "btn_b", "btn_c", "btn_x", "btn_y", "btn_z", "btn_start",
+	"btn_mode"};
+constexpr int kPs5ButtonChoices = 9; // emu::kPs5ButtonCount
 } // namespace
+
+constexpr int Settings::kDefaultButtons[Settings::kButtons];
+
+void Settings::DefaultButtons()
+{
+	for (int i = 0; i < kButtons; i++)
+		buttons[i] = kDefaultButtons[i];
+}
 
 Settings& Config()
 {
@@ -78,6 +90,16 @@ void Settings::Load()
 			region = Clamp(n, 0, 3);
 		else if (key == "no_sprite_limit")
 			no_sprite_limit = n != 0;
+		else if (key == "pad_type")
+			pad_type = Clamp(n, 0, 2);
+		else if (key == "multitap")
+			multitap = Clamp(n, 0, 2);
+		else if (key.compare(0, 4, "btn_") == 0)
+		{
+			for (int i = 0; i < kButtons; i++)
+				if (key == kButtonKeys[i])
+					buttons[i] = Clamp(n, 0, kPs5ButtonChoices - 1);
+		}
 		else if (key == "state_slot")
 			state_slot = Clamp(n, 1, 10);
 		else if (key == "covers_download")
@@ -117,6 +139,10 @@ void Settings::Save() const
 	fprintf(f, "rewind=%d\n", rewind ? 1 : 0);
 	fprintf(f, "region=%d\n", region);
 	fprintf(f, "no_sprite_limit=%d\n", no_sprite_limit ? 1 : 0);
+	fprintf(f, "pad_type=%d\n", pad_type);
+	fprintf(f, "multitap=%d\n", multitap);
+	for (int i = 0; i < kButtons; i++)
+		fprintf(f, "%s=%d\n", kButtonKeys[i], buttons[i]);
 	fprintf(f, "state_slot=%d\n", state_slot);
 	fprintf(f, "covers_download=%d\n", covers_download ? 1 : 0);
 	fprintf(f, "shelf_family=%d\n", shelf_family);

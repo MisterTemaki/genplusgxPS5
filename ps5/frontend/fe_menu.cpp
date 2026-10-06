@@ -215,6 +215,12 @@ enum SettingRow
 	S_REWIND,
 	S_REGION,
 	S_SPRITES,
+	H_CONTROLS,
+	S_PADTYPE,
+	S_MULTITAP,
+	S_BTN_FIRST,
+	S_BTN_LAST = S_BTN_FIRST + emu::kConsoleButtonCount - 1,
+	S_BTN_DEFAULT,
 	H_LIBRARY,
 	S_COVERS,
 	S_COUNT
@@ -252,9 +258,21 @@ Row SettingRowFor(int s)
 		case S_REWIND: return {"Rewind (hold L2 + R2)", OnOff(c.rewind)};
 		case S_REGION: return {"Console region", emu::kRegions[c.region % emu::kRegionCount].name};
 		case S_SPRITES: return {"Remove the sprite limit", OnOff(c.no_sprite_limit)};
+		case H_CONTROLS: return {"CONTROLS (Mega Drive pad button  ->  PS5 button)", "", true, true};
+		case S_PADTYPE: return {"Mega Drive / Sega CD pad", emu::kPadTypes[c.pad_type % emu::kPadTypeCount].name};
+		case S_MULTITAP: return {"4-player adapter", emu::kMultitaps[c.multitap % emu::kMultitapCount].name};
+		case S_BTN_DEFAULT: return {"Default button layout", ""};
 		case H_LIBRARY: return {"LIBRARY", "", true, true};
 		case S_COVERS: return {"Download covers", OnOff(c.covers_download)};
-		default: return {"", ""};
+		default:
+			if (s >= S_BTN_FIRST && s <= S_BTN_LAST)
+			{
+				const int i = s - S_BTN_FIRST;
+				const int b = c.buttons[i];
+				return {std::string("Button ") + emu::kConsoleButtons[i].name,
+					emu::kPs5Buttons[b >= 0 && b < emu::kPs5ButtonCount ? b : emu::kPs5ButtonCount - 1].name};
+			}
+			return {"", ""};
 	}
 }
 
@@ -292,7 +310,16 @@ void ChangeSetting(int s, int dir)
 		case S_REGION: c.region = Cycle(c.region, dir, emu::kRegionCount); break;
 		case S_SPRITES: c.no_sprite_limit = !c.no_sprite_limit; break;
 		case S_COVERS: c.covers_download = !c.covers_download; break;
-		default: break;
+		case S_PADTYPE: c.pad_type = Cycle(c.pad_type, dir, emu::kPadTypeCount); break;
+		case S_MULTITAP: c.multitap = Cycle(c.multitap, dir, emu::kMultitapCount); break;
+		case S_BTN_DEFAULT: c.DefaultButtons(); break;
+		default:
+			if (s >= S_BTN_FIRST && s <= S_BTN_LAST)
+			{
+				int& b = c.buttons[s - S_BTN_FIRST];
+				b = Cycle(b, dir, emu::kPs5ButtonCount);
+			}
+			break;
 	}
 	emu::ApplySettings();
 }

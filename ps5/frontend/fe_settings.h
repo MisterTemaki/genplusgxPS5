@@ -28,6 +28,15 @@ struct Settings
 	int region = 0; // emu::kRegions: auto, USA, Europe, Japan
 	bool no_sprite_limit = false;
 	int state_slot = 1; // 1..10
+	// controls
+	int pad_type = 0; // emu::kPadTypes: auto (the game's header), 3 buttons, 6 buttons (Mega Drive, Sega CD)
+	int multitap = 0; // emu::kMultitaps: off, 4 Way Play, Team Player
+	// the PS5 button (index in emu::kPs5Buttons) of each console button, in emu::kConsoleButtons' order:
+	// A, B, C, X, Y, Z, Start, Mode. By position by default: Square, Cross, Circle, L1, Triangle, R1, OPTIONS, touchpad.
+	static constexpr int kButtons = 8;
+	static constexpr int kDefaultButtons[kButtons] = {2, 0, 1, 4, 3, 5, 6, 7};
+	int buttons[kButtons] = {2, 0, 1, 4, 3, 5, 6, 7};
+	void DefaultButtons();
 	// library
 	bool covers_download = true; // fetch box art from libretro-thumbnails
 	int shelf_family = 0; // fe::Family the shelf shows

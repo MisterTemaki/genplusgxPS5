@@ -28,6 +28,28 @@ extern const Choice kFmChips[]; // genesis_plus_gx_ym2612
 extern const int kFmChipCount;
 extern const Choice kRegions[]; // genesis_plus_gx_region_detect
 extern const int kRegionCount;
+extern const Choice kPadTypes[]; // Mega Drive / Sega CD pad: auto (the game's header), 3 buttons, 6 buttons
+extern const int kPadTypeCount;
+extern const Choice kMultitaps[]; // off, EA 4-Way Play, Sega Team Player
+extern const int kMultitapCount;
+
+// The buttons of the console's pad the player can move, and the PS5 buttons they can go to.
+struct PadButton
+{
+	const char* name; // "Square"
+	unsigned bit; // SCE_PAD_BUTTON_*; 0 = not assigned
+};
+extern const PadButton kPs5Buttons[]; // Cross, Circle, Square, Triangle, L1, R1, OPTIONS, touchpad, (none)
+extern const int kPs5ButtonCount;
+struct ConsoleButton
+{
+	const char* name; // "A", "B (Master System 1)"...
+	const char* key; // its key in genplus-ps5.ini: "btn_a"
+	unsigned retro_id; // the RetroPad button Genesis Plus GX reads for it
+	int default_ps5; // index in kPs5Buttons
+};
+constexpr int kConsoleButtonCount = 8; // A, B, C, X, Y, Z, Start, Mode
+extern const ConsoleButton kConsoleButtons[kConsoleButtonCount];
 
 bool InitCore();
 void DeinitCore();

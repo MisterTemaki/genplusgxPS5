@@ -28,7 +28,7 @@ compiled as they are: all 100 of their C files build for the PS5 without a singl
 core through its libretro interface -- the most complete of its ports -- and plays the part RetroArch plays on a
 PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
 
-> **Status (1.0):** builds with the ps5-payload-dev SDK into a signed native app, and passes 137 host tests, which
+> **Status (1.0):** builds with the ps5-payload-dev SDK into a signed native app, and passes 147 host tests, which
 > run the same code (the Genesis Plus GX core included) on Linux with the PS5 calls simulated: a test program for
 > each of Mega Drive, Master System and Game Gear is played through the whole chain -- the shelf, the pad, the
 > core, the video and sound output. Not yet confirmed on a console. If something fails, the logs in
@@ -205,9 +205,10 @@ Snes9x PS5.
 | Square | download this game's cover again |
 | OPTIONS | quit Genesis Plus GX PS5 (asks first) |
 
-**In a game:** buttons by position, as RetroArch maps them for Genesis Plus GX -- the Mega Drive's A / B / C row
-on Square / Cross / Circle, and the 6-button pad's X / Y / Z row on L1 / Triangle / R1. The core detects 3- and
-6-button games by itself.
+**In a game:** by default, buttons by position, as RetroArch maps them for Genesis Plus GX -- the Mega Drive's
+A / B / C row on Square / Cross / Circle, and the 6-button pad's X / Y / Z row on L1 / Triangle / R1. Every
+button can be moved (Settings, **CONTROLS**, below). The pad is a 3- or 6-button one as each game's header asks,
+unless the settings choose one.
 
 | PS5 | Mega Drive / Sega CD | Master System, Game Gear, SG-1000 |
 |---|---|---|
@@ -229,7 +230,8 @@ on Square / Cross / Circle, and the 6-button pad's X / Y / Z row on L1 / Triangl
 | hold R2 | fast forward (speed in the settings) |
 | hold L2 + R2 | rewind |
 
-Two players: player 2 is the second signed-in user's controller. The light bar shows the player.
+Two players: player 2 is the second signed-in user's controller. With a 4-player adapter (Settings, CONTROLS),
+up to four: players 2 to 4 are the other signed-in users. The light bar shows the player.
 
 ## Settings
 
@@ -243,6 +245,19 @@ Triangle on the shelf, or "Settings" in the pause menu:
   -- the Nuked cores are cycle-accurate and heavier), low-pass filter.
 - **Emulation:** fast-forward speed (150% to unlimited), rewind on/off, console region (auto, USA, Europe, Japan),
   remove the sprite limit.
+- **Controls:**
+  - **Mega Drive / Sega CD pad:** Auto (the default: a 6-button pad for games whose header says they support one,
+    a 3-button pad for the rest, as the core decides), 3 buttons, or 6 buttons. Some old games misbehave with a
+    6-button pad, and some 6-button games don't say so in their header: this setting fixes either case. Master
+    System, Game Gear and SG-1000 games always get their own 2-button pad.
+  - **4-player adapter:** Off, 4 Way Play (EA's, for EA Sports and other EA games) or Team Player (Sega's, for
+    Gauntlet IV, Columns III...). The pads on it are of the type chosen above (3-button with Auto).
+  - **Button layout:** for each button of the Mega Drive pad (A, B, C, X, Y, Z, Start, Mode), the PS5 button that
+    presses it: Cross, Circle, Square, Triangle, L1, R1, OPTIONS, the touchpad, or none. B and C are the Master
+    System's 1 and 2, and Start its Pause. **Default button layout** puts them back. The layout applies to every
+    player. L2, R2, L3 and R3 stay for the hot keys and menus, and the menus always use Cross / Circle.
+  - Changes apply at once, in the game too, and are saved in `genplus-ps5.ini` (`pad_type`, `multitap`,
+    `btn_a`...`btn_mode`).
 - **Library:** download covers.
 
 The settings go to the core as its libretro options (`genesis_plus_gx_*`), so they behave as in RetroArch.
@@ -279,9 +294,9 @@ covers, emu, menu), and the return addresses, which map into `build/app/genplus-
 ## Known limitations
 
 - Not yet confirmed on a console (version 1.0 is the first build).
-- The PS and Create buttons are not reported by `scePadReadState`, so Mode is on the touchpad.
-- Two players; no multitaps (Team Player, 4 Way Play), light guns (Menacer, Justifier, Light Phaser), mice or
-  Sega Pico pen, although the core supports them.
+- The PS and Create buttons are not reported by `scePadReadState`, so Mode is on the touchpad by default (and the button layout can't use them).
+- No light guns (Menacer, Justifier, Light Phaser), mice or Sega Pico pen, although the core supports them; no
+  Master System multitap.
 - No 32X (Genesis Plus GX doesn't emulate it), no cheats or MegaSD/MSU-MD menus in the frontend yet.
 - `.7z` archives are not read (`.zip` is); Sega CD games are not read from inside a zip.
 
@@ -297,7 +312,7 @@ make ps5 -j$(nproc)              # build/ps5/GenesisPlusGXPS5.elf (installer + h
 make send PS5_HOST=192.168.0.10  # sends it to elfldr (port 9021)
 make dist                        # build/dist/GenesisPlusGXPS5-v<version>.elf + the source zip
 make app                         # only build/app/PPSA99011/, to copy by hand
-make test                        # Linux builds (app, installer, helper) + 137 host tests (ASan/UBSan)
+make test                        # Linux builds (app, installer, helper) + 147 host tests (ASan/UBSan)
 ```
 
 The build has three stages:
@@ -350,9 +365,9 @@ The build has three stages:
 - **`ps5/app/sce_sys/`**: param.json, icon and backgrounds.
 - **`ps5/host/sce_host.cpp`** and **`ps5/tests/`**: the PS5 functions implemented on Linux, test programs for
   Mega Drive (NTSC and PAL), Master System and Game Gear (`make_test_rom.py`, tiny hand-assembled 68000 and Z80
-  programs), and the 137 tests: picture and input on each system, the Sega CD BIOS message and `.cue` tracks,
+  programs), and the 147 tests: picture and input on each system, the Sega CD BIOS message and `.cue` tracks,
   save states, PAL timing, zip, sound latency, integer scale and scanlines, the shelf's tabs, the system
-  folders, settings, fast forward and rewind, covers per system, install, helper and sandbox request.
+  folders, the controls (pad type, 4-player adapter, button layout), settings, fast forward and rewind, covers per system, install, helper and sandbox request.
 
 ## License and credits
 

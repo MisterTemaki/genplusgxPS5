@@ -81,6 +81,46 @@ const Choice kRegions[] = {
 	{"Japan (NTSC)", "ntsc-j"},
 };
 const int kRegionCount = int(sizeof(kRegions) / sizeof(kRegions[0]));
+
+const Choice kPadTypes[] = {
+	{"Auto (the game's)", ""},
+	{"3 buttons", ""},
+	{"6 buttons", ""},
+};
+const int kPadTypeCount = int(sizeof(kPadTypes) / sizeof(kPadTypes[0]));
+
+const Choice kMultitaps[] = {
+	{"Off", ""},
+	{"4 Way Play (EA)", ""},
+	{"Team Player (Sega)", ""},
+};
+const int kMultitapCount = int(sizeof(kMultitaps) / sizeof(kMultitaps[0]));
+
+const PadButton kPs5Buttons[] = {
+	{"Cross", SCE_PAD_BUTTON_CROSS},
+	{"Circle", SCE_PAD_BUTTON_CIRCLE},
+	{"Square", SCE_PAD_BUTTON_SQUARE},
+	{"Triangle", SCE_PAD_BUTTON_TRIANGLE},
+	{"L1", SCE_PAD_BUTTON_L1},
+	{"R1", SCE_PAD_BUTTON_R1},
+	{"OPTIONS", SCE_PAD_BUTTON_OPTIONS},
+	{"Touchpad", SCE_PAD_BUTTON_TOUCH_PAD},
+	{"None", 0},
+};
+const int kPs5ButtonCount = int(sizeof(kPs5Buttons) / sizeof(kPs5Buttons[0]));
+
+// Genesis Plus GX's RetroPad layout (libretro.c): B/A/Y = Mega Drive B/C/A, L/X/R = X/Y/Z, Select = Mode;
+// Master System 1/2 = B/A, Start = Pause.
+const ConsoleButton kConsoleButtons[kConsoleButtonCount] = {
+	{"A", "btn_a", RETRO_DEVICE_ID_JOYPAD_Y, 2},
+	{"B  (Master System 1)", "btn_b", RETRO_DEVICE_ID_JOYPAD_B, 0},
+	{"C  (Master System 2)", "btn_c", RETRO_DEVICE_ID_JOYPAD_A, 1},
+	{"X", "btn_x", RETRO_DEVICE_ID_JOYPAD_L, 4},
+	{"Y", "btn_y", RETRO_DEVICE_ID_JOYPAD_X, 3},
+	{"Z", "btn_z", RETRO_DEVICE_ID_JOYPAD_R, 5},
+	{"Start  (Pause)", "btn_start", RETRO_DEVICE_ID_JOYPAD_START, 6},
+	{"Mode", "btn_mode", RETRO_DEVICE_ID_JOYPAD_SELECT, 7},
+};
 } // namespace emu
 
 namespace
@@ -180,6 +220,7 @@ struct State
 	int16_t prev_l = 0, prev_r = 0;
 	std::vector<int16_t> out;
 	std::vector<int16_t> silence; // the zeros that refill a dry ring
+	int pads_applied = -1; // the pad type / adapter last given to the core
 
 	// pads
 	ps5input::PadState pads[ps5input::kMaxPads];
@@ -385,39 +426,36 @@ void InputPoll()
 		g.pads[p] = ps5input::Snapshot(p);
 }
 
-// RetroPad by position (Genesis Plus GX maps it to each pad: B/A/Y = Mega Drive B/C/A, X/L/R = Y/X/Z,
-// Select = Mode; Master System 1/2 = B/A).
+// The RetroPad Genesis Plus GX reads, from the player's button layout (Settings, CONTROLS; by position by
+// default: Square/Cross/Circle = A/B/C, L1/Triangle/R1 = X/Y/Z, OPTIONS = Start, touchpad = Mode).
 uint16_t RetroPadBits(const ps5input::PadState& p, bool dpad_off)
 {
-	struct Map
+	if (!p.connected)
+		return 0;
+	const fe::Settings& cfg = fe::Config();
+	uint16_t bits = 0;
+	for (int i = 0; i < emu::kConsoleButtonCount; i++)
+	{
+		const int b = cfg.buttons[i];
+		const unsigned bit = b >= 0 && b < emu::kPs5ButtonCount ? emu::kPs5Buttons[b].bit : 0;
+		if (bit && (p.raw_buttons & bit))
+			bits |= uint16_t(1u << emu::kConsoleButtons[i].retro_id);
+	}
+	struct Dir
 	{
 		unsigned id;
 		uint32_t bit;
-		bool dpad;
 	};
-	static const Map kMap[] = {
-		{RETRO_DEVICE_ID_JOYPAD_B, SCE_PAD_BUTTON_CROSS, false},
-		{RETRO_DEVICE_ID_JOYPAD_A, SCE_PAD_BUTTON_CIRCLE, false},
-		{RETRO_DEVICE_ID_JOYPAD_Y, SCE_PAD_BUTTON_SQUARE, false},
-		{RETRO_DEVICE_ID_JOYPAD_X, SCE_PAD_BUTTON_TRIANGLE, false},
-		{RETRO_DEVICE_ID_JOYPAD_L, SCE_PAD_BUTTON_L1, false},
-		{RETRO_DEVICE_ID_JOYPAD_R, SCE_PAD_BUTTON_R1, false},
-		{RETRO_DEVICE_ID_JOYPAD_START, SCE_PAD_BUTTON_OPTIONS, false},
-		{RETRO_DEVICE_ID_JOYPAD_SELECT, SCE_PAD_BUTTON_TOUCH_PAD, false},
-		{RETRO_DEVICE_ID_JOYPAD_UP, SCE_PAD_BUTTON_UP, true},
-		{RETRO_DEVICE_ID_JOYPAD_DOWN, SCE_PAD_BUTTON_DOWN, true},
-		{RETRO_DEVICE_ID_JOYPAD_LEFT, SCE_PAD_BUTTON_LEFT, true},
-		{RETRO_DEVICE_ID_JOYPAD_RIGHT, SCE_PAD_BUTTON_RIGHT, true},
+	static const Dir kDirs[] = {
+		{RETRO_DEVICE_ID_JOYPAD_UP, SCE_PAD_BUTTON_UP},
+		{RETRO_DEVICE_ID_JOYPAD_DOWN, SCE_PAD_BUTTON_DOWN},
+		{RETRO_DEVICE_ID_JOYPAD_LEFT, SCE_PAD_BUTTON_LEFT},
+		{RETRO_DEVICE_ID_JOYPAD_RIGHT, SCE_PAD_BUTTON_RIGHT},
 	};
-	if (!p.connected)
-		return 0;
-	uint16_t bits = 0;
-	for (const Map& m : kMap)
-	{
-		const uint32_t src = m.dpad ? p.buttons : p.raw_buttons; // the D-pad includes the left stick
-		if ((src & m.bit) && !(m.dpad && dpad_off))
-			bits |= uint16_t(1u << m.id);
-	}
+	if (!dpad_off)
+		for (const Dir& d : kDirs)
+			if (p.buttons & d.bit) // the D-pad includes the left stick
+				bits |= uint16_t(1u << d.id);
 	return bits;
 }
 
@@ -653,6 +691,34 @@ void DeinitCore()
 	g.inited = false;
 }
 
+// The pads plugged into the console's two ports (libretro.c's device types): for Mega Drive and Sega CD games the
+// pad type and multiplayer adapter from the settings; the 8-bit systems always get their own 2-button pad.
+void ApplyControllers()
+{
+	const fe::Settings& s = fe::Config();
+	const bool md = g.system == fe::System::Md || g.system == fe::System::SegaCd;
+	const int pad = md ? s.pad_type % kPadTypeCount : 0;
+	const int tap = md ? s.multitap % kMultitapCount : 0;
+	const int key = pad * 10 + tap;
+	if (key == g.pads_applied)
+		return;
+	g.pads_applied = key;
+	constexpr unsigned kJoypad = RETRO_DEVICE_JOYPAD;
+	constexpr unsigned k3B = RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 0), k6B = RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 1);
+	constexpr unsigned kWay3B = RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 3), kWay6B = RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 4);
+	constexpr unsigned kTeam3B = RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 5), kTeam6B = RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 6);
+	const unsigned single = pad == 1 ? k3B : (pad == 2 ? k6B : kJoypad);
+	// an adapter needs a fixed pad type: "auto" gives it 3-button pads, as most 4-player games expect
+	if (tap == 1)
+		retro_set_controller_port_device(0, pad == 2 ? kWay6B : kWay3B); // takes both ports
+	else
+	{
+		retro_set_controller_port_device(0, tap == 2 ? (pad == 2 ? kTeam6B : kTeam3B) : single);
+		retro_set_controller_port_device(1, single);
+	}
+	OrbisLog("[emu] controllers: %s pad%s%s", kPadTypes[pad].name, tap ? ", " : "", tap ? kMultitaps[tap].name : "");
+}
+
 void ApplySettings()
 {
 	const fe::Settings& s = fe::Config();
@@ -676,6 +742,8 @@ void ApplySettings()
 	set("genesis_plus_gx_render", "single field");
 	if (!s.rewind)
 		RewindClear();
+	if (g.loaded)
+		ApplyControllers();
 }
 
 bool LoadGame(const std::string& path, std::string* error)
@@ -761,8 +829,8 @@ bool LoadGame(const std::string& path, std::string* error)
 		g.rom.clear();
 		return false;
 	}
-	for (unsigned port = 0; port < 2; port++)
-		retro_set_controller_port_device(port, RETRO_DEVICE_JOYPAD);
+	g.pads_applied = -1;
+	ApplyControllers();
 	retro_system_av_info av = {};
 	retro_get_system_av_info(&av);
 	g.fps = av.timing.fps > 1 ? av.timing.fps : 60.0;
