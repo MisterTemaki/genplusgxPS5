@@ -5,6 +5,8 @@ Genesis, Sega CD, Master System, Game Gear and SG-1000 in one app, with a 3D gam
 DualSense support, and an installer payload. Everything about the port (install, controls, the Sega CD BIOS,
 building) is in **[ps5/README.md](ps5/README.md)**. Port by [github.com/MisterTemaki](https://github.com/MisterTemaki).
 
+**Inside the emulator, to access the main menu press L3 + R3.**
+
 The home screen (the 3D game shelf with automatic covers) and the app's design are based on the idea of
 [PS5SX2](https://github.com/Swordpdf/PS5SX2), the PCSX2 port for the PS5, by way of
 [Snes9x PS5](https://github.com/MisterTemaki/snes9xPS5) and Mesen2 PS5.
@@ -49,3 +51,7 @@ You can also test latest compiled builds for Gamecube / Wii and Retroarch (Windo
 ----
 
 [![btn_donate_LG.gif](https://www.paypalobjects.com/en_US/i/btn/btn_donate_LG.gif)](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=2966212) If you like this project and want to show your appreciation, Paypal donations are always welcomed.
+
+---
+
+Made in Brazil

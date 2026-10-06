@@ -193,6 +193,8 @@ Snes9x PS5.
 
 ## Controls
 
+**Inside the emulator, to access the main menu press L3 + R3.**
+
 **On the shelf**
 
 | Button | Does |
@@ -398,3 +400,7 @@ The build has three stages:
   included. **Names and CRCs:** [libretro-database](https://github.com/libretro/libretro-database) (No-Intro,
   Redump).
 - **Port:** [github.com/MisterTemaki](https://github.com/MisterTemaki).
+
+---
+
+Made in Brazil
