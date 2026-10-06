@@ -404,3 +404,5 @@ The build has three stages:
 ---
 
 Made in Brazil
+
+![Genesis Plus GX for PS5](app/sce_sys/background-source.png)

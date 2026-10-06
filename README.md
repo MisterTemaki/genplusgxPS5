@@ -55,3 +55,5 @@ You can also test latest compiled builds for Gamecube / Wii and Retroarch (Windo
 ---
 
 Made in Brazil
+
+![Genesis Plus GX for PS5](ps5/app/sce_sys/background-source.png)
