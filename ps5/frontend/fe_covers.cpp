@@ -116,6 +116,19 @@ std::string FindWithExts(const std::string& base)
 	return "";
 }
 
+// Square on the shelf: "<cover>.refetch" asks for the cover again. The cover itself stays where it is until a new
+// one is saved over it (atomically), so a refetch that fails (offline, 404, no restart) never loses it.
+std::string RefetchMarker(const std::string& cover)
+{
+	return cover.substr(0, cover.size() - 4) + ".refetch";
+}
+
+bool Exists(const std::string& path)
+{
+	struct stat st = {};
+	return stat(path.c_str(), &st) == 0;
+}
+
 bool RecentlyMissing(const std::string& marker)
 {
 	struct stat st = {};
@@ -374,10 +387,12 @@ std::vector<WantedCover> MissingCovers(const std::vector<GameInfo>& games)
 			continue;
 		const std::string file = CoverFileFor(g);
 		const std::string cache = covers + "/" + file;
-		if (NonEmptyFile(cache) || RecentlyMissing(cache.substr(0, cache.size() - 4) + ".missing"))
+		if (!Exists(RefetchMarker(cache)) &&
+			(NonEmptyFile(cache) || RecentlyMissing(cache.substr(0, cache.size() - 4) + ".missing")))
 			continue;
-		if (!OwnCover(g).empty())
-			continue; // your own cover
+		const std::string own = OwnCover(g);
+		if (!own.empty() && own != cache)
+			continue; // your own cover (a ROM named as its official name shares the downloaded cover's file)
 		const std::string dir = g.path.substr(0, g.path.find_last_of('/'));
 		if (!FindWithExts(dir + "/" + g.file_base).empty())
 			continue; // a cover beside the ROM
@@ -411,12 +426,17 @@ bool CoverService::NeedsDownload(int i) const
 {
 	const GameInfo& g = m_games[size_t(i)];
 	const std::string cache = CachePath(i);
-	if (cache.empty() || NonEmptyFile(cache) || RecentlyMissing(cache.substr(0, cache.size() - 4) + ".missing"))
+	if (cache.empty())
 		return false;
-	if (!OwnCover(g).empty())
-		return false;
+	const std::string own = OwnCover(g);
+	if (!own.empty() && own != cache)
+		return false; // your own cover, named after the ROM (not the downloaded one, when the names are the same)
 	const std::string dir = g.path.substr(0, g.path.find_last_of('/'));
-	return FindWithExts(dir + "/" + g.file_base).empty(); // a picture beside the ROM is used before a download
+	if (!FindWithExts(dir + "/" + g.file_base).empty())
+		return false; // a picture beside the ROM is used before a download
+	if (Exists(RefetchMarker(cache)))
+		return true; // asked for again (Square)
+	return !NonEmptyFile(cache) && !RecentlyMissing(cache.substr(0, cache.size() - 4) + ".missing");
 }
 
 void CoverService::Start(const std::vector<GameInfo>& games, bool allow_download)
@@ -475,22 +495,15 @@ void CoverService::Refetch(int i)
 {
 	if (i < 0 || size_t(i) >= m_games.size())
 		return;
-	if (!m_allow_download || m_offline)
-	{
-		// nothing could replace it: keep the cover the game has
-		OrbisLog("[covers] refetch of %s: downloads are off or the console is offline", m_games[size_t(i)].nointro.c_str());
-		return;
-	}
 	const std::string cache = CachePath(i);
-	if (!cache.empty())
-	{
-		// set aside, not deleted: Download puts it back when the new one can't be had
-		if (NonEmptyFile(cache))
-			rename(cache.c_str(), (cache + ".old").c_str());
-		unlink((cache.substr(0, cache.size() - 4) + ".missing").c_str());
-		if (NeedsDownload(i))
-			m_to_download++;
-	}
+	if (cache.empty())
+		return;
+	// the cover stays: the marker asks for it again (here, or through the prefetch at the next start)
+	if (FILE* f = fopen(RefetchMarker(cache).c_str(), "w"))
+		fclose(f);
+	unlink((cache.substr(0, cache.size() - 4) + ".missing").c_str());
+	if (NeedsDownload(i))
+		m_to_download++;
 	std::lock_guard<std::mutex> lock(m_lock);
 	m_fetched[size_t(i)] = 0;
 	if (m_state[size_t(i)] == 2)
@@ -504,18 +517,9 @@ bool CoverService::Download(int i)
 	const std::string cache = CachePath(i);
 	if (cache.empty())
 		return false;
-	// the cover Refetch set aside: back in place unless a new one was saved
-	const std::string old = cache + ".old";
-	auto restore = [&] {
-		if (!NonEmptyFile(cache) && NonEmptyFile(old))
-			rename(old.c_str(), cache.c_str());
-	};
 	const std::string marker = cache.substr(0, cache.size() - 4) + ".missing";
 	if (m_offline || RecentlyMissing(marker))
-	{
-		restore();
 		return false;
-	}
 	const std::string url = CoverUrlFor(g);
 	std::vector<uint8_t> data;
 	GENPLUS_STAGE(Cover, "http get cover");
@@ -525,17 +529,16 @@ bool CoverService::Download(int i)
 		OrbisMkdirs(cache.substr(0, cache.find_last_of('/')));
 		if (WriteFileAtomic(cache, data))
 		{
-			unlink(old.c_str());
+			unlink(RefetchMarker(cache).c_str()); // the new cover is in place
 			m_downloaded++;
 			return true;
 		}
 		OrbisLog("[covers] can't write %s", cache.c_str());
-		restore();
 		return false;
 	}
-	restore();
 	if (status == 404)
 	{
+		unlink(RefetchMarker(cache).c_str()); // the server has none: the cover there (if any) stays
 		FILE* f = fopen(marker.c_str(), "w");
 		if (f)
 		{
@@ -569,7 +572,7 @@ CoverPtr CoverService::Load(int i, bool* downloaded)
 	if (!cache.empty() && NonEmptyFile(cache))
 		cands.push_back({cache, "cache"});
 	bool try_download = false;
-	if (cands.empty() && m_allow_download)
+	if ((cands.empty() || (NonEmptyFile(cache) && NeedsDownload(i))) && m_allow_download)
 	{
 		std::lock_guard<std::mutex> lock(m_lock); // Refetch (the shelf's thread) writes m_fetched too
 		try_download = !m_fetched[size_t(i)];
@@ -580,11 +583,9 @@ CoverPtr CoverService::Load(int i, bool* downloaded)
 		const bool counted = NeedsDownload(i);
 		if (Download(i))
 		{
-			cands.push_back({cache, "download"});
+			cands.insert(cands.begin(), {cache, "download"});
 			*downloaded = true;
 		}
-		else if (NonEmptyFile(cache))
-			cands.push_back({cache, "cache"}); // the cover a failed refetch put back
 		if (counted)
 			DecrementToZero(m_to_download);
 	}

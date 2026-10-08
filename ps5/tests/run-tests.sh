@@ -662,6 +662,36 @@ python3 -c "from PIL import Image; Image.new('RGB',(512,357),(255,0,0)).save('$T
 rc=$(run "$T" "0:0;40:$SQUARE;42:0;80:$OPTIONS;82:0;90:$CROSS;92:0" "")
 expect "[ -s '$T/root/covers/MegaDrive/Sonic The Hedgehog (USA, Europe).png' ]" "offline, Square doesn't delete the cover"
 nosan "$T"
+# online, Square on a ROM named as its official name (its downloaded cover is also "the cover named after the ROM"):
+# the server has none (404) -> the cover stays; the server has it -> the new one replaces it
+cp "$T/root/covers/MegaDrive/Sonic The Hedgehog (USA, Europe).png" "$T/old.png"
+SRV=$T/srv/Sega_-_Mega_Drive_-_Genesis/Named_Boxarts; mkdir -p "$SRV"
+PORT=18094
+(cd "$T/srv" && exec python3 -m http.server $PORT --bind 127.0.0.1 >/dev/null 2>&1) &
+SRVPID=$!
+sleep 1
+URL="http://127.0.0.1:$PORT/\${repo}/Named_Boxarts/\${name}.png"
+SQ="0:0;40:$SQUARE;42:0;200:$OPTIONS;202:0;210:$CROSS;212:0"
+rc=$(OFFLINE= COVER_URL="$URL" GENPLUS_HOST_REALTIME=1 run "$T" "$SQ" "")
+expect "cmp -s '$T/root/covers/MegaDrive/Sonic The Hedgehog (USA, Europe).png' $T/old.png && [ ! -e '$T/root/covers/MegaDrive/Sonic The Hedgehog (USA, Europe).refetch' ]" "the server has none (404): the cover stays"
+python3 -c "from PIL import Image; Image.new('RGB',(512,357),(0,255,0)).save('$SRV/Sonic The Hedgehog (USA, Europe).png')"
+rm -f "$T/root/covers/MegaDrive/"*.missing
+rc=$(OFFLINE= COVER_URL="$URL" GENPLUS_HOST_REALTIME=1 run "$T" "$SQ" "")
+kill $SRVPID 2>/dev/null
+expect "cmp -s '$T/root/covers/MegaDrive/Sonic The Hedgehog (USA, Europe).png' '$SRV/Sonic The Hedgehog (USA, Europe).png'" "the server has it: the new cover replaces the old one"
+nosan "$T"
+# as on the console (a helper answers, so the shelf downloads nothing): Square puts the cover on the wanted list and
+# restarts the app so the prefetch fetches it; the cover stays meanwhile
+T2=$(newroot t24g)
+mkdir -p "$T2/root/roms/MegaDrive" "$T2/root/covers/MegaDrive"
+$ROM "$T2/root/roms/MegaDrive/Sonic The Hedgehog (USA, Europe).md" ntsc >/dev/null
+cp "$T/old.png" "$T2/root/covers/MegaDrive/Sonic The Hedgehog (USA, Europe).png"
+GENPLUS_PS5_ROOT=$T2/root ASAN_OPTIONS=detect_leaks=0 timeout 60 "$HELPER" >"$T2/helper.txt" 2>&1 &
+for i in $(seq 1 50); do grep -q listening "$T2/root/logs/helper.log" 2>/dev/null && break; sleep 0.1; done
+rc=$(OFFLINE= COVER_URL="$URL" run "$T2" "0:0;40:$SQUARE;42:0;200:$OPTIONS;202:0;210:$CROSS;212:0" "")
+expect "grep -q 'MegaDrive/Sonic The Hedgehog (USA, Europe).png' $T2/root/covers/wanted.txt && grep -q 'restarting .* so the prefetch gets them' $T2/root/logs/boot*.log" "console: Square lists the cover and restarts the app to fetch it"
+expect "cmp -s '$T2/root/covers/MegaDrive/Sonic The Hedgehog (USA, Europe).png' $T/old.png" "and the cover stays until a new one arrives"
+pkill -f "$HELPER" 2>/dev/null; sleep 0.3
 # downloads still work after the shelf restarted its cover worker (another tab)
 T=$(newroot t24f)
 SRV=$T/srv/Sega_-_Mega_Drive_-_Genesis/Named_Boxarts; mkdir -p "$SRV" "$T/root/roms/MegaDrive" "$T/root/roms/MasterSystem" "$T/root/covers/MasterSystem"

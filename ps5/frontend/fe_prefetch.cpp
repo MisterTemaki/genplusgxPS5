@@ -231,13 +231,17 @@ void SavePrefetched(const PrefetchResult& result)
 		if (it.status == 200 && !it.data.empty())
 		{
 			if (WriteAtomic(path, it.data))
+			{
 				saved++;
+				unlink((path.substr(0, path.size() - 4) + ".refetch").c_str()); // Square's request is done
+			}
 			else
 				OrbisLog("[prefetch] can't write %s", path.c_str());
 		}
 		else if (it.status == 404)
 		{
-			// as the shelf does: no new try for 30 days (Square on the shelf asks again)
+			// as the shelf does: no new try for 30 days (Square on the shelf asks again); a cover already there stays
+			unlink((path.substr(0, path.size() - 4) + ".refetch").c_str());
 			const std::string marker = path.substr(0, path.size() - 4) + ".missing";
 			if (FILE* f = fopen(marker.c_str(), "w"))
 			{

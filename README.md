@@ -31,7 +31,7 @@ compiled as they are: all 100 of their C files build for the PS5 without a singl
 core through its libretro interface -- the most complete of its ports -- and plays the part RetroArch plays on a
 PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
 
-> **Status (1.3):** builds with the ps5-payload-dev SDK into a signed native app, and passes 226 host tests, which
+> **Status (1.4):** builds with the ps5-payload-dev SDK into a signed native app, and passes 231 host tests, which
 > run the same code (the Genesis Plus GX core included) on Linux with the PS5 calls simulated: a test program for
 > each of Mega Drive, Master System and Game Gear is played through the whole chain -- the shelf, the pad, the
 > core, the video and sound output. Not yet confirmed on a console. If something fails, the logs in
@@ -65,11 +65,12 @@ Genesis Plus GX PS5 only uses `/data/genplus/`, `/data/homebrew/PPSA99011/` and 
 
 ## Versions
 
-Every release carries its version in the file name: `GenesisPlusGXPS5-v1.3.elf` and `genplus-ps5-v1.3-src.zip`
+Every release carries its version in the file name: `GenesisPlusGXPS5-v1.4.elf` and `genplus-ps5-v1.4-src.zip`
 (`make dist`). When updating, replace the old ELF with the new one in your autoload or Payload Manager. In this
 README, "`GenesisPlusGXPS5.elf`" always means the current release's ELF.
 
-**1.3:** CRT shaders (CRT Easymode style by default; see [CRT shaders](#crt-shaders)); MD+ and MSU-MD documented
+**1.4:** Square (fetch a cover again) works again on the console, and keeps the cover until the new one has
+arrived; a ROM named as its official name gets its cover fetched again. **1.3:** CRT shaders (CRT Easymode style by default; see [CRT shaders](#crt-shaders)); MD+ and MSU-MD documented
 ([MD+ and MSU-MD](#md-and-msu-md-cd-music-in-mega-drive-games)); saves and states in one folder per system; the Sega CD
 backup RAM written while the game runs; crash-safe writes; a stricter helper; and the fixes of a full code audit
 (720p picture, Resume, odd files in the library, covers, downloads); a setting to turn the debug logs off.
@@ -90,10 +91,10 @@ Every screen and notification of Genesis Plus GX PS5 is in English.
 
 1. **Send `GenesisPlusGXPS5.elf`** with PS5 Payload Manager, or from a PC on the same network:
    ```sh
-   nc -q0 PS5_IP 9021 < GenesisPlusGXPS5-v1.3.elf
+   nc -q0 PS5_IP 9021 < GenesisPlusGXPS5-v1.4.elf
    ```
    It installs the app in `/data/homebrew/PPSA99011/` (`eboot.bin`, `sce_module/libc.prx`, `param.json`, the
-   icon and the backgrounds), shows **"Genesis Plus GX PS5 1.3 installed. Open it from the Genesis Plus GX PS5
+   icon and the backgrounds), shows **"Genesis Plus GX PS5 1.4 installed. Open it from the Genesis Plus GX PS5
    icon on the home screen."** and stays running as the helper.
 2. **Open the Genesis Plus GX PS5 icon.** The game shelf appears and the controller works.
 3. **Copy your games** to their system's folder, over FTP for example. The app makes the folders on its first
@@ -116,7 +117,7 @@ Tip: put `GenesisPlusGXPS5.elf` in your autoload, as PS5SX2 recommends for its p
 
 **Updating:** send the new `GenesisPlusGXPS5.elf` once. It compares every app file with the copy it carries and
 rewrites only what changed; each file is written to a temporary file and then renamed, `eboot.bin` last. The
-notification says "Genesis Plus GX PS5 updated to 1.3". A deleted or damaged icon is put back the same way. A
+notification says "Genesis Plus GX PS5 updated to 1.4". A deleted or damaged icon is put back the same way. A
 second copy sent while the helper is already running only installs and exits.
 
 **If "Genesis Plus GX PS5 has no access to /data" appears:** no helper answered and the ELF loader wasn't
@@ -244,7 +245,7 @@ Snes9x PS5.
 | L1 / R1 | skip 10 games |
 | Cross | play |
 | Triangle | settings |
-| Square | download this game's cover again |
+| Square | download this game's cover again (the cover it has stays until the new one has arrived) |
 | OPTIONS | quit Genesis Plus GX PS5 (asks first) |
 
 **In a game:** by default, buttons by position, as RetroArch maps them for Genesis Plus GX -- the Mega Drive's
@@ -451,7 +452,7 @@ make ps5 -j$(nproc)              # build/ps5/GenesisPlusGXPS5.elf (installer + h
 make send PS5_HOST=192.168.0.10  # sends it to elfldr (port 9021)
 make dist                        # build/dist/GenesisPlusGXPS5-v<version>.elf + the source zip
 make app                         # only build/app/PPSA99011/, to copy by hand
-make test                        # Linux builds (app, installer, helper) + 226 host tests (ASan/UBSan)
+make test                        # Linux builds (app, installer, helper) + 231 host tests (ASan/UBSan)
 ```
 
 The build has three stages:
@@ -505,7 +506,7 @@ The build has three stages:
 - **`ps5/app/sce_sys/`**: param.json, icon and backgrounds.
 - **`ps5/host/sce_host.cpp`** and **`ps5/tests/`**: the PS5 functions implemented on Linux, test programs for
   Mega Drive (NTSC and PAL), Master System and Game Gear (`make_test_rom.py`, tiny hand-assembled 68000 and Z80
-  programs), and the 226 tests: picture and input on each system, the Sega CD BIOS message and `.cue` tracks,
+  programs), and the 231 tests: picture and input on each system, the Sega CD BIOS message and `.cue` tracks,
   save states, PAL timing, zip, sound latency, integer scale and scanlines, the shelf's tabs, the system
   folders, the controls (pad type, 4-player adapter, button layout), the CRT shaders (the default, each one
   drawing under ASan/UBSan, the menu), settings, fast forward and rewind, covers per system, install, helper and
