@@ -433,7 +433,6 @@ covers, emu, menu), and the return addresses, which map into `ps5/build/app/genp
 
 ## Known limitations
 
-- Not yet confirmed on a console.
 - The PS and Create buttons are not reported by `scePadReadState`, so Mode is on the touchpad by default (and the button layout can't use them).
 - No light guns (Menacer, Justifier, Light Phaser), mice or Sega Pico pen, although the core supports them; no
   Master System multitap.
