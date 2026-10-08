@@ -37,10 +37,17 @@ bool OrbisIsFile(const std::string& path);
 bool OrbisMkdirs(const std::string& path);
 
 // <root>/logs/<name>.log (the run before kept as <name>.prev.log): boot.log for the emulator, installer.log
-// for the installer/helper payload. Every line also goes to stdout. Lines logged before the file is open
+// for the installer/helper payload. Every line also goes to stdout (once the log is open). Lines logged before the file is open
 // (before the jailbreak shows /data to the app) are kept and written first.
 void OrbisLogOpen(const char* name = "boot");
 void OrbisLog(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 void OrbisLogClose();
+// Debug logs on or off: the "Debug logs" setting (debug_logs= in genplus-ps5.ini, on unless it says 0).
+// OrbisLogOpen reads it, so the app, the installer and the helper all follow it; while off, OrbisLog writes
+// nothing (no file, no stdout) and the log files of earlier runs are left as they are.
+void OrbisLogSetEnabled(bool on);
+// Reads the setting again and applies it (the helper, which keeps running, calls this for each request).
+void OrbisLogRefresh();
+bool OrbisLogEnabled();
 // The open log's file descriptor, for the crash handler's signal-safe write(); -1 before it is open.
 int OrbisLogFd();

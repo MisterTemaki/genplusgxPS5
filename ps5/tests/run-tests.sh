@@ -681,6 +681,51 @@ expect "cmp -s '$T/root/covers/MegaDrive/Sonic The Hedgehog (USA, Europe).png' '
 nosan "$T"
 fi
 
+if want 25; then
+echo "== 25. debug logs off: nothing written (app and helper), earlier logs kept; the setting switches them at once"
+SHELFQUIT_AT() { echo "$1:$OPTIONS;$(($1 + 2)):0;$(($1 + 10)):$CROSS;$(($1 + 12)):0"; }
+# off in the ini: the game runs, no line anywhere, the previous run's boot.log untouched
+T=$(newroot t25)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+echo "debug_logs=0" >>"$T/root/genplus-ps5.ini"
+mkdir -p "$T/root/logs" && echo "OLD RUN" >"$T/root/logs/boot.log"
+rc=$(run "$T" "0:0;$(QUITAT 100)" "90" "$T/root/roms/test.md")
+expect "[ $rc = 0 ]" "exit code 0 (got $rc)"
+expect "$CHECK $T/dump/flip00090.ppm 960 540 red >/dev/null" "the game runs"
+expect "[ \"\$(cat $T/root/logs/boot.log)\" = 'OLD RUN' ] && [ ! -e $T/root/logs/boot.prev.log ]" "the earlier boot.log is kept as it was, nothing new written"
+expect "! grep -q '^\[genplus-ps5' $T/out.txt" "nothing on stdout either"
+expect "grep -q '^debug_logs=0' $T/root/genplus-ps5.ini" "the setting stays off"
+nosan "$T"
+# Settings (Triangle) -> Debug logs (Up twice from Shader: Back, then Debug logs) -> Off: that line is the last one
+T=$(newroot t25b)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+rc=$(run "$T" "0:0;30:$TRIANGLE;32:0;50:$UP;52:0;60:$UP;62:0;70:$CROSS;72:0;90:$CIRCLE;92:0;$(SHELFQUIT_AT 120)" "")
+expect "[ $rc = 0 ]" "exit code 0 (got $rc)"
+expect "grep -q '^debug_logs=0' $T/root/genplus-ps5.ini" "Debug logs Off saved"
+expect "tail -1 $T/root/logs/boot.log | grep -q 'debug logs turned off'" "the last line of boot.log says the logs were turned off"
+nosan "$T"
+# and back on: logging starts again in the same boot.log
+T=$(newroot t25c)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+echo "debug_logs=0" >>"$T/root/genplus-ps5.ini"
+rc=$(run "$T" "0:0;30:$TRIANGLE;32:0;50:$UP;52:0;60:$UP;62:0;70:$CROSS;72:0;90:$CIRCLE;92:0;$(SHELFQUIT_AT 120)" "")
+expect "grep -q '^debug_logs=1' $T/root/genplus-ps5.ini" "Debug logs On saved"
+expect "grep -q 'debug logs turned on' $T/root/logs/boot.log && ! grep -q 'Genesis Plus GX PS5 1\.[0-9], Genesis' $T/root/logs/boot.log" "boot.log starts at the switch (nothing from before it)"
+nosan "$T"
+# the helper follows the setting too
+stop_helpers25() { pkill -f 'build/host/genplus-ps5-(installer|helper)' 2>/dev/null; sleep 0.3; }
+stop_helpers25
+T=$(newroot t25d)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+mkdir -p "$T/hroot" && echo "debug_logs=0" >"$T/hroot/genplus-ps5.ini"
+GENPLUS_PS5_ROOT=$T/hroot ASAN_OPTIONS=detect_leaks=0 timeout 60 "$HELPER" >"$T/helper.txt" 2>&1 &
+sleep 1.5
+rc=$(run "$T" "$(QUITAT 30)" "" "$T/root/roms/test.md")
+expect "grep -q 'Genesis Plus GX helper (port [0-9]*): ret 0' $T/root/logs/boot.log" "the helper still lets the app out"
+expect "[ ! -e $T/hroot/logs/helper.log ] && ! grep -q 'helper\]' $T/helper.txt" "with debug logs off the helper writes no log"
+stop_helpers25
+fi
+
 echo
 echo "passed $PASS, failed $FAIL  (work dir $WORK)"
 [ $FAIL = 0 ]

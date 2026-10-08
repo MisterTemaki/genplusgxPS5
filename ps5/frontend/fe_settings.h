@@ -40,6 +40,7 @@ struct Settings
 	void DefaultButtons();
 	// library
 	bool covers_download = true; // fetch box art from libretro-thumbnails
+	bool debug_logs = true;      // boot.log and the others in /data/genplus/logs (OrbisLogSetEnabled)
 	int shelf_family = 0; // fe::Family the shelf shows
 	std::string last_rom; // the shelf puts the selection on this game
 

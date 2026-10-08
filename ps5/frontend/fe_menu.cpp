@@ -225,6 +225,8 @@ enum SettingRow
 	S_BTN_DEFAULT,
 	H_LIBRARY,
 	S_COVERS,
+	H_SYSTEM,
+	S_DEBUGLOGS,
 	S_COUNT
 };
 
@@ -267,6 +269,8 @@ Row SettingRowFor(int s)
 		case S_BTN_DEFAULT: return {"Default button layout", ""};
 		case H_LIBRARY: return {"LIBRARY", "", true, true};
 		case S_COVERS: return {"Download covers", OnOff(c.covers_download)};
+		case H_SYSTEM: return {"SYSTEM", "", true, true};
+		case S_DEBUGLOGS: return {"Debug logs", OnOff(c.debug_logs)};
 		default:
 			if (s >= S_BTN_FIRST && s <= S_BTN_LAST)
 			{
@@ -314,6 +318,10 @@ void ChangeSetting(int s, int dir)
 		case S_REGION: c.region = Cycle(c.region, dir, emu::kRegionCount); break;
 		case S_SPRITES: c.no_sprite_limit = !c.no_sprite_limit; break;
 		case S_COVERS: c.covers_download = !c.covers_download; break;
+		case S_DEBUGLOGS:
+			c.debug_logs = !c.debug_logs;
+			OrbisLogSetEnabled(c.debug_logs); // at once: the line saying so is the last (or first) one written
+			break;
 		case S_PADTYPE: c.pad_type = Cycle(c.pad_type, dir, emu::kPadTypeCount); break;
 		case S_MULTITAP: c.multitap = Cycle(c.multitap, dir, emu::kMultitapCount); break;
 		case S_BTN_DEFAULT: c.DefaultButtons(); break;

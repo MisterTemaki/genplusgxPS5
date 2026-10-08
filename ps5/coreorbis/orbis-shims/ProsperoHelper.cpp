@@ -253,6 +253,7 @@ bool ServeHelper(void (*on_ready)())
 			usleep(200 * 1000);
 			continue;
 		}
+		OrbisLogRefresh(); // the "Debug logs" setting may have changed since the helper started
 		const int64_t deadline = NowMs() + kConnectionMs;
 		Request req;
 		memset(&req, 0, sizeof(req));

@@ -23,6 +23,23 @@ namespace
 {
 std::mutex s_log_mutex;
 FILE* s_log = nullptr;
+bool s_enabled = true; // the "Debug logs" setting
+std::string s_name;    // the log OrbisLogOpen opened (or would have), to open again when logs are turned on
+
+// genplus-ps5.ini says debug_logs=0 (read here, not through fe::Settings: the installer and the helper have none)
+bool IniSaysLogsOff()
+{
+	FILE* f = fopen((OrbisRoot() + "/genplus-ps5.ini").c_str(), "r");
+	if (!f)
+		return false;
+	bool off = false;
+	char line[512];
+	while (fgets(line, sizeof(line), f))
+		if (strncmp(line, "debug_logs=", 11) == 0)
+			off = atoi(line + 11) == 0;
+	fclose(f);
+	return off;
+}
 
 const char* const kSubdirs[] = {"roms", "logs", "covers", "saves", "states", "bios"};
 } // namespace
@@ -114,6 +131,15 @@ void OrbisLogOpen(const char* name)
 	std::lock_guard<std::mutex> lock(s_log_mutex);
 	if (s_log)
 		return;
+	s_name = name;
+	if (IniSaysLogsOff())
+	{
+		// off: nothing written, and the files of earlier runs are not rotated away
+		s_enabled = false;
+		EarlyLines().clear();
+		return;
+	}
+	s_enabled = true;
 	const std::string dir = OrbisDir("logs");
 	if (!OrbisIsDir(dir))
 		return;
@@ -124,7 +150,11 @@ void OrbisLogOpen(const char* name)
 	if (s_log)
 	{
 		for (const std::string& line : EarlyLines())
+		{
 			fputs(line.c_str(), s_log);
+			printf("[genplus-ps5 %s", line.c_str() + 1); // held back until the setting could be read
+		}
+		fflush(stdout);
 		fflush(s_log);
 		EarlyLines().clear();
 	}
@@ -149,8 +179,13 @@ void OrbisLog(const char* fmt, ...)
 	const double t = ts.tv_sec + ts.tv_nsec / 1e9;
 
 	std::lock_guard<std::mutex> lock(s_log_mutex);
-	printf("[genplus-ps5 %10.3f] %s\n", t, line);
-	fflush(stdout);
+	if (!s_enabled)
+		return;
+	if (s_log || !s_name.empty())
+	{
+		printf("[genplus-ps5 %10.3f] %s\n", t, line);
+		fflush(stdout);
+	}
 	if (s_log)
 	{
 		fprintf(s_log, "[%10.3f] %s\n", t, line);
@@ -162,6 +197,59 @@ void OrbisLog(const char* fmt, ...)
 		snprintf(stamped, sizeof(stamped), "[%10.3f] %s\n", t, line);
 		EarlyLines().push_back(stamped);
 	}
+}
+
+void OrbisLogSetEnabled(bool on)
+{
+	std::lock_guard<std::mutex> lock(s_log_mutex);
+	if (on == s_enabled)
+		return;
+	timespec ts = {};
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	const double t = ts.tv_sec + ts.tv_nsec / 1e9;
+	if (!on)
+	{
+		printf("[genplus-ps5 %10.3f] [log] debug logs turned off\n", t);
+		fflush(stdout);
+		if (s_log)
+		{
+			fprintf(s_log, "[%10.3f] [log] debug logs turned off\n", t);
+			fclose(s_log);
+			s_log = nullptr;
+		}
+		EarlyLines().clear();
+		s_enabled = false;
+		return;
+	}
+	s_enabled = true;
+	// the same file again, added to (this run's lines before the switch stay in it)
+	const std::string dir = OrbisDir("logs");
+	if (!s_name.empty() && OrbisIsDir(dir))
+		s_log = fopen((dir + "/" + s_name + ".log").c_str(), "a");
+	printf("[genplus-ps5 %10.3f] [log] debug logs turned on\n", t);
+	fflush(stdout);
+	if (s_log)
+	{
+		fprintf(s_log, "[%10.3f] [log] debug logs turned on\n", t);
+		fflush(s_log);
+	}
+}
+
+void OrbisLogRefresh()
+{
+	bool open;
+	{
+		std::lock_guard<std::mutex> lock(s_log_mutex);
+		open = !s_name.empty();
+	}
+	if (open)
+		OrbisLogSetEnabled(!IniSaysLogsOff());
+}
+
+bool OrbisLogEnabled()
+{
+	std::lock_guard<std::mutex> lock(s_log_mutex);
+	return s_enabled;
 }
 
 void OrbisLogClose()

@@ -108,6 +108,8 @@ void Settings::Load()
 			state_slot = Clamp(n, 1, 10);
 		else if (key == "covers_download")
 			covers_download = n != 0;
+		else if (key == "debug_logs")
+			debug_logs = n != 0;
 		else if (key == "shelf_family")
 			shelf_family = Clamp(n, 0, 64);
 		else if (key == "last_rom")
@@ -150,6 +152,7 @@ void Settings::Save() const
 		fprintf(f, "%s=%d\n", kButtonKeys[i], buttons[i]);
 	fprintf(f, "state_slot=%d\n", state_slot);
 	fprintf(f, "covers_download=%d\n", covers_download ? 1 : 0);
+	fprintf(f, "debug_logs=%d\n", debug_logs ? 1 : 0);
 	fprintf(f, "shelf_family=%d\n", shelf_family);
 	fprintf(f, "last_rom=%s\n", last_rom.c_str());
 	bool ok = ferror(f) == 0;

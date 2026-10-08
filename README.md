@@ -31,7 +31,7 @@ compiled as they are: all 100 of their C files build for the PS5 without a singl
 core through its libretro interface -- the most complete of its ports -- and plays the part RetroArch plays on a
 PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
 
-> **Status (1.3):** builds with the ps5-payload-dev SDK into a signed native app, and passes 211 host tests, which
+> **Status (1.3):** builds with the ps5-payload-dev SDK into a signed native app, and passes 226 host tests, which
 > run the same code (the Genesis Plus GX core included) on Linux with the PS5 calls simulated: a test program for
 > each of Mega Drive, Master System and Game Gear is played through the whole chain -- the shelf, the pad, the
 > core, the video and sound output. Not yet confirmed on a console. If something fails, the logs in
@@ -72,7 +72,8 @@ README, "`GenesisPlusGXPS5.elf`" always means the current release's ELF.
 **1.3:** CRT shaders (CRT Easymode style by default; see [CRT shaders](#crt-shaders)); MD+ and MSU-MD documented
 ([MD+ and MSU-MD](#md-and-msu-md-cd-music-in-mega-drive-games)); saves and states in one folder per system; the Sega CD
 backup RAM written while the game runs; crash-safe writes; a stricter helper; and the fixes of a full code audit
-(720p picture, Resume, odd files in the library, covers, downloads). **1.0:** the first release.
+(720p picture, Resume, odd files in the library, covers, downloads); a setting to turn the debug logs off.
+**1.0:** the first release.
 
 ## Language
 
@@ -301,6 +302,7 @@ Triangle on the shelf, or "Settings" in the pause menu:
   - Changes apply at once, in the game too, and are saved in `genplus-ps5.ini` (`pad_type`, `multitap`,
     `btn_a`...`btn_mode`).
 - **Library:** download covers.
+- **System:** **Debug logs** (On by default) -- see [Debugging](#debugging-logs-and-crashes).
 
 The settings go to the core as its libretro options (`genesis_plus_gx_*`), so they behave as in RetroArch.
 
@@ -406,6 +408,14 @@ Good to know:
 
 ## Debugging (logs and crashes)
 
+**Turning the logs on or off:** Settings (Triangle on the shelf, or L3 + R3 -> Settings in a game) -> **SYSTEM**
+-> **Debug logs**. Off stops every log at once: the app writes nothing more to `boot.log` (its last line says the
+logs were turned off) or to the console output, and the next starts -- the app, the installer and the helper --
+write no log files at all; the files of earlier runs are left as they are (delete them over FTP if you want). On
+starts again at once, adding to `boot.log`. The setting is `debug_logs=0` / `debug_logs=1` in
+`genplus-ps5.ini`. Leave them on if you want to report a problem: with them off there is no log to send, and no
+`== CRASH ==` report either.
+
 If something fails, send the files in `/data/genplus/logs/`: `boot.log` (the app), `installer.log` and
 `helper.log`, plus the previous session's `.prev.log` files. They record every step:
 
@@ -442,7 +452,7 @@ make ps5 -j$(nproc)              # build/ps5/GenesisPlusGXPS5.elf (installer + h
 make send PS5_HOST=192.168.0.10  # sends it to elfldr (port 9021)
 make dist                        # build/dist/GenesisPlusGXPS5-v<version>.elf + the source zip
 make app                         # only build/app/PPSA99011/, to copy by hand
-make test                        # Linux builds (app, installer, helper) + 211 host tests (ASan/UBSan)
+make test                        # Linux builds (app, installer, helper) + 226 host tests (ASan/UBSan)
 ```
 
 The build has three stages:
@@ -496,13 +506,14 @@ The build has three stages:
 - **`ps5/app/sce_sys/`**: param.json, icon and backgrounds.
 - **`ps5/host/sce_host.cpp`** and **`ps5/tests/`**: the PS5 functions implemented on Linux, test programs for
   Mega Drive (NTSC and PAL), Master System and Game Gear (`make_test_rom.py`, tiny hand-assembled 68000 and Z80
-  programs), and the 211 tests: picture and input on each system, the Sega CD BIOS message and `.cue` tracks,
+  programs), and the 226 tests: picture and input on each system, the Sega CD BIOS message and `.cue` tracks,
   save states, PAL timing, zip, sound latency, integer scale and scanlines, the shelf's tabs, the system
   folders, the controls (pad type, 4-player adapter, button layout), the CRT shaders (the default, each one
   drawing under ASan/UBSan, the menu), settings, fast forward and rewind, covers per system, install, helper and
   sandbox request (unknown titles refused, slow clients, links), saves per system and their integrity (old saves
   moved, an erased battery save written, unchanged ones left alone), and the audit's fixes (720p picture, Resume,
-  FIFOs, `.cue` sheets, long zip names and paths, the CRC cache, covers kept offline, downloads after a tab change).
+  FIFOs, `.cue` sheets, long zip names and paths, the CRC cache, covers kept offline, downloads after a tab change),
+  and the debug logs setting (off: nothing written by the app or the helper).
 
 ## License and credits
 
