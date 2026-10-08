@@ -72,7 +72,9 @@ bool WriteAll(int fd, const void* data, size_t size)
 }
 
 // One request to one daemon. 1 = yes, 0 = no answer on that port, -1 = it answered no.
-int Ask(int port, const char* who)
+// strict (our own helper): only a whole reply with our magic and ret 0 counts. The other daemons get PS5SX2's
+// leniency (etaHEN's legacy server can answer without touching ret).
+int Ask(int port, const char* who, bool strict)
 {
 	const int fd = ConnectLocal(port);
 	if (fd < 0)
@@ -104,6 +106,8 @@ int Ask(int port, const char* who)
 	req.msg1[sizeof(req.msg1) - 1] = 0;
 	OrbisLog("[jailbreak] %s (port %d): ret %d, %zu bytes back%s%s", who, port, req.ret, got, req.msg1[0] ? ": " : "",
 		req.msg1);
+	if (strict)
+		return got == sizeof(req) && req.magic == kMagic && req.ret == 0 ? 1 : -1;
 	// PS5SX2 accepts an untouched ret from etaHEN's legacy server too (orbis_try_jailbreak)
 	if (req.ret == 0 || (req.ret == kRetUntouched && got > 0))
 		return 1;
@@ -164,7 +168,7 @@ int AskWanted(int port, std::string& text)
 			break;
 		got += size_t(n);
 	}
-	if (got != sizeof(req) || req.ret < 0 || req.ret > kMaxWantedBytes)
+	if (got != sizeof(req) || req.magic != kMagic || req.ret < 0 || req.ret > kMaxWantedBytes)
 	{
 		close(fd);
 		OrbisLog("[prefetch] helper answered %zu bytes, ret %d: no list", got, req.ret);
@@ -180,7 +184,13 @@ int AskWanted(int port, std::string& text)
 		have += size_t(n);
 	}
 	close(fd);
-	text.resize(have);
+	if (have != text.size())
+	{
+		// a cut list could end inside a URL (and turn into a 404 -> a cover marked missing for 30 days)
+		OrbisLog("[prefetch] the list was cut short (%zu of %zu bytes): not used", have, text.size());
+		text.clear();
+		return -1;
+	}
 	return 1;
 }
 } // namespace
@@ -203,7 +213,7 @@ bool RequestForSelf(std::string& how)
 {
 	const int own = PortFromEnv("GENPLUS_HELPER_PORT", kHelperPort);
 	OrbisLog("[jailbreak] pid %d asks to leave the sandbox", int(getpid()));
-	if (Ask(own, "Genesis Plus GX helper") == 1)
+	if (Ask(own, "Genesis Plus GX helper", true) == 1)
 	{
 		how = g_started_helper ? "Genesis Plus GX helper (started by the app)" : "Genesis Plus GX helper";
 		return true;
@@ -211,12 +221,12 @@ bool RequestForSelf(std::string& how)
 	// PS5SX2's daemons (main-boot.cpp, orbis_try_jailbreak): etaHEN's legacy server, then 9069
 	if (getenv("GENPLUS_JB_NO_OTHERS") == nullptr)
 	{
-		if (Ask(9028, "etaHEN") == 1)
+		if (Ask(9028, "etaHEN", false) == 1)
 		{
 			how = "etaHEN";
 			return true;
 		}
-		if (Ask(9069, "jailbreak daemon 9069") == 1)
+		if (Ask(9069, "jailbreak daemon 9069", false) == 1)
 		{
 			how = "jailbreak daemon 9069";
 			return true;
@@ -228,7 +238,7 @@ bool RequestForSelf(std::string& how)
 		for (int i = 0; i < 16; i++)
 		{
 			usleep(500 * 1000);
-			const int r = Ask(own, "Genesis Plus GX helper");
+			const int r = Ask(own, "Genesis Plus GX helper", true);
 			if (r == 1)
 			{
 				how = "Genesis Plus GX helper (started by the app)";

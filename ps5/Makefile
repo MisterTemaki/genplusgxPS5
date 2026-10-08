@@ -66,6 +66,8 @@ EMU_SRC := coreorbis/main-boot.cpp \
 	frontend/fe_prefetch.cpp
 # minizip (zlib licence) for games inside a .zip, built as C with the core's zlib
 EMU_C_SRC := frontend/third_party/unzip.c frontend/third_party/ioapi.c
+# a C bridge to the core's own state (the Sega CD backup RAM), built with the core's defines and headers
+BRIDGE_C_SRC := frontend/fe_bram.c
 # the payloads: the helper, and the installer (= helper + install)
 HELPER_SRC := coreorbis/orbis-shims/orbis_paths.cpp coreorbis/orbis-shims/ProsperoNotify.cpp \
 	coreorbis/orbis-shims/ProsperoHelper.cpp
@@ -103,7 +105,8 @@ PS5_OPT := -O3 -fPIC -march=znver2 -fno-strict-aliasing
 PS5_PAYLOAD_LIBS := -lkernel_sys
 
 PS5_CORE_OBJ := $(patsubst %.cpp,$(PS5_OUT)/core/%.o,$(CORE_SRC)) $(patsubst %.c,$(PS5_OUT)/core/%.o,$(CORE_C_SRC))
-PS5_EMU_OBJ := $(patsubst %.cpp,$(PS5_OUT)/port/%.o,$(EMU_SRC)) $(patsubst %.c,$(PS5_OUT)/port/%.o,$(EMU_C_SRC))
+PS5_EMU_OBJ := $(patsubst %.cpp,$(PS5_OUT)/port/%.o,$(EMU_SRC)) $(patsubst %.c,$(PS5_OUT)/port/%.o,$(EMU_C_SRC)) \
+	$(patsubst %.c,$(PS5_OUT)/bridge/%.o,$(BRIDGE_C_SRC))
 PS5_HELPER_OBJ := $(PS5_OUT)/port/installer/helper_main.o $(patsubst %.cpp,$(PS5_OUT)/port/%.o,$(HELPER_SRC))
 PS5_INSTALLER_OBJ := $(patsubst %.cpp,$(PS5_OUT)/port/%.o,$(INSTALLER_SRC))
 
@@ -119,6 +122,10 @@ $(PS5_OUT)/core/%.o: $(ROOT)/%.c
 $(PS5_OUT)/port/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(PS5_CC) $(PS5_OPT) $(MINIZIP_FLAGS) -c -o $@ $<
+
+$(PS5_OUT)/bridge/%.o: %.c frontend/fe_bram.h
+	@mkdir -p $(dir $@)
+	$(PS5_CC) $(PS5_OPT) $(CORE_DEFS) $(CORE_INCS) -Ifrontend -I$(ROOT)/$(CHD)/deps/zlib-1.3.1 -Wall -Werror -c -o $@ $<
 
 $(PS5_OUT)/port/%.o: %.cpp coreorbis/include-orbis/*.h coreorbis/orbis-shims/*.h frontend/*.h
 	@mkdir -p $(dir $@)
@@ -260,7 +267,8 @@ HOST_OPT := -O1 -g -mavx2 -fno-strict-aliasing
 HOST_CORE_OPT := -O2 -g1 -mavx2
 
 HOST_CORE_OBJ := $(patsubst %.cpp,$(HOST_OUT)/core/%.o,$(CORE_SRC)) $(patsubst %.c,$(HOST_OUT)/core/%.o,$(CORE_C_SRC))
-HOST_EMU_OBJ := $(patsubst %.cpp,$(HOST_OUT)/port/%.o,$(EMU_SRC) host/sce_host.cpp) $(patsubst %.c,$(HOST_OUT)/port/%.o,$(EMU_C_SRC))
+HOST_EMU_OBJ := $(patsubst %.cpp,$(HOST_OUT)/port/%.o,$(EMU_SRC) host/sce_host.cpp) $(patsubst %.c,$(HOST_OUT)/port/%.o,$(EMU_C_SRC)) \
+	$(patsubst %.c,$(HOST_OUT)/bridge/%.o,$(BRIDGE_C_SRC))
 HOST_HELPER_OBJ := $(HOST_OUT)/port/installer/helper_main.o $(patsubst %.cpp,$(HOST_OUT)/port/%.o,$(HELPER_SRC) host/sce_host.cpp)
 HOST_INSTALLER_OBJ := $(patsubst %.cpp,$(HOST_OUT)/port/%.o,$(INSTALLER_SRC) host/sce_host.cpp)
 
@@ -274,6 +282,10 @@ $(HOST_OUT)/core/%.o: $(ROOT)/%.c
 $(HOST_OUT)/port/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(HOST_OPT) $(MINIZIP_FLAGS) -c -o $@ $<
+
+$(HOST_OUT)/bridge/%.o: %.c frontend/fe_bram.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -fPIC $(HOST_CORE_OPT) $(HOST_CORE_SAN) $(CORE_DEFS) $(CORE_INCS) -Ifrontend -I$(ROOT)/$(CHD)/deps/zlib-1.3.1 -Wall -Werror -c -o $@ $<
 
 $(HOST_OUT)/port/%.o: %.cpp coreorbis/include-orbis/*.h coreorbis/orbis-shims/*.h frontend/*.h
 	@mkdir -p $(dir $@)

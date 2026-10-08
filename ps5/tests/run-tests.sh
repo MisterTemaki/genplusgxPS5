@@ -70,7 +70,7 @@ expect "[ $rc = 0 ]" "exit code 0 (got $rc)"
 expect "$RECT $T/dump/flip00090.ppm $T/root/logs/boot.log red >/dev/null" "red picture where the log says, black around it"
 expect "$CHECK $T/dump/flip00090.ppm 960 540 red >/dev/null" "the Mega Drive backdrop is red"
 expect "$CHECK $T/dump/flip00130.ppm 960 540 green >/dev/null" "Cross -> Mega Drive B -> green"
-expect "[ -f $T/root/states/test.state1 ]" "L2 + Up wrote states/test.state1"
+expect "[ -f $T/root/states/MegaDrive/test.state1 ]" "L2 + Up wrote states/MegaDrive/test.state1"
 expect "grep -q 'running \"test\" (Mega Drive), 59.9' $T/root/logs/boot.log" "a 60 Hz Mega Drive game"
 expect "grep -q 'save state 1: ok' $T/root/logs/boot.log" "logged the save"
 expect "grep -q 'Fit to screen' $T/root/logs/boot.log" "fit to screen by default"
@@ -310,7 +310,7 @@ expect "[ $rc = 0 ]" "exit code 0 (got $rc)"
 expect "grep -q 'scale=1' $T/root/genplus-ps5.ini" "the settings screen changed the screen size"
 expect "grep -q 'fast forward on' $T/root/logs/boot.log && grep -q 'fast forward off' $T/root/logs/boot.log" "R2 held: fast forward"
 expect "grep -q 'rewind on' $T/root/logs/boot.log && grep -q 'rewind off' $T/root/logs/boot.log" "L2 + R2 held: rewind"
-expect "[ -f '$T/root/states/Alpha (USA).state1' ]" "the pause menu's Save state wrote slot 1"
+expect "[ -f '$T/root/states/MegaDrive/Alpha (USA).state1' ]" "the pause menu's Save state wrote slot 1"
 nosan "$T"
 fi
 
@@ -508,6 +508,177 @@ $ROM "$T/root/roms/Alpha (USA).md" ntsc >/dev/null
 # Triangle -> settings, the first row is Shader: Right twice -> crt-lottes-fast; Circle -> back; Options + Cross -> quit
 rc=$(run "$T" "0:0;30:$TRIANGLE;32:0;40:$RIGHT;42:0;46:$RIGHT;48:0;52:$RIGHT;54:0;60:$CIRCLE;62:0;70:$OPTIONS;72:0;80:$CROSS;82:0" "50")
 expect "grep -q '^shader=3$' $T/root/genplus-ps5.ini" "the settings screen's Shader row is saved (shader=0 -> 3)"
+fi
+
+if want 22; then
+echo "== 22. the helper: unknown titles refused, a slow client can't block it, wanted.txt must be a plain file"
+waitfor() { for i in $(seq 1 50); do grep -q "$2" "$1" 2>/dev/null && return 0; sleep 0.1; done; return 1; }
+stop_helpers() { pkill -f 'build/host/genplus-ps5-(installer|helper)' 2>/dev/null; pkill -f 'received.elf' 2>/dev/null; sleep 0.3; }
+stop_helpers
+T=$(newroot t22)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+# a process whose title can't be read (here: the host reports none) is not let out
+GENPLUS_HOST_JB_TITLE= GENPLUS_PS5_ROOT=$T/hroot ASAN_OPTIONS=detect_leaks=0 timeout 60 "$HELPER" >"$T/helper.txt" 2>&1 &
+waitfor "$T/hroot/logs/helper.log" "listening" || sleep 1
+rc=$(run "$T" "$(QUITAT 30)" "" "$T/root/roms/test.md")
+expect "grep -q 'title unknown: not Genesis Plus GX PS5' $T/hroot/logs/helper.log && ! grep -q 'letting it out' $T/hroot/logs/helper.log" "a process of unknown title is refused (fail closed)"
+stop_helpers
+# a client that sends one byte a second doesn't hold the helper: the app's request still goes through
+T=$(newroot t22b)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+GENPLUS_PS5_ROOT=$T/hroot ASAN_OPTIONS=detect_leaks=0 timeout 60 "$HELPER" >"$T/helper.txt" 2>&1 &
+waitfor "$T/hroot/logs/helper.log" "listening" || sleep 1
+python3 - "$GENPLUS_HELPER_PORT" <<'PY' &
+import socket, sys, time
+s = socket.create_connection(('127.0.0.1', int(sys.argv[1])))
+try:
+    for i in range(20):
+        s.send(b'x'); time.sleep(1)
+except OSError:
+    pass
+PY
+DRIP=$!
+sleep 0.5
+start=$(date +%s)
+rc=$(run "$T" "$(QUITAT 30)" "" "$T/root/roms/test.md")
+secs=$(( $(date +%s) - start ))
+expect "grep -q 'Genesis Plus GX helper (port [0-9]*): ret 0' $T/root/logs/boot.log" "with a slow client connected, the app is still let out"
+expect "[ $secs -lt 15 ]" "and without waiting for the slow client (${secs}s)"
+kill $DRIP 2>/dev/null
+stop_helpers
+# covers/wanted.txt as a symbolic link to another file: not read
+T=$(newroot t22c)
+mkdir -p "$T/hroot/covers"
+echo "secret" >"$T/secret.txt"
+ln -s "$T/secret.txt" "$T/hroot/covers/wanted.txt"
+GENPLUS_PS5_ROOT=$T/hroot ASAN_OPTIONS=detect_leaks=0 timeout 60 "$HELPER" >"$T/helper.txt" 2>&1 &
+waitfor "$T/hroot/logs/helper.log" "listening" || sleep 1
+python3 - "$GENPLUS_HELPER_PORT" "$T/answer.bin" <<'PY'
+import socket, struct, sys
+s = socket.create_connection(('127.0.0.1', int(sys.argv[1])))
+req = bytearray(0xA10)
+struct.pack_into('<IiI', req, 0, 0xDEADBEEF, 6, 1234)
+s.sendall(req)
+data = b''
+while True:
+    d = s.recv(65536)
+    if not d: break
+    data += d
+open(sys.argv[2], 'wb').write(data)
+PY
+expect "grep -q 'wanted-covers list, 0 bytes' $T/hroot/logs/helper.log && ! grep -q secret $T/answer.bin" "a wanted.txt that is a symbolic link is not followed"
+stop_helpers
+fi
+
+if want 23; then
+echo "== 23. saves: one folder per system, old saves moved, an erased battery save is written, unchanged ones aren't"
+# a Mega Drive and a Master System game of the same name: each its own state
+T=$(newroot t23)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+$ROM "$T/root/roms/test.sms" >/dev/null
+rc=$(run "$T" "0:0;100:$L2UP;105:0;$(QUITAT 140)" "" "$T/root/roms/test.md")
+rc2=$(run "$T" "0:0;100:$L2DOWN;105:0;$(QUITAT 140)" "" "$T/root/roms/test.sms")
+expect "[ $rc = 0 ] && [ $rc2 = 0 ]" "exit codes 0 (got $rc, $rc2)"
+expect "[ -f $T/root/states/MegaDrive/test.state1 ] && [ ! -e $T/root/states/MasterSystem/test.state1 ]" "the Mega Drive state went to states/MegaDrive/"
+expect "! grep -q 'load state 1' $T/root/logs/boot.log" "the Master System game of the same name didn't load it"
+nosan "$T"
+# a state of the first builds (directly in states/) is moved to the system's folder and loads
+T=$(newroot t23b)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+rc=$(run "$T" "0:0;100:$L2UP;105:0;$(QUITAT 140)" "" "$T/root/roms/test.md")
+mv "$T/root/states/MegaDrive/test.state1" "$T/root/states/test.state1"
+rc=$(run "$T" "0:0;100:$L2DOWN;105:0;$(QUITAT 140)" "" "$T/root/roms/test.md")
+expect "[ ! -e $T/root/states/test.state1 ] && [ -f $T/root/states/MegaDrive/test.state1 ]" "an old flat state was moved to states/MegaDrive/"
+expect "grep -q 'load state 1: ok' $T/root/logs/boot.log" "and loads"
+nosan "$T"
+# battery RAM: the game writes \$42; then erases it (\$FF while B is held) -- the erase must reach the file
+T=$(newroot t23c)
+$ROM "$T/root/roms/save.md" sram >/dev/null
+rc=$(run "$T" "0:0;$(QUITAT 100)" "" "$T/root/roms/save.md")
+S=$T/root/saves/MegaDrive/save.srm
+expect "[ -f $S ] && python3 -c 'import sys; sys.exit(0 if 0x42 in open(\"$S\",\"rb\").read() else 1)'" "the battery save holds what the game wrote"
+ino=$(stat -c %i "$S" 2>/dev/null)
+rc=$(run "$T" "0:0;$(QUITAT 100)" "" "$T/root/roms/save.md")
+expect "[ \"$(stat -c %i "$S" 2>/dev/null)\" = '$ino' ]" "an unchanged battery save isn't written again"
+rc=$(run "$T" "0:0;20:$CROSS;$(QUITAT 100)" "" "$T/root/roms/save.md")
+expect "[ -f $S ] && python3 -c 'import sys; sys.exit(1 if 0x42 in open(\"$S\",\"rb\").read() else 0)'" "the game's erase was saved"
+nosan "$T"
+fi
+
+if want 24; then
+echo "== 24. audit fixes: 720p picture edges, Resume doesn't press B, odd library files, long paths, covers kept, downloads after a tab change"
+SQUARE=8000
+# 720p: the whole picture follows the game, its left edge included (the damage is mapped to 1280x720)
+T=$(newroot t24)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+rc=$(GENPLUS_HOST_DIRECT_MAX_MIB=12 run "$T" "0:0;100:$CROSS;140:0;$(QUITAT 200)" "130" "$T/root/roms/test.md")
+expect "grep -q 'scan-out 1280x720' $T/root/logs/boot.log" "720p scan-out"
+expect "$CHECK $T/dump/flip00130.ppm 180 360 green >/dev/null && $CHECK $T/dump/flip00130.ppm 1100 360 green >/dev/null" "720p: Cross turns the picture green to its edges"
+nosan "$T"
+# Resume with Cross: while Cross is still held the game doesn't see B (the picture stays red)
+T=$(newroot t24b)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+rc=$(run "$T" "0:0;100:$L3R3;102:0;120:$CROSS;200:0;$(QUITAT 260)" "190" "$T/root/roms/test.md")
+expect "[ $rc = 0 ]" "exit code 0 (got $rc)"
+expect "$CHECK $T/dump/flip00190.ppm 960 540 red >/dev/null" "Cross held after Resume doesn't reach the game"
+nosan "$T"
+# the library: a FIFO doesn't hang the scan; an unquoted cue FILE hides its track; a zip entry with a 600-character name
+T=$(newroot t24c)
+mkdir -p "$T/root/roms/MegaDrive" "$T/root/roms/SegaCD/Disc"
+mkfifo "$T/root/roms/MegaDrive/pipe.md"
+$ROM "$T/root/roms/MegaDrive/a.md" ntsc >/dev/null
+$ROM "$T/root/roms/MegaDrive/b.md" ntsc >/dev/null
+printf 'FILE track01.bin BINARY\r\n  TRACK 01 MODE1/2352\r\n    INDEX 01 00:00:00\r\n' >"$T/root/roms/SegaCD/Disc/Disc.cue"
+head -c 4096 /dev/zero >"$T/root/roms/SegaCD/Disc/track01.bin"
+python3 - "$T/root/roms/MegaDrive/long.zip" "$T/root/roms/MegaDrive/a.md" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], 'w') as z:
+    z.writestr('x' * 600 + '.md', b'\0' * 1024)
+    z.write(sys.argv[2], 'inner.md')
+PY
+rc=$(MAXFLIPS=400 run "$T" "0:0;30:$OPTIONS;32:0;40:$CROSS;42:0" "")
+expect "[ $rc = 0 ]" "the shelf came up and quit (got $rc)"
+expect "! grep -q 'pipe.md' $T/root/logs/boot.log" "a FIFO is not listed (nor read)"
+expect "! grep -q 'track01.bin \[' $T/root/logs/boot.log && grep -q 'Disc.cue \[' $T/root/logs/boot.log" "FILE track01.bin (no quotes): the track is the disc's, not a game"
+expect "grep -q 'long.zip \[md\]' $T/root/logs/boot.log" "a zip with a 600-character entry name still lists its game"
+expect "grep -q 'MegaDrive/b.md' $T/root/covers/crc-cache.txt" "the CRC cache holds b.md"
+rm -f "$T/root/roms/MegaDrive/b.md"
+rc=$(MAXFLIPS=400 run "$T" "0:0;30:$OPTIONS;32:0;40:$CROSS;42:0" "")
+expect "! grep -q 'MegaDrive/b.md' $T/root/covers/crc-cache.txt" "a deleted ROM leaves the CRC cache"
+nosan "$T"
+# a path of 255 characters or more: refused with a message, nothing overflows
+T=$(newroot t24d)
+D="$T/root/roms/$(printf 'd%.0s' $(seq 1 120))/$(printf 'e%.0s' $(seq 1 120))"
+mkdir -p "$D"
+$ROM "$D/test.md" ntsc >/dev/null
+rc=$(MAXFLIPS=300 run "$T" "0:0;100:$CROSS;102:0" "" "$D/test.md")
+expect "grep -q 'the path is [0-9]* characters long' $T/root/logs/boot.log" "a too-long path is refused"
+nosan "$T"
+# Square (fetch the cover again) while offline: the cover it has is kept
+T=$(newroot t24e)
+mkdir -p "$T/root/roms/MegaDrive" "$T/root/covers/MegaDrive"
+$ROM "$T/root/roms/MegaDrive/Sonic The Hedgehog (USA, Europe).md" ntsc >/dev/null
+python3 -c "from PIL import Image; Image.new('RGB',(512,357),(255,0,0)).save('$T/root/covers/MegaDrive/Sonic The Hedgehog (USA, Europe).png')"
+rc=$(run "$T" "0:0;40:$SQUARE;42:0;80:$OPTIONS;82:0;90:$CROSS;92:0" "")
+expect "[ -s '$T/root/covers/MegaDrive/Sonic The Hedgehog (USA, Europe).png' ]" "offline, Square doesn't delete the cover"
+nosan "$T"
+# downloads still work after the shelf restarted its cover worker (another tab)
+T=$(newroot t24f)
+SRV=$T/srv/Sega_-_Mega_Drive_-_Genesis/Named_Boxarts; mkdir -p "$SRV" "$T/root/roms/MegaDrive" "$T/root/roms/MasterSystem" "$T/root/covers/MasterSystem"
+python3 -c "from PIL import Image; Image.new('RGB',(512,357),(255,0,0)).save('$SRV/Sonic The Hedgehog (USA, Europe).png'); Image.new('RGB',(360,512),(0,0,255)).save('$T/root/covers/MasterSystem/Alex Kidd in Miracle World (USA, Europe).png')"
+$ROM "$T/root/roms/MegaDrive/Sonic The Hedgehog (USA, Europe).md" ntsc >/dev/null
+$ROM "$T/root/roms/MasterSystem/Alex Kidd in Miracle World (USA, Europe).sms" >/dev/null
+echo "shelf_family=3" >>"$T/root/genplus-ps5.ini"
+PORT=18082
+(cd "$T/srv" && exec python3 -m http.server $PORT --bind 127.0.0.1 >/dev/null 2>&1) &
+SRVPID=$!
+sleep 1
+rc=$(OFFLINE= COVER_URL="http://127.0.0.1:$PORT/\${repo}/Named_Boxarts/\${name}.png" GENPLUS_HOST_REALTIME=1 run "$T" \
+	"0:0;60:$DOWN;62:0;300:$OPTIONS;302:0;310:$CROSS;312:0" "")
+kill $SRVPID 2>/dev/null
+expect "grep -q 'tab All games' $T/root/logs/boot.log" "moved to another tab (the cover worker restarted)"
+expect "cmp -s '$T/root/covers/MegaDrive/Sonic The Hedgehog (USA, Europe).png' '$SRV/Sonic The Hedgehog (USA, Europe).png'" "the new tab's cover was downloaded"
+nosan "$T"
 fi
 
 echo

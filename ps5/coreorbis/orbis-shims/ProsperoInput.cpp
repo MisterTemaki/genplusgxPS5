@@ -99,6 +99,8 @@ bool OpenPad(Slot& s, int32_t user)
 			s.valid = true;
 			s.owned = i == 0;
 			s.read_errors = 0;
+			if (i == 1 && !IsPadError(opened) && opened != h)
+				scePadClose(opened); // the one scePadOpen gave didn't read: not kept, so not left open
 			OrbisLog("[pad] user %x: scePadOpen %x, scePadGetHandle %x -> using %x (%s)", unsigned(user), unsigned(opened),
 				unsigned(got), unsigned(h), s.owned ? "ours" : "shared with the system");
 			return true;
@@ -232,6 +234,10 @@ void Poll()
 				OrbisLog("[pad] scePadReadState(%x) -> %x", unsigned(s.handle), unsigned(r));
 			if (s.read_errors >= 120) // two seconds of errors: open it again
 			{
+				if (s.owned)
+					scePadClose(s.handle); // ours: closed here, Detect only closes valid slots
+				s.handle = -1;
+				s.owned = false;
 				s.valid = false;
 				s.user = -2; // force Detect to redo this slot
 			}

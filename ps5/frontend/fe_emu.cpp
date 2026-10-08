@@ -12,6 +12,8 @@
 
 #include "fe_emu.h"
 
+#include "fe_bram.h"
+#include "ProsperoNotify.h"
 #include "fe_games.h"
 #include "fe_settings.h"
 #include "fe_text.h"
@@ -172,15 +174,24 @@ bool ReadFile(const std::string& path, std::vector<uint8_t>& out)
 	return true;
 }
 
+// data -> path.part, flushed to the disk (fsync) and closed without error, then renamed over path: the old file or
+// the whole new one, never a cut one (a full disk or an I/O error shows up at fflush / fsync / fclose).
 bool WriteFileAtomic(const std::string& path, const void* data, size_t size)
 {
 	const std::string tmp = path + ".part";
 	FILE* f = fopen(tmp.c_str(), "wb");
 	if (!f)
 		return false;
-	const bool ok = fwrite(data, 1, size, f) == size;
-	fclose(f);
-	return ok && rename(tmp.c_str(), path.c_str()) == 0;
+	bool ok = fwrite(data, 1, size, f) == size;
+	ok = fflush(f) == 0 && ok;
+	ok = fsync(fileno(f)) == 0 && ok;
+	ok = fclose(f) == 0 && ok;
+	if (!ok || rename(tmp.c_str(), path.c_str()) != 0)
+	{
+		remove(tmp.c_str());
+		return false;
+	}
+	return true;
 }
 
 uint64_t Fnv(const uint8_t* p, size_t n)
@@ -235,6 +246,7 @@ struct State
 
 	// saves
 	uint64_t sram_hash = 0;
+	size_t sram_size = 0; // the battery RAM's full size, taken before the core runs (then it reports a trimmed size)
 	double next_sram_check = 0;
 
 	// messages and the FPS counter
@@ -464,6 +476,10 @@ int16_t InputState(unsigned port, unsigned device, unsigned index, unsigned id)
 	if (port >= unsigned(ps5input::kMaxPads) || (device & RETRO_DEVICE_MASK) != RETRO_DEVICE_JOYPAD || index != 0)
 		return 0;
 	// L2 is the hot-key modifier for player 1: the D-pad stays with the hot keys while it is held.
+	// While the buttons that closed a menu (Cross, Circle) or opened it (L3 + R3) are still held, player 1's pad
+	// is not passed on: Resume with Cross must not press B in the game.
+	if (port == 0 && g.wait_release)
+		return 0;
 	const bool l2 = port == 0 && (g.pads[0].raw_buttons & SCE_PAD_BUTTON_L2) != 0;
 	const uint16_t bits = RetroPadBits(g.pads[port], l2);
 	if (id == RETRO_DEVICE_ID_JOYPAD_MASK)
@@ -478,7 +494,7 @@ void FlushAudio()
 	if (frames == 0)
 		return;
 	const fe::Settings& cfg = fe::Config();
-	if (!cfg.audio || g.mute)
+	if (!cfg.audio || g.mute || !ps5audio::Available())
 	{
 		g.in.clear();
 		return;
@@ -521,20 +537,49 @@ void FlushAudio()
 }
 
 // ---- saves ------------------------------------------------------------------------------------------------
+// Saves are kept per system (saves/MegaDrive/<game>.srm, states/MasterSystem/<game>.state3...): No-Intro gives the
+// same name to games of different systems ("Sonic The Hedgehog (USA, Europe)" is a Mega Drive and a Master System
+// game), and one game must never load the other's battery RAM or state.
+std::string SaveDir(const char* kind)
+{
+	return OrbisDir(kind) + "/" + fe::Info(g.system).folder;
+}
+
 std::string SramPath()
 {
-	return OrbisDir("saves") + "/" + g.name + ".srm";
+	return SaveDir("saves") + "/" + g.name + ".srm";
 }
 
 std::string StatePath(int slot)
 {
-	return OrbisDir("states") + "/" + g.name + ".state" + std::to_string(slot);
+	return SaveDir("states") + "/" + g.name + ".state" + std::to_string(slot);
+}
+
+// Saves made by 1.0's first builds sit directly in saves/ and states/: the first game of that name to start takes
+// them into its system's folder (as before, when that game was the one using them).
+void MigrateSaves()
+{
+	OrbisMkdirs(SaveDir("saves"));
+	OrbisMkdirs(SaveDir("states"));
+	auto move = [](const std::string& from, const std::string& to) {
+		if (FileExists(from) && !FileExists(to))
+		{
+			const bool ok = rename(from.c_str(), to.c_str()) == 0;
+			OrbisLog("[emu] moved %s -> %s (%s)", from.c_str(), to.c_str(), ok ? "ok" : "failed");
+		}
+	};
+	move(OrbisDir("saves") + "/" + g.name + ".srm", SramPath());
+	for (int slot = 1; slot <= 10; slot++)
+		move(OrbisDir("states") + "/" + g.name + ".state" + std::to_string(slot), StatePath(slot));
 }
 
 void LoadSram()
 {
 	uint8_t* mem = static_cast<uint8_t*>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+	// before the first retro_run the core reports the full size (0x10000); once running, only up to the last byte
+	// that isn't 0xFF -- 0 for a save the game erased, which would then never be written. Keep the full size.
 	const size_t size = retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
+	g.sram_size = mem ? size : 0;
 	g.sram_hash = mem && size ? Fnv(mem, size) : 0;
 	if (!mem || !size)
 		return;
@@ -551,7 +596,7 @@ void LoadSram()
 void SaveSram(bool force)
 {
 	uint8_t* mem = static_cast<uint8_t*>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
-	const size_t size = retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
+	const size_t size = g.sram_size;
 	if (!mem || !size)
 		return;
 	const uint64_t h = Fnv(mem, size);
@@ -567,8 +612,18 @@ void SaveSram(bool force)
 			return;
 	}
 	const bool ok = WriteFileAtomic(SramPath(), mem, size);
-	g.sram_hash = h;
+	if (ok)
+		g.sram_hash = h; // a failed write is tried again 3 s later and when the game closes
 	OrbisLog("[emu] battery save -> %s (%s)", SramPath().c_str(), ok ? "ok" : "failed");
+}
+
+// The Sega CD's backup RAM and RAM cartridge, every 3 s when they changed (the core writes them only on unload).
+void SaveBram()
+{
+	const int r = fe_bram_flush();
+	if (r)
+		OrbisLog("[emu] Sega CD backup RAM -> %s%s%s", (r & 1) ? "internal " : "", (r & 2) ? "cartridge " : "",
+			(r & 4) ? "(a write failed)" : "(ok)");
 }
 
 // The Sega CD BIOS, checked before loading a disc (Genesis Plus GX picks the one of the disc's region).
@@ -753,6 +808,14 @@ bool LoadGame(const std::string& path, std::string* error)
 	GENPLUS_STAGE(Emu, "load game");
 	CloseGame();
 	const std::string file = path.substr(path.find_last_of('/') + 1);
+	if (path.size() >= 255)
+	{
+		// the core keeps the game's path and the paths it builds from it in 256-byte buffers
+		OrbisLog("[emu] could not start %s: the path is %zu characters long", path.c_str(), path.size());
+		if (error)
+			*error = "The path of " + file + " is too long (over 254 characters): move it to a shorter folder.";
+		return false;
+	}
 	std::string ext = ExtOf(path);
 	g.path = path;
 	g.dir = path.substr(0, path.find_last_of('/'));
@@ -851,7 +914,9 @@ bool LoadGame(const std::string& path, std::string* error)
 	g.overlay_was_drawn = false;
 	RewindClear();
 	ps5video::InvalidateFrame();
+	MigrateSaves();
 	LoadSram();
+	fe_bram_start();
 	OrbisLog("[emu] running \"%s\" (%s), %.3f fps, %.0f Hz, aspect %.4f, state size %zu", g.name.c_str(),
 		SystemName().c_str(), g.fps, g.sample_rate, g.core_aspect, retro_serialize_size());
 	return true;
@@ -863,7 +928,9 @@ void CloseGame()
 		return;
 	GENPLUS_STAGE(Emu, "close game");
 	SaveSram(false);
-	retro_unload_game(); // the core writes the Sega CD backup RAM here
+	SaveBram();
+	fe_bram_stop();
+	retro_unload_game(); // the core writes the Sega CD backup RAM here (again, if it changed since)
 	g.loaded = false;
 	g.frame.clear();
 	g.rom.clear();
@@ -954,7 +1021,10 @@ void PowerCycle()
 	CloseGame();
 	std::string error;
 	if (!LoadGame(path, &error))
+	{
 		OrbisLog("[emu] power cycle: %s", error.c_str());
+		ProsperoNotify("Genesis Plus GX PS5: the game could not be started again. %s", error.c_str());
+	}
 }
 
 void RedrawLastFrame()
@@ -1068,7 +1138,7 @@ FrameResult RunFrame()
 	// -- pacing on the sound: 50 Hz games, or a ring filling up
 	if (!g.turbo && !g.rewinding)
 	{
-		if (cfg.audio)
+		if (cfg.audio && ps5audio::Available())
 		{
 			// 50 Hz: the sound is the clock; 60 Hz: vsync is, and this only catches a display that doesn't block
 			const int limit = pal ? kTargetQueued : kTargetQueued * 2;
@@ -1092,6 +1162,7 @@ FrameResult RunFrame()
 	{
 		g.next_sram_check = now + 3.0;
 		SaveSram(false);
+		SaveBram();
 	}
 	if (now >= g.next_stats)
 	{

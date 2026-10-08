@@ -35,7 +35,7 @@ bool SafeName(const std::string& f)
 	// "<system folder>/<name>.png": one of our system folders, then a name with no folder part, so no way out of
 	// the covers folder
 	const size_t slash = f.find('/');
-	if (slash == std::string::npos)
+	if (slash == std::string::npos || f.find('\0') != std::string::npos)
 		return false;
 	bool known = false;
 	for (int s = 0; s < int(System::Count); s++)
@@ -51,8 +51,10 @@ bool WriteAtomic(const std::string& path, const std::vector<uint8_t>& data)
 	FILE* f = fopen(tmp.c_str(), "wb");
 	if (!f)
 		return false;
-	const bool ok = fwrite(data.data(), 1, data.size(), f) == data.size();
-	fclose(f);
+	bool ok = fwrite(data.data(), 1, data.size(), f) == data.size();
+	ok = fflush(f) == 0 && ok;
+	ok = fsync(fileno(f)) == 0 && ok;
+	ok = fclose(f) == 0 && ok;
 	if (!ok || rename(tmp.c_str(), path.c_str()) != 0)
 	{
 		unlink(tmp.c_str());
@@ -109,10 +111,16 @@ void CoversRestartIfNeeded(const std::vector<GameInfo>& games, bool downloads_on
 			return;
 		}
 	}
-	if (FILE* f = fopen(stamp.c_str(), "w"))
 	{
-		fprintf(f, "%lld\n", (long long)now);
-		fclose(f);
+		// the stamp is the loop guard: when it can't be written, don't restart (it could not stop the next one)
+		FILE* f = fopen(stamp.c_str(), "w");
+		bool ok = f && fprintf(f, "%lld\n", (long long)now) > 0;
+		ok = f && fclose(f) == 0 && ok;
+		if (!ok)
+		{
+			OrbisLog("[covers] can't write %s: not restarting", stamp.c_str());
+			return;
+		}
 	}
 	const char* path = "/data/homebrew/" GENPLUS_TITLE_ID "/eboot.bin";
 	if (access(path, F_OK) != 0)
@@ -153,9 +161,9 @@ PrefetchResult PrefetchCovers(double budget_s)
 	size_t start = 0;
 	while (start < text.size())
 	{
-		size_t end = text.find('\n', start);
+		const size_t end = text.find('\n', start);
 		if (end == std::string::npos)
-			end = text.size();
+			break; // a last line without its end could be cut: skip it
 		const std::string line = text.substr(start, end - start);
 		start = end + 1;
 		const size_t tab = line.find('\t');
@@ -177,6 +185,7 @@ PrefetchResult PrefetchCovers(double budget_s)
 		ProsperoNotify("Genesis Plus GX PS5: downloading %d covers...", int(wanted.size()));
 
 	Http http;
+	http.SetDeadline(t0 + budget_s); // a slow server can't hold the start past the budget: one GET retries for up to a minute
 	int saved = 0;
 	for (const WantedCover& w : wanted)
 	{

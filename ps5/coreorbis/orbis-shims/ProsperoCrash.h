@@ -28,6 +28,12 @@ enum class Area
 // Install the handlers (once). Logs the anchor address used to map offsets back to the ELF.
 void Install();
 
+// The handler runs on an alternate signal stack, so a stack overflow still gets its report. That stack is
+// per thread: each thread arms its own (BigThread and the audio thread do; the installing thread gets one in
+// Install). Returns what DisarmThread frees when the thread ends; a no-op on the host.
+void* ArmThread();
+void DisarmThread(void* stack);
+
 // Record where a thread group is now. `where` must be a string literal / long-lived pointer.
 void Stage(Area area, const char* where);
 } // namespace crashlog

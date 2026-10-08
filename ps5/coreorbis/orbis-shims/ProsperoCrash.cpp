@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <pthread.h>
 #include <signal.h>
@@ -79,9 +80,19 @@ bool PlausibleText(uintptr_t v)
 
 void Handler(int sig, siginfo_t* info, void* ctx)
 {
+	// One report: a fault inside the handler ends the process; another thread crashing meanwhile waits for the
+	// first report's _exit instead of cutting it short.
 	static std::atomic<int> entered{0};
+	static std::atomic<uintptr_t> owner{0};
+	const uintptr_t self = uintptr_t(pthread_self());
 	if (entered.fetch_add(1) != 0)
-		_exit(1); // a fault inside the handler: don't loop
+	{
+		if (owner.load() == self || owner.load() == 0)
+			_exit(1);
+		for (;;)
+			sleep(1);
+	}
+	owner.store(self);
 
 	const uintptr_t anchor = g_anchor.load();
 	uintptr_t rip = 0, rsp = 0, rbp = 0;
@@ -155,7 +166,39 @@ void Handler(int sig, siginfo_t* info, void* ctx)
 	EmitLine("");
 	_exit(1);
 }
+constexpr size_t kAltStack = 64 * 1024;
 } // namespace
+
+void* ArmThread()
+{
+#if !defined(__linux__)
+	void* mem = malloc(kAltStack);
+	if (!mem)
+		return nullptr;
+	stack_t ss = {};
+	ss.ss_sp = mem;
+	ss.ss_size = kAltStack;
+	ss.ss_flags = 0;
+	if (sigaltstack(&ss, nullptr) != 0)
+	{
+		free(mem);
+		return nullptr;
+	}
+	return mem;
+#else
+	return nullptr; // the sanitizer owns the signal stacks on the host
+#endif
+}
+
+void DisarmThread(void* stack)
+{
+	if (!stack)
+		return;
+	stack_t ss = {};
+	ss.ss_flags = SS_DISABLE;
+	sigaltstack(&ss, nullptr);
+	free(stack);
+}
 
 void Install()
 {

@@ -46,6 +46,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -294,9 +295,17 @@ private:
 	{
 		unsigned n = std::thread::hardware_concurrency();
 		n = std::clamp(n == 0 ? 4u : n, 1u, 6u);
-		m_count = int(n);
+		// m_count is the caller plus the threads that really started: For() waits for that many, so a thread the
+		// system refused must not be counted (it would never answer, and the frame would wait forever)
+		m_count = 1;
 		for (unsigned i = 1; i < n; i++)
-			m_threads.emplace_back([this] { Worker(); }, 256 * 1024);
+		{
+			ps5::BigThread t([this] { Worker(); }, 256 * 1024);
+			if (!t.joinable())
+				break;
+			m_threads.push_back(std::move(t));
+			m_count++;
+		}
 	}
 	void Work(const std::function<void(int, int)>* fn, int n, int chunks)
 	{
@@ -1346,11 +1355,25 @@ struct NewpixieMini
 	}
 };
 
-// One of each, built on first use.
-Easymode& TheEasymode()
+// Only the shader in use is kept: each one holds per-pixel tables of tens of MiB, so the previous one is freed
+// when another is picked (the tables are built again if it comes back). Used from the game thread only; never
+// destroyed at exit (as the Pool).
+template <class T, class... A>
+T& Use(Shader s, A... args)
 {
-	static Easymode s;
-	return s;
+	struct Current
+	{
+		Shader kind = Shader::Off;
+		std::shared_ptr<void> obj;
+	};
+	static Current* c = new Current;
+	if (c->kind != s || !c->obj)
+	{
+		c->obj.reset(); // free the old tables before building the new ones
+		c->obj = std::make_shared<T>(args...);
+		c->kind = s;
+	}
+	return *static_cast<T*>(c->obj.get());
 }
 } // namespace
 
@@ -1382,67 +1405,17 @@ void Render(Shader s, const uint32_t* argb, int w, int h, uint32_t* surface, int
 	const Job j{argb, w, h, surface + size_t(dy) * pitch + dx, pitch, dx, dw, dh, frame};
 	switch (s)
 	{
-		case Shader::EasymodeStyle: TheEasymode().Render(j); break;
-		case Shader::Lottes:
-		{
-			static Lottes x;
-			x.Render(j);
-			break;
-		}
-		case Shader::LottesFast:
-		{
-			static LottesFast x;
-			x.Render(j);
-			break;
-		}
-		case Shader::OneTap:
-		{
-			static Ntap x(false);
-			x.Render(j);
-			break;
-		}
-		case Shader::TwoTap:
-		{
-			static Ntap x(true);
-			x.Render(j);
-			break;
-		}
-		case Shader::HyllianFast:
-		{
-			static HyllianFast x;
-			x.Render(j);
-			break;
-		}
-		case Shader::Nobody:
-		{
-			static Nobody x;
-			x.Render(j);
-			break;
-		}
-		case Shader::NewpixieMini:
-		{
-			static NewpixieMini x;
-			x.Render(j);
-			break;
-		}
-		case Shader::BlurPiSharp:
-		{
-			static BlurPi x(false);
-			x.Render(j);
-			break;
-		}
-		case Shader::BlurPiSoft:
-		{
-			static BlurPi x(true);
-			x.Render(j);
-			break;
-		}
-		case Shader::MonoCrt:
-		{
-			static MonoCrt x;
-			x.Render(j);
-			break;
-		}
+		case Shader::EasymodeStyle: Use<Easymode>(s).Render(j); break;
+		case Shader::Lottes: Use<Lottes>(s).Render(j); break;
+		case Shader::LottesFast: Use<LottesFast>(s).Render(j); break;
+		case Shader::OneTap: Use<Ntap>(s, false).Render(j); break;
+		case Shader::TwoTap: Use<Ntap>(s, true).Render(j); break;
+		case Shader::HyllianFast: Use<HyllianFast>(s).Render(j); break;
+		case Shader::Nobody: Use<Nobody>(s).Render(j); break;
+		case Shader::NewpixieMini: Use<NewpixieMini>(s).Render(j); break;
+		case Shader::BlurPiSharp: Use<BlurPi>(s, false).Render(j); break;
+		case Shader::BlurPiSoft: Use<BlurPi>(s, true).Render(j); break;
+		case Shader::MonoCrt: Use<MonoCrt>(s).Render(j); break;
 		default: break;
 	}
 }

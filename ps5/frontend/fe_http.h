@@ -27,9 +27,14 @@ public:
 	void Abort();
 	void Term();
 	bool Offline() const { return m_tried && !m_ok; }
+	// No request (or retry) runs past this CLOCK_MONOTONIC time in seconds, and the timeouts of the last one
+	// are cut to fit it; 0: no limit (the shelf's downloads).
+	void SetDeadline(double t) { m_deadline = t; }
 
 private:
 	bool Init();
+	double Remaining() const; // seconds left before the deadline (a large number when there is none)
+	double m_deadline = 0;
 	bool m_tried = false, m_ok = false, m_netctl = false;
 	int m_pool = -1, m_ssl = -1, m_ctx = -1, m_tmpl = -1;
 	std::atomic<int> m_active{-1};

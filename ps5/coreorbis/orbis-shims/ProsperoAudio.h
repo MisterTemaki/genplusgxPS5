@@ -21,4 +21,7 @@ int Free(); // frames that fit right now
 int Queued(); // frames waiting to be played
 // Underruns since the start (the audio thread played silence because the ring was empty).
 uint64_t Underruns();
+// True when the audio port opened (the output thread runs and plays the ring). Without it, nothing drains the ring,
+// so the frontend must not use it as a clock.
+bool Available();
 } // namespace ps5audio

@@ -100,6 +100,9 @@ private:
 	CoverPtr Load(int i, bool* downloaded);
 	bool Download(int i);
 	std::string CachePath(int i) const;
+	// No cover of its own, none beside the ROM, none downloaded, and no recent 404: a download is wanted.
+	// Touches the disk: never called with m_lock held.
+	bool NeedsDownload(int i) const;
 
 	std::vector<GameInfo> m_games;
 	bool m_allow_download = true;

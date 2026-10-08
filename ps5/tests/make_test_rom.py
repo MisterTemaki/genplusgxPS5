@@ -68,7 +68,7 @@ def sms():
     return bytes(rom)
 
 
-def md(region):
+def md(region, sram=False):
     # Mega Drive (68000, big endian): backdrop = CRAM colour 0, red; green while B is held (pad port A, TH high:
     # bit 4 = B, 0 = pressed). No TMSS: the core boots the cartridge directly.
     code = bytes.fromhex(
@@ -82,6 +82,18 @@ def md(region):
         "13FC004000A10003"  # move.b #$40,$A10003 TH high
         "4E714E71"          # nop; nop
         "103900A10003"      # move.b $A10003,d0
+    )
+    if sram:
+        # battery RAM: $42 at $200001 every frame, or $FF (the game "erases its save") while B is held
+        code += bytes.fromhex(
+            "143C0042"          # move.b #$42,d2
+            "08000004"          # btst #4,d0          B
+            "6604"              # bne.s keep
+            "143C00FF"          # move.b #$FF,d2
+            # keep:
+            "13C200200001"      # move.b d2,$200001
+        )
+    code += bytes.fromhex(
         "323C000E"          # move.w #$000E,d1    red (0000 BBB0 GGG0 RRR0)
         "08000004"          # btst #4,d0          B
         "6604"              # bne.s write
@@ -104,6 +116,9 @@ def md(region):
     rom[0x180:0x18E] = b"GM 00000000-00"
     struct.pack_into(">II", rom, 0x1A0, 0, len(rom) - 1)
     struct.pack_into(">II", rom, 0x1A8, 0xFF0000, 0xFFFFFF)
+    if sram:
+        rom[0x1B0:0x1B4] = b"RA\xf8\x20"  # backup RAM, odd bytes
+        struct.pack_into(">II", rom, 0x1B4, 0x200001, 0x20FFFF)
     rom[0x1F0:0x1F3] = b"E  " if region == "pal" else b"JUE"
     rom[0x200:0x200 + len(code)] = code
     return bytes(rom)
@@ -142,7 +157,7 @@ def main():
     region = sys.argv[2] if len(sys.argv) > 2 else "ntsc"
     ext = out.rsplit(".", 1)[-1].lower()
     data = {
-        "md": lambda: md(region),
+        "md": lambda: md("ntsc", sram=True) if region == "sram" else md(region),
         "gen": lambda: md(region),
         "bin": lambda: md(region),
         "sms": sms,

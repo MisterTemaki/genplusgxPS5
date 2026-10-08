@@ -20,6 +20,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/stat.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -85,13 +89,15 @@ bool JailbreakProcess(int pid, std::string& why)
 		why = "bad pid";
 		return false;
 	}
+	// Fail closed: a process whose title can't be read (a payload, a daemon, an exited pid) is refused, as is
+	// any other title. The requester can claim any pid, so the title is the only thing that decides.
 	const std::string title = TitleOf(pid);
-	if (!title.empty() && title != GENPLUS_TITLE_ID)
+	if (title != GENPLUS_TITLE_ID)
 	{
-		why = "title " + title + " is not Genesis Plus GX PS5";
+		why = title.empty() ? "title unknown: not Genesis Plus GX PS5" : "title " + title + " is not Genesis Plus GX PS5";
 		return false;
 	}
-	OrbisLog("[helper] pid %d (title %s): letting it out", pid, title.empty() ? "unknown" : title.c_str());
+	OrbisLog("[helper] pid %d (title %s): letting it out", pid, title.c_str());
 #ifdef __PROSPERO__
 	if (kernel_get_proc(pid) == 0)
 	{
@@ -116,9 +122,95 @@ bool JailbreakProcess(int pid, std::string& why)
 		why = "could not change the process's root folder";
 		return false;
 	}
+	if (r_caps != 0 || r_uid != 0 || r_ruid != 0 || r_svuid != 0 || r_rgid != 0 || r_svgid != 0 || r_jail != 0)
+		why = "ok, but some rights were not changed (see the helper's log)"; // reported, not fatal: the root folder is
 #endif
 	return true;
 }
+
+namespace
+{
+// Every connection gets this long in total, however slowly the other side sends: one slow client can't hold the
+// (single) serving loop.
+constexpr int kConnectionMs = 2000;
+
+int64_t NowMs()
+{
+	timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return int64_t(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
+}
+
+// Waits for fd to be readable (events = POLLIN) or writable (POLLOUT) before the deadline.
+bool WaitFd(int fd, short events, int64_t deadline)
+{
+	for (;;)
+	{
+		const int64_t left = deadline - NowMs();
+		if (left <= 0)
+			return false;
+		pollfd p = {fd, events, 0};
+		const int r = poll(&p, 1, int(left));
+		if (r > 0)
+			return true;
+		if (r == 0 || errno != EINTR)
+			return false;
+	}
+}
+
+size_t RecvUntil(int fd, void* buf, size_t size, int64_t deadline)
+{
+	size_t got = 0;
+	while (got < size && WaitFd(fd, POLLIN, deadline))
+	{
+		const ssize_t n = recv(fd, static_cast<char*>(buf) + got, size - got, 0);
+		if (n <= 0)
+			break;
+		got += size_t(n);
+	}
+	return got;
+}
+
+bool SendUntil(int fd, const void* buf, size_t size, int64_t deadline)
+{
+	const char* p = static_cast<const char*>(buf);
+	while (size > 0)
+	{
+		if (!WaitFd(fd, POLLOUT, deadline))
+			return false;
+		const ssize_t n = send(fd, p, size, 0);
+		if (n <= 0)
+			return false;
+		p += n;
+		size -= size_t(n);
+	}
+	return true;
+}
+
+// covers/wanted.txt: a regular file of ours (symbolic links refused), at most kMaxWantedBytes, cut at a line end.
+std::string ReadWantedList()
+{
+	std::string text;
+	const int fd = open((OrbisDir("covers") + "/wanted.txt").c_str(), O_RDONLY | O_NOFOLLOW);
+	if (fd < 0)
+		return text;
+	struct stat st;
+	if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
+	{
+		char buf[16384];
+		ssize_t n;
+		while (text.size() <= size_t(kMaxWantedBytes) && (n = read(fd, buf, sizeof(buf))) > 0)
+			text.append(buf, size_t(n));
+		if (text.size() > size_t(kMaxWantedBytes))
+		{
+			const size_t cut = text.rfind('\n', size_t(kMaxWantedBytes) - 1);
+			text.resize(cut == std::string::npos ? 0 : cut + 1); // whole lines only
+		}
+	}
+	close(fd);
+	return text;
+}
+} // namespace
 
 bool ServeHelper(void (*on_ready)())
 {
@@ -161,54 +253,18 @@ bool ServeHelper(void (*on_ready)())
 			usleep(200 * 1000);
 			continue;
 		}
-		timeval tv = {5, 0};
-		setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-		setsockopt(c, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+		const int64_t deadline = NowMs() + kConnectionMs;
 		Request req;
 		memset(&req, 0, sizeof(req));
-		size_t got = 0;
-		while (got < sizeof(req))
-		{
-			const ssize_t n = recv(c, reinterpret_cast<char*>(&req) + got, sizeof(req) - got, 0);
-			if (n <= 0)
-				break;
-			got += size_t(n);
-		}
+		const size_t got = RecvUntil(c, &req, sizeof(req), deadline);
 		if (got == sizeof(req) && req.magic == kMagic && req.cmd == kCmdWantedCovers)
 		{
 			// covers/wanted.txt, written by the app after its last scan: a fixed file of ours, nothing else
-			std::string text;
-			if (FILE* f = fopen((OrbisDir("covers") + "/wanted.txt").c_str(), "rb"))
-			{
-				char buf[16384];
-				size_t n;
-				while ((n = fread(buf, 1, sizeof(buf), f)) > 0 && text.size() < size_t(kMaxWantedBytes))
-					text.append(buf, n);
-				fclose(f);
-			}
-			if (text.size() > size_t(kMaxWantedBytes))
-				text.resize(size_t(kMaxWantedBytes));
+			const std::string text = ReadWantedList();
 			req.ret = int32_t(text.size());
 			OrbisLog("[helper] pid %d: wanted-covers list, %zu bytes", req.pid, text.size());
-			bool ok = true;
-			const char* p = reinterpret_cast<const char*>(&req);
-			for (size_t left = sizeof(req); ok && left > 0;)
-			{
-				const ssize_t n = send(c, p, left, 0);
-				ok = n > 0;
-				if (ok)
-				{
-					p += n;
-					left -= size_t(n);
-				}
-			}
-			for (size_t off = 0; ok && off < text.size();)
-			{
-				const ssize_t n = send(c, text.data() + off, text.size() - off, 0);
-				ok = n > 0;
-				if (ok)
-					off += size_t(n);
-			}
+			if (SendUntil(c, &req, sizeof(req), deadline))
+				SendUntil(c, text.data(), text.size(), deadline);
 		}
 		else if (got == sizeof(req) && req.magic == kMagic && req.cmd == kCmdJailbreak)
 		{
@@ -218,16 +274,7 @@ bool ServeHelper(void (*on_ready)())
 			memset(req.msg1, 0, sizeof(req.msg1));
 			snprintf(req.msg1, sizeof(req.msg1), "%s", ok ? "ok" : why.c_str());
 			OrbisLog("[helper] pid %d: %s", req.pid, req.msg1);
-			const char* p = reinterpret_cast<const char*>(&req);
-			size_t left = sizeof(req);
-			while (left > 0)
-			{
-				const ssize_t n = send(c, p, left, 0);
-				if (n <= 0)
-					break;
-				p += n;
-				left -= size_t(n);
-			}
+			SendUntil(c, &req, sizeof(req), deadline);
 		}
 		else
 			OrbisLog("[helper] ignored a request of %zu bytes (magic %x, cmd %d)", got, req.magic, req.cmd);

@@ -8,6 +8,8 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include "ProsperoCrash.h"
+
 #include <functional>
 #include <pthread.h>
 
@@ -74,7 +76,9 @@ private:
 	static void* Trampoline(void* arg)
 	{
 		auto* holder = static_cast<std::function<void()>*>(arg);
+		void* alt = crashlog::ArmThread(); // a crash on this thread is reported too, even a stack overflow
 		(*holder)();
+		crashlog::DisarmThread(alt);
 		delete holder;
 		return nullptr;
 	}

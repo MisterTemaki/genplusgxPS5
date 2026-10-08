@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <unistd.h>
 
 namespace fe
 {
@@ -151,7 +152,14 @@ void Settings::Save() const
 	fprintf(f, "covers_download=%d\n", covers_download ? 1 : 0);
 	fprintf(f, "shelf_family=%d\n", shelf_family);
 	fprintf(f, "last_rom=%s\n", last_rom.c_str());
-	fclose(f);
-	rename(tmp.c_str(), IniPath().c_str());
+	bool ok = ferror(f) == 0;
+	ok = fflush(f) == 0 && ok;
+	ok = fsync(fileno(f)) == 0 && ok;
+	ok = fclose(f) == 0 && ok;
+	if (!ok || rename(tmp.c_str(), IniPath().c_str()) != 0)
+	{
+		remove(tmp.c_str());
+		OrbisLog("[settings] can't save %s (disk full?)", IniPath().c_str());
+	}
 }
 } // namespace fe

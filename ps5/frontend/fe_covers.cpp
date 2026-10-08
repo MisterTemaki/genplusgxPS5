@@ -25,6 +25,9 @@
 #define STBI_ONLY_JPEG
 #define STBI_ONLY_PNG
 #define STBI_NO_STDIO
+// a cover is a few hundred pixels: a bigger image (a broken or hostile file) is refused before stb_image
+// allocates for it (its default limit, 2^24 pixels a side, would let one PNG ask for gigabytes)
+#define STBI_MAX_DIMENSIONS 8192
 #include "third_party/stb_image.h"
 
 #define STB_IMAGE_RESIZE_IMPLEMENTATION
@@ -37,6 +40,15 @@ namespace
 {
 constexpr int kLoadRadius = 12; // textures kept around the selection
 constexpr long kMissingRetrySeconds = 30L * 24 * 3600;
+
+// the status line's counter: the worker counts down, Refetch (another thread) up
+void DecrementToZero(std::atomic<int>& a)
+{
+	int v = a.load();
+	while (v > 0 && !a.compare_exchange_weak(v, v - 1))
+	{
+	}
+}
 
 const char* const kDefaultUrl =
 	"https://raw.githubusercontent.com/libretro-thumbnails/${repo}/master/Named_Boxarts/${name}.png";
@@ -71,8 +83,10 @@ bool WriteFileAtomic(const std::string& path, const std::vector<uint8_t>& data)
 	FILE* f = fopen(tmp.c_str(), "wb");
 	if (!f)
 		return false;
-	const bool ok = fwrite(data.data(), 1, data.size(), f) == data.size();
-	fclose(f);
+	bool ok = fwrite(data.data(), 1, data.size(), f) == data.size();
+	ok = fflush(f) == 0 && ok;
+	ok = fsync(fileno(f)) == 0 && ok;
+	ok = fclose(f) == 0 && ok;
 	if (!ok || rename(tmp.c_str(), path.c_str()) != 0)
 	{
 		unlink(tmp.c_str());
@@ -393,6 +407,18 @@ std::string CoverService::CachePath(int i) const
 	return OrbisDir("covers") + "/" + CoverFileFor(g);
 }
 
+bool CoverService::NeedsDownload(int i) const
+{
+	const GameInfo& g = m_games[size_t(i)];
+	const std::string cache = CachePath(i);
+	if (cache.empty() || NonEmptyFile(cache) || RecentlyMissing(cache.substr(0, cache.size() - 4) + ".missing"))
+		return false;
+	if (!OwnCover(g).empty())
+		return false;
+	const std::string dir = g.path.substr(0, g.path.find_last_of('/'));
+	return FindWithExts(dir + "/" + g.file_base).empty(); // a picture beside the ROM is used before a download
+}
+
 void CoverService::Start(const std::vector<GameInfo>& games, bool allow_download)
 {
 	Stop();
@@ -406,13 +432,7 @@ void CoverService::Start(const std::vector<GameInfo>& games, bool allow_download
 	int need = 0;
 	if (allow_download)
 		for (size_t i = 0; i < games.size(); i++)
-		{
-			const GameInfo& g = games[i];
-			const std::string cache = CachePath(int(i));
-			if (!cache.empty() && !NonEmptyFile(cache) && !RecentlyMissing(cache.substr(0, cache.size() - 4) + ".missing") &&
-				OwnCover(g).empty())
-				need++;
-		}
+			need += NeedsDownload(int(i)) ? 1 : 0;
 	m_to_download = need;
 	OrbisLog("[covers] %zu game(s), %d cover(s) to download%s", games.size(), need, allow_download ? "" : " (downloads off)");
 	m_thread = ps5::BigThread([this] { Run(); }, 8 * 1024 * 1024);
@@ -455,11 +475,21 @@ void CoverService::Refetch(int i)
 {
 	if (i < 0 || size_t(i) >= m_games.size())
 		return;
+	if (!m_allow_download || m_offline)
+	{
+		// nothing could replace it: keep the cover the game has
+		OrbisLog("[covers] refetch of %s: downloads are off or the console is offline", m_games[size_t(i)].nointro.c_str());
+		return;
+	}
 	const std::string cache = CachePath(i);
 	if (!cache.empty())
 	{
-		unlink(cache.c_str());
+		// set aside, not deleted: Download puts it back when the new one can't be had
+		if (NonEmptyFile(cache))
+			rename(cache.c_str(), (cache + ".old").c_str());
 		unlink((cache.substr(0, cache.size() - 4) + ".missing").c_str());
+		if (NeedsDownload(i))
+			m_to_download++;
 	}
 	std::lock_guard<std::mutex> lock(m_lock);
 	m_fetched[size_t(i)] = 0;
@@ -472,11 +502,20 @@ bool CoverService::Download(int i)
 {
 	const GameInfo& g = m_games[size_t(i)];
 	const std::string cache = CachePath(i);
-	if (cache.empty() || m_offline)
+	if (cache.empty())
 		return false;
+	// the cover Refetch set aside: back in place unless a new one was saved
+	const std::string old = cache + ".old";
+	auto restore = [&] {
+		if (!NonEmptyFile(cache) && NonEmptyFile(old))
+			rename(old.c_str(), cache.c_str());
+	};
 	const std::string marker = cache.substr(0, cache.size() - 4) + ".missing";
-	if (RecentlyMissing(marker))
+	if (m_offline || RecentlyMissing(marker))
+	{
+		restore();
 		return false;
+	}
 	const std::string url = CoverUrlFor(g);
 	std::vector<uint8_t> data;
 	GENPLUS_STAGE(Cover, "http get cover");
@@ -484,10 +523,17 @@ bool CoverService::Download(int i)
 	if (status == 200)
 	{
 		OrbisMkdirs(cache.substr(0, cache.find_last_of('/')));
-		WriteFileAtomic(cache, data);
-		m_downloaded++;
-		return true;
+		if (WriteFileAtomic(cache, data))
+		{
+			unlink(old.c_str());
+			m_downloaded++;
+			return true;
+		}
+		OrbisLog("[covers] can't write %s", cache.c_str());
+		restore();
+		return false;
 	}
+	restore();
 	if (status == 404)
 	{
 		FILE* f = fopen(marker.c_str(), "w");
@@ -522,15 +568,25 @@ CoverPtr CoverService::Load(int i, bool* downloaded)
 	const std::string cache = CachePath(i);
 	if (!cache.empty() && NonEmptyFile(cache))
 		cands.push_back({cache, "cache"});
-	if (cands.empty() && m_allow_download && !m_fetched[size_t(i)])
+	bool try_download = false;
+	if (cands.empty() && m_allow_download)
 	{
+		std::lock_guard<std::mutex> lock(m_lock); // Refetch (the shelf's thread) writes m_fetched too
+		try_download = !m_fetched[size_t(i)];
 		m_fetched[size_t(i)] = 1;
-		m_to_download = std::max(0, m_to_download - 1);
+	}
+	if (try_download)
+	{
+		const bool counted = NeedsDownload(i);
 		if (Download(i))
 		{
 			cands.push_back({cache, "download"});
 			*downloaded = true;
 		}
+		else if (NonEmptyFile(cache))
+			cands.push_back({cache, "cache"}); // the cover a failed refetch put back
+		if (counted)
+			DecrementToZero(m_to_download);
 	}
 	for (const Cand& c : cands)
 	{
@@ -588,17 +644,17 @@ void CoverService::Run()
 					if (i < 0 || size_t(i) >= m_games.size() || m_fetched[size_t(i)])
 						continue;
 					m_fetched[size_t(i)] = 1;
-					const GameInfo& g = m_games[size_t(i)];
-					const std::string cache = CachePath(int(i));
-					if (cache.empty() || NonEmptyFile(cache) || !OwnCover(g).empty())
-						continue;
 					fetch = int(i);
 				}
 		if (fetch >= 0)
 		{
+			// the disk is looked at with the lock released (the shelf's thread takes it every frame)
 			lock.unlock();
-			m_to_download = std::max(0, m_to_download - 1);
-			Download(fetch);
+			if (NeedsDownload(fetch))
+			{
+				Download(fetch);
+				DecrementToZero(m_to_download);
+			}
 			lock.lock();
 			continue;
 		}

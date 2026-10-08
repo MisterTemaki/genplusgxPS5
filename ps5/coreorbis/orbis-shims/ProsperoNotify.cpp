@@ -129,4 +129,9 @@ void ProsperoNotifyFlush()
 	}
 	if (s.worker.joinable())
 		s.worker.join();
+	// Flush runs before a restart (LoadExec); when that fails the app carries on, and its later toasts must
+	// still show: the next one starts a new worker.
+	std::lock_guard<std::mutex> lock(s.lock);
+	s.quit = false;
+	s.started = false;
 }

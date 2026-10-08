@@ -13,6 +13,7 @@
 #include "ProsperoCrash.h"
 #include "ProsperoSce.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <ctime>
 #include <unistd.h>
@@ -103,6 +104,7 @@ void Http::Term()
 		sceNetCtlTerm();
 	m_tmpl = m_ctx = m_ssl = m_pool = -1;
 	m_tried = m_ok = m_netctl = false;
+	m_stopping.store(false); // Abort() was for the downloads of that run: the next Start downloads again
 }
 
 int Http::Get(const std::string& url, std::vector<uint8_t>& out, size_t max_bytes)
@@ -110,15 +112,20 @@ int Http::Get(const std::string& url, std::vector<uint8_t>& out, size_t max_byte
 	// A transport failure (send or status refused) is tried again after a pause: the console's network
 	// can still be settling when the shelf opens. Every step logs its return code, as PS5SX2's fetcher does.
 	int status = -1;
-	for (int attempt = 1; attempt <= 3 && !m_stopping; attempt++)
+	for (int attempt = 1; attempt <= 3 && !m_stopping && Remaining() > 1.0; attempt++)
 	{
 		status = GetOnce(url, out, max_bytes, attempt);
 		if (status != -1)
 			break;
-		for (int i = 0; i < 15 && !m_stopping; i++)
+		for (int i = 0; i < 15 && !m_stopping && Remaining() > 1.0; i++)
 			usleep(100 * 1000);
 	}
 	return status;
+}
+
+double Http::Remaining() const
+{
+	return m_deadline > 0 ? m_deadline - Now() : 1e9;
 }
 
 int Http::GetOnce(const std::string& url, std::vector<uint8_t>& out, size_t max_bytes, int attempt)
@@ -133,11 +140,15 @@ int Http::GetOnce(const std::string& url, std::vector<uint8_t>& out, size_t max_
 		OrbisLog("[http] try %d: request for %s -> %x", attempt, url.c_str(), unsigned(req));
 		return -1;
 	}
-	const int t1 = sceHttp2SetResolveTimeOut(req, 10 * 1000 * 1000);
-	const int t2 = sceHttp2SetConnectTimeOut(req, 10 * 1000 * 1000);
-	const int t3 = sceHttp2SetSendTimeOut(req, 10 * 1000 * 1000);
-	const int t4 = sceHttp2SetRecvTimeOut(req, 10 * 1000 * 1000);
-	const int t5 = sceHttp2SetTimeOut(req, 20 * 1000 * 1000);
+	// 10 s per phase and 20 s overall, or less when the deadline (the prefetch's budget) is nearer
+	const double left = Remaining();
+	const uint32_t phase_us = uint32_t(std::min(10.0, std::max(1.0, left)) * 1e6);
+	const uint32_t total_us = uint32_t(std::min(20.0, std::max(1.0, left)) * 1e6);
+	const int t1 = sceHttp2SetResolveTimeOut(req, phase_us);
+	const int t2 = sceHttp2SetConnectTimeOut(req, phase_us);
+	const int t3 = sceHttp2SetSendTimeOut(req, phase_us);
+	const int t4 = sceHttp2SetRecvTimeOut(req, phase_us);
+	const int t5 = sceHttp2SetTimeOut(req, total_us);
 	const int rd = sceHttp2SetAutoRedirect(req, 1);
 	m_active = req;
 	int status = -1, sent = -1, got = -1, read_err = 0;

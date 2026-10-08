@@ -31,7 +31,7 @@ compiled as they are: all 100 of their C files build for the PS5 without a singl
 core through its libretro interface -- the most complete of its ports -- and plays the part RetroArch plays on a
 PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
 
-> **Status (1.0):** builds with the ps5-payload-dev SDK into a signed native app, and passes 176 host tests, which
+> **Status (1.0):** builds with the ps5-payload-dev SDK into a signed native app, and passes 211 host tests, which
 > run the same code (the Genesis Plus GX core included) on Linux with the PS5 calls simulated: a test program for
 > each of Mega Drive, Master System and Game Gear is played through the whole chain -- the shelf, the pad, the
 > core, the video and sound output. Not yet confirmed on a console. If something fails, the logs in
@@ -120,8 +120,8 @@ running. Send `GenesisPlusGXPS5.elf` and open the icon again.
 |---|---|
 | `/data/genplus/roms/<system>` | your games: `MegaDrive`, `SegaCD`, `MasterSystem`, `GameGear`, `SG1000` |
 | `/data/genplus/bios` | `bios_CD_U.bin` / `bios_CD_E.bin` / `bios_CD_J.bin` for the Sega CD |
-| `/data/genplus/saves` | battery saves (`<game>.srm`, written within 3 seconds of a change and when the game closes) and the Sega CD backup RAM (`scd_U.brm`...) |
-| `/data/genplus/states` | save states, `<game>.state1` to `<game>.state10` |
+| `/data/genplus/saves` | battery saves, one folder per system (`saves/MegaDrive/<game>.srm`, written within 3 seconds of a change and when the game closes, an erase included) and the Sega CD backup RAM (`scd_U.brm`..., also written within 3 seconds of a change) |
+| `/data/genplus/states` | save states, one folder per system: `states/MegaDrive/<game>.state1` to `.state10` (a Mega Drive and a Master System game of the same name never share one; saves of the first 1.0 builds, directly in `saves/` and `states/`, are moved there the first time the game starts) |
 | `/data/genplus/covers/<system>` | downloaded covers and your own, one folder per system (the same names as in `roms/`); `covers/` itself keeps `wanted.txt` and `crc-cache.txt` |
 | `/data/genplus/logs` | `boot.log` (the app), `installer.log` (installer/helper), `helper.log` (the helper the app starts), and the previous session's `.prev.log` files |
 | `/data/genplus/genplus-ps5.ini` | the menu settings |
@@ -352,7 +352,7 @@ make ps5 -j$(nproc)              # build/ps5/GenesisPlusGXPS5.elf (installer + h
 make send PS5_HOST=192.168.0.10  # sends it to elfldr (port 9021)
 make dist                        # build/dist/GenesisPlusGXPS5-v<version>.elf + the source zip
 make app                         # only build/app/PPSA99011/, to copy by hand
-make test                        # Linux builds (app, installer, helper) + 176 host tests (ASan/UBSan)
+make test                        # Linux builds (app, installer, helper) + 211 host tests (ASan/UBSan)
 ```
 
 The build has three stages:
@@ -406,11 +406,13 @@ The build has three stages:
 - **`ps5/app/sce_sys/`**: param.json, icon and backgrounds.
 - **`ps5/host/sce_host.cpp`** and **`ps5/tests/`**: the PS5 functions implemented on Linux, test programs for
   Mega Drive (NTSC and PAL), Master System and Game Gear (`make_test_rom.py`, tiny hand-assembled 68000 and Z80
-  programs), and the 176 tests: picture and input on each system, the Sega CD BIOS message and `.cue` tracks,
+  programs), and the 211 tests: picture and input on each system, the Sega CD BIOS message and `.cue` tracks,
   save states, PAL timing, zip, sound latency, integer scale and scanlines, the shelf's tabs, the system
   folders, the controls (pad type, 4-player adapter, button layout), the CRT shaders (the default, each one
   drawing under ASan/UBSan, the menu), settings, fast forward and rewind, covers per system, install, helper and
-  sandbox request.
+  sandbox request (unknown titles refused, slow clients, links), saves per system and their integrity (old saves
+  moved, an erased battery save written, unchanged ones left alone), and the audit's fixes (720p picture, Resume,
+  FIFOs, `.cue` sheets, long zip names and paths, the CRC cache, covers kept offline, downloads after a tab change).
 
 ## License and credits
 

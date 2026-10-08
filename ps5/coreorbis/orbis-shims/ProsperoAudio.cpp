@@ -10,10 +10,12 @@
 #include "ProsperoAudio.h"
 
 #include "OrbisPaths.h"
+#include "ProsperoCrash.h"
 #include "ProsperoSce.h"
 
 #include <atomic>
 #include <cstring>
+#include <unistd.h>
 #include <thread>
 
 namespace ps5audio
@@ -34,6 +36,7 @@ State* g = nullptr;
 
 void Run()
 {
+	void* alt = crashlog::ArmThread(); // a crash here is reported too
 	alignas(64) int16_t grain[kGrain * 2];
 	while (!g->quit.load(std::memory_order_relaxed))
 	{
@@ -55,10 +58,17 @@ void Run()
 			memset(grain, 0, sizeof(grain));
 			g->underruns.fetch_add(1, std::memory_order_relaxed);
 		}
-		sceAudioOutOutput(g->handle, grain);
+		if (sceAudioOutOutput(g->handle, grain) < 0)
+			usleep(kGrain * 1000000 / kRate); // an error returns at once: don't drain the ring at CPU speed
 	}
+	crashlog::DisarmThread(alt);
 }
 } // namespace
+
+bool Available()
+{
+	return g != nullptr;
+}
 
 bool Init()
 {

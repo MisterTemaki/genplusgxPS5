@@ -73,12 +73,12 @@ bool WriteAtomically(const std::string& path, const unsigned char* data, size_t 
 		}
 		off += size_t(n);
 	}
-	fsync(fd);
-	close(fd);
-	if (rename(part.c_str(), path.c_str()) != 0)
+	const bool synced = fsync(fd) == 0;
+	const bool closed = close(fd) == 0;
+	if (!synced || !closed || rename(part.c_str(), path.c_str()) != 0)
 	{
 		unlink(part.c_str());
-		OrbisLog("[install] can't rename %s", part.c_str());
+		OrbisLog("[install] can't finish %s", part.c_str());
 		return false;
 	}
 	return true;
