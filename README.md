@@ -69,7 +69,8 @@ Every release carries its version in the file name: `GenesisPlusGXPS5-v1.3.elf` 
 (`make dist`). When updating, replace the old ELF with the new one in your autoload or Payload Manager. In this
 README, "`GenesisPlusGXPS5.elf`" always means the current release's ELF.
 
-**1.3:** CRT shaders (CRT Easymode style by default); saves and states in one folder per system; the Sega CD
+**1.3:** CRT shaders (CRT Easymode style by default; see [CRT shaders](#crt-shaders)); MD+ and MSU-MD documented
+([MD+ and MSU-MD](#md-and-msu-md-cd-music-in-mega-drive-games)); saves and states in one folder per system; the Sega CD
 backup RAM written while the game runs; crash-safe writes; a stricter helper; and the fixes of a full code audit
 (720p picture, Resume, odd files in the library, covers, downloads). **1.0:** the first release.
 
@@ -274,22 +275,38 @@ The settings go to the core as its libretro options (`genesis_plus_gx_*`), so th
 
 ## CRT shaders
 
-Every game starts through a CRT shader -- **CRT Easymode style** unless you pick another one. **Settings ->
-Shader** (the first row) changes it at once, in the game too; **Off** gives the plain picture (with the "Smooth
-picture" and "Scanlines" options). The choice is saved in `genplus-ps5.ini` (`shader=`).
+Every game starts through a CRT shader -- **CRT Easymode style** unless you pick another one. Eleven shaders are
+built in; they work on every system (Mega Drive, Sega CD, Master System, Game Gear, SG-1000) and only while a game
+is running (the shelf is drawn without them).
 
-| Shader | Look | From |
-|---|---|---|
-| **CRT Easymode style** (default) | flat screen, sharp, scanlines that widen on bright colours, aperture grille | written for this port, after the look of EasyMode's crt-easymode |
-| crt-lottes | curved screen, Gaussian beam, shadow mask, a little bloom | Timothy Lottes (public domain) |
-| crt-lottes-fast | lighter Lottes: curved, 4-tap beam, aperture mask, tone mapping | Timothy Lottes (public domain) |
-| crt-1tap | very light, contrasty dynamic scanlines | fishku (CC0) |
-| crt-2tap | crt-1tap with exact blending between two lines | fishku (CC0) |
-| crt-hyllian-fast | sharp Catmull-Rom picture, strong scanlines, magenta/green dot mask | Hyllian (MIT) |
-| crt-nobody | curved screen with rounded corners, beam scanlines, magenta/green mask | Hyllian (MIT) |
-| newpixie-mini | strongly curved TV, colour bleed, vignette, film tone | Mattias Gustavsson (Unlicense) |
-| crt-blurPi-sharp / crt-blurPi-soft | light blur and screen-space scanlines (sharp or bilinear) | Oriol Ferrer Mesià (MIT) |
-| monoCRT | a monochrome monitor (made for black-and-white pictures) | hunterk (public domain) |
+**How to use them**
+
+1. **In a game:** press **L3 + R3** to open the pause menu and choose **Settings** (on the shelf: **Triangle**).
+2. **Shader** is the first row: **Left / Right** (or **Cross**) go through the list. The picture behind the menu changes at once,
+   so you can compare them on the game you are playing.
+3. **Circle** closes the settings; the choice is saved and used for every game from then on.
+4. **Off** gives the plain picture; with it, the "Smooth picture" and "Scanlines" options apply (with a shader on,
+   the shader does that work).
+5. The choice is kept in `/data/genplus/genplus-ps5.ini` as `shader=<number>` (the numbers below): you can also
+   set it there by hand.
+
+| `shader=` | Shader | Look | Weight | From |
+|---|---|---|---|---|
+| 0 | Off | the plain picture | -- | -- |
+| 1 | **CRT Easymode style** (default) | flat screen, sharp, scanlines that widen on bright colours, aperture grille | medium | written for this port, after the look of EasyMode's crt-easymode |
+| 2 | crt-lottes | curved screen, Gaussian beam, shadow mask, a little bloom | heavy | Timothy Lottes (public domain) |
+| 3 | crt-lottes-fast | lighter Lottes: curved, 4-tap beam, aperture mask, tone mapping | medium | Timothy Lottes (public domain) |
+| 4 | crt-1tap | very light, contrasty dynamic scanlines | light | fishku (CC0) |
+| 5 | crt-2tap | crt-1tap with exact blending between two lines | light | fishku (CC0) |
+| 6 | crt-hyllian-fast | sharp Catmull-Rom picture, strong scanlines, magenta/green dot mask | medium | Hyllian (MIT) |
+| 7 | crt-nobody | curved screen with rounded corners, beam scanlines, magenta/green mask | heavy | Hyllian (MIT) |
+| 8 | newpixie-mini | strongly curved TV, colour bleed, vignette, film tone | heavy | Mattias Gustavsson (Unlicense) |
+| 9 / 10 | crt-blurPi-sharp / crt-blurPi-soft | light blur and screen-space scanlines (sharp or bilinear) | light | Oriol Ferrer Mesià (MIT) |
+| 11 | monoCRT | a monochrome monitor (made for black-and-white pictures) | light | hunterk (public domain) |
+
+Which to pick: **CRT Easymode style** for a sharp, flat arcade-monitor look; **crt-hyllian-fast** for stronger
+scanlines and a visible dot mask; **crt-lottes** or **crt-nobody** for a curved TV; **crt-1tap / crt-2tap** when a
+game should stay as light as possible.
 
 They come from libretro's [slang-shaders](https://github.com/libretro/slang-shaders) (`crt/`), with their default
 parameters. Why these: the PS5 build draws the picture with the CPU (there is no GPU driver for homebrew apps), so
@@ -305,6 +322,44 @@ picture size. The work is shared by up to six threads. Every minute in a game, `
 took per frame (`shader N ms`); if a heavy one (crt-lottes, crt-nobody, newpixie-mini) makes a game slow down,
 pick a lighter one. Differences from the GPU versions: curved shaders read the horizontal filter between two
 screen columns, monoCRT has no beam jitter.
+
+## MD+ and MSU-MD (CD music in Mega Drive games)
+
+Genesis Plus GX plays Mega Drive games patched to stream **CD-quality music** from audio tracks, as the
+MegaSD/Mega EverDrive flash carts and the Sega CD do. Two kinds of patches exist, and the core supports both:
+
+| | **MD+** (MegaSD) | **MSU-MD** |
+|---|---|---|
+| What it uses | the MegaSD cart's CD audio | the Sega CD hardware, the game running from the cartridge ("Mode 1") |
+| Sega CD BIOS needed | no | **yes**: `bios_CD_U.bin`, `bios_CD_E.bin` or `bios_CD_J.bin` in `/data/genplus/bios/` (the one of the game's region) |
+| Its `.cue` | audio tracks with `REM LOOP` / `REM NOLOOP` lines | a data track (usually a small `.iso`) + the audio tracks |
+
+**How to use them**
+
+1. Put the patched ROM, its `.cue` and the audio tracks (`.wav`, `.ogg`, `.bin`...) **in the same folder**, with the
+   ROM and the `.cue` **named the same**:
+   ```
+   /data/genplus/roms/MegaDrive/My Game (MSU)/
+     My Game (MSU).md       <- the patched ROM: start this one
+     My Game (MSU).cue
+     My Game (MSU).iso      <- MSU-MD only
+     My Game (MSU)-01.ogg ...
+   ```
+2. For MSU-MD, put the Sega CD BIOS in `/data/genplus/bios/`.
+3. On the shelf, **start the ROM** (it shows as a Mega Drive game). The core finds the `.cue` of the same name by
+   itself and mounts its tracks. A `.chd` of the same name works too.
+4. Leave the defaults: the port leaves the core's CD add-on setting on **Auto**, which picks MD+ when the `.cue`
+   has `REM LOOP` lines and the Sega CD hardware otherwise.
+
+Good to know:
+
+- The tracks named in the `.cue` are hidden on the shelf, but the `.cue` itself is listed as a Sega CD game;
+  starting it does not start the patched game -- start the ROM.
+- MSU-MD without the BIOS: the game plays, but **without its CD music** (the core falls back to the plain
+  cartridge). `boot.log` shows the core's lines about the BIOS (`[core] ...`).
+- The ROM must not be inside a `.zip` (the core looks for the `.cue` next to the file it opened).
+- This support comes from Genesis Plus GX itself; on the PS5 it has been checked against the core's code, not yet
+  with a real MD+ or MSU-MD game on a console.
 
 ## Picture and sound
 
@@ -342,7 +397,7 @@ covers, emu, menu), and the return addresses, which map into `ps5/build/app/genp
 - No light guns (Menacer, Justifier, Light Phaser), mice or Sega Pico pen, although the core supports them; no
   Master System multitap.
 - No 32X (Genesis Plus GX doesn't emulate it), no cheats or MegaSD/MSU-MD menus in the frontend yet.
-- `.7z` archives are not read (`.zip` is); Sega CD games are not read from inside a zip.
+- `.7z` archives are not read (`.zip` is); Sega CD, MD+ and MSU-MD games are not read from inside a zip.
 
 ## Building
 
