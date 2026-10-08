@@ -25,7 +25,7 @@
 PS5_PAYLOAD_SDK ?= /opt/ps5-payload-sdk
 PS5_HOST ?= ps5
 PS5_PORT ?= 9021
-VERSION ?= 1.0
+VERSION ?= 1.2
 CORE_VERSION := 1.7.4
 TITLE_ID ?= PPSA99011
 APP_OUT := build/app/$(TITLE_ID)
