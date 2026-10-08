@@ -31,7 +31,7 @@ compiled as they are: all 100 of their C files build for the PS5 without a singl
 core through its libretro interface -- the most complete of its ports -- and plays the part RetroArch plays on a
 PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
 
-> **Status (1.2):** builds with the ps5-payload-dev SDK into a signed native app, and passes 211 host tests, which
+> **Status (1.3):** builds with the ps5-payload-dev SDK into a signed native app, and passes 211 host tests, which
 > run the same code (the Genesis Plus GX core included) on Linux with the PS5 calls simulated: a test program for
 > each of Mega Drive, Master System and Game Gear is played through the whole chain -- the shelf, the pad, the
 > core, the video and sound output. Not yet confirmed on a console. If something fails, the logs in
@@ -65,11 +65,11 @@ Genesis Plus GX PS5 only uses `/data/genplus/`, `/data/homebrew/PPSA99011/` and 
 
 ## Versions
 
-Every release carries its version in the file name: `GenesisPlusGXPS5-v1.2.elf` and `genplus-ps5-v1.2-src.zip`
+Every release carries its version in the file name: `GenesisPlusGXPS5-v1.3.elf` and `genplus-ps5-v1.3-src.zip`
 (`make dist`). When updating, replace the old ELF with the new one in your autoload or Payload Manager. In this
 README, "`GenesisPlusGXPS5.elf`" always means the current release's ELF.
 
-**1.2:** CRT shaders (CRT Easymode style by default); saves and states in one folder per system; the Sega CD
+**1.3:** CRT shaders (CRT Easymode style by default); saves and states in one folder per system; the Sega CD
 backup RAM written while the game runs; crash-safe writes; a stricter helper; and the fixes of a full code audit
 (720p picture, Resume, odd files in the library, covers, downloads). **1.0:** the first release.
 
@@ -88,10 +88,10 @@ Every screen and notification of Genesis Plus GX PS5 is in English.
 
 1. **Send `GenesisPlusGXPS5.elf`** with PS5 Payload Manager, or from a PC on the same network:
    ```sh
-   nc -q0 PS5_IP 9021 < GenesisPlusGXPS5-v1.2.elf
+   nc -q0 PS5_IP 9021 < GenesisPlusGXPS5-v1.3.elf
    ```
    It installs the app in `/data/homebrew/PPSA99011/` (`eboot.bin`, `sce_module/libc.prx`, `param.json`, the
-   icon and the backgrounds), shows **"Genesis Plus GX PS5 1.2 installed. Open it from the Genesis Plus GX PS5
+   icon and the backgrounds), shows **"Genesis Plus GX PS5 1.3 installed. Open it from the Genesis Plus GX PS5
    icon on the home screen."** and stays running as the helper.
 2. **Open the Genesis Plus GX PS5 icon.** The game shelf appears and the controller works.
 3. **Copy your games** to their system's folder, over FTP for example. The app makes the folders on its first
@@ -114,7 +114,7 @@ Tip: put `GenesisPlusGXPS5.elf` in your autoload, as PS5SX2 recommends for its p
 
 **Updating:** send the new `GenesisPlusGXPS5.elf` once. It compares every app file with the copy it carries and
 rewrites only what changed; each file is written to a temporary file and then renamed, `eboot.bin` last. The
-notification says "Genesis Plus GX PS5 updated to 1.2". A deleted or damaged icon is put back the same way. A
+notification says "Genesis Plus GX PS5 updated to 1.3". A deleted or damaged icon is put back the same way. A
 second copy sent while the helper is already running only installs and exits.
 
 **If "Genesis Plus GX PS5 has no access to /data" appears:** no helper answered and the ELF loader wasn't
