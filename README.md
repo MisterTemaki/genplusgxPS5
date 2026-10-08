@@ -195,6 +195,37 @@ wordmark: **github.com/MisterTemaki**.
 - **No cover:** the game gets a card with its title and system.
 - **Turning downloads off:** Settings, "Download covers".
 
+### Downloading all the covers yourself
+
+To fill the shelf without the console downloading anything (an offline PS5, or a big library), download each
+system's whole cover set from [libretro-thumbnails](https://github.com/libretro-thumbnails) on a PC:
+
+| System | All covers at once (zip) | Browse | Copy the images to |
+|---|---|---|---|
+| Mega Drive / Genesis | [master.zip](https://github.com/libretro-thumbnails/Sega_-_Mega_Drive_-_Genesis/archive/refs/heads/master.zip) | [Named_Boxarts](https://github.com/libretro-thumbnails/Sega_-_Mega_Drive_-_Genesis/tree/master/Named_Boxarts) | `/data/genplus/covers/MegaDrive/` |
+| Sega CD | [master.zip](https://github.com/libretro-thumbnails/Sega_-_Mega-CD_-_Sega_CD/archive/refs/heads/master.zip) | [Named_Boxarts](https://github.com/libretro-thumbnails/Sega_-_Mega-CD_-_Sega_CD/tree/master/Named_Boxarts) | `/data/genplus/covers/SegaCD/` |
+| Master System | [master.zip](https://github.com/libretro-thumbnails/Sega_-_Master_System_-_Mark_III/archive/refs/heads/master.zip) | [Named_Boxarts](https://github.com/libretro-thumbnails/Sega_-_Master_System_-_Mark_III/tree/master/Named_Boxarts) | `/data/genplus/covers/MasterSystem/` |
+| Game Gear | [master.zip](https://github.com/libretro-thumbnails/Sega_-_Game_Gear/archive/refs/heads/master.zip) | [Named_Boxarts](https://github.com/libretro-thumbnails/Sega_-_Game_Gear/tree/master/Named_Boxarts) | `/data/genplus/covers/GameGear/` |
+| SG-1000 | [master.zip](https://github.com/libretro-thumbnails/Sega_-_SG-1000/archive/refs/heads/master.zip) | [Named_Boxarts](https://github.com/libretro-thumbnails/Sega_-_SG-1000/tree/master/Named_Boxarts) | `/data/genplus/covers/SG1000/` |
+
+1. Download the zip and unpack it on the PC. The covers are in its **`Named_Boxarts`** folder (the zip also has
+   title screens and in-game shots: they are not used).
+2. Copy the `.png` files from `Named_Boxarts` (not the folder itself) to that system's `covers/` folder, over FTP
+   for example. Copying only the covers of the games you have saves space: the zips are large.
+3. Open the app: games recognised by name or CRC pick their cover up at once, and nothing is downloaded for them.
+
+Notes:
+
+- The files keep their official names (`Sonic The Hedgehog (USA, Europe).png`); the app looks for exactly that
+  name, with the characters `` & * / : ` < > ? \ | " `` replaced by `_` as in the repository. `boot.log` lists the name it found for
+  each game (`[games] ... -> "<name>"`).
+- A few `.png` files in the repository are git links: a small text file holding the name of another cover. In the
+  zip they may come out as text, not images; copy the cover they name under that file's name instead.
+- One cover: `https://raw.githubusercontent.com/libretro-thumbnails/<repository>/master/Named_Boxarts/<name>.png`
+  (spaces as `%20`).
+- A cover named after the ROM file (`covers/MegaDrive/Sonic.png` for `roms/MegaDrive/Sonic.md`) is used before
+  any other, for games the app doesn't recognise or to use another picture.
+
 The shelf is drawn by the CPU in real 3D perspective (each cover a quad turned about the vertical axis, drawn
 column by column with bilinear filtering, mipmaps and anti-aliased edges, split across several cores), as in
 Snes9x PS5.
