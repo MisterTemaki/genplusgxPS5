@@ -636,7 +636,7 @@ std::string Shelf()
 		st.slots.assign(games.size(), nullptr);
 		st.downloads = cfg.covers_download;
 		GENPLUS_STAGE(Shelf, "cover service start");
-		st.covers.Start(st.games, cfg.covers_download && ShelfDownloads());
+		st.covers.Start(st.games, cfg.covers_download && ShelfDownloads(), cfg.covers_download && BackgroundCovers());
 		st.started = true;
 	}
 	int n = int(st.games.size());
@@ -698,7 +698,7 @@ std::string Shelf()
 			cfg.shelf_family = st.family;
 			st.games = InFamily(st.all, tabs[size_t(tab)]);
 			st.slots.assign(st.games.size(), nullptr);
-			st.covers.Start(st.games, cfg.covers_download && ShelfDownloads());
+			st.covers.Start(st.games, cfg.covers_download && ShelfDownloads(), cfg.covers_download && BackgroundCovers());
 			n = int(st.games.size());
 			sel = 0;
 			for (int i = 0; i < n; i++)
@@ -729,7 +729,7 @@ std::string Shelf()
 			if (st.downloads != cfg.covers_download)
 			{
 				st.downloads = cfg.covers_download;
-				st.covers.Start(st.games, cfg.covers_download && ShelfDownloads());
+				st.covers.Start(st.games, cfg.covers_download && ShelfDownloads(), cfg.covers_download && BackgroundCovers());
 				st.slots.assign(st.games.size(), nullptr);
 			}
 			ps5input::Poll();
@@ -741,7 +741,7 @@ std::string Shelf()
 			st.covers.Refetch(sel);
 			st.slots[size_t(sel)] = nullptr;
 			dirty = true;
-			if (!ShelfDownloads()) // the console: fetch it through the prefetch, as at start
+			if (!ShelfDownloads()) // the console: the helper fetches it (or the prefetch at the next start)
 			{
 				cfg.last_rom = st.games[size_t(sel)].path;
 				cfg.Save();
@@ -790,7 +790,8 @@ std::string Shelf()
 			dirty = true;
 		}
 
-		const int status = st.covers.ToDownload() * 1000 + st.covers.Downloaded();
+		const int status = (st.covers.ToDownload() + st.covers.BackgroundLeft()) * 1000 + st.covers.Downloaded() +
+						   (st.covers.BackgroundOffline() ? 1 << 30 : 0);
 		if (status != last_status)
 		{
 			last_status = status;
@@ -911,7 +912,14 @@ std::string Shelf()
 			snprintf(s, sizeof(s), "Downloading covers... %d left", st.covers.ToDownload());
 			DrawText(W - 80 - TextWidth(s, 3), 112, s, 3, Rgb(170, 160, 210));
 		}
-		else if (st.covers.Offline() && cfg.covers_download)
+		else if (st.covers.BackgroundLeft() > 0 && !st.covers.BackgroundOffline() && cfg.covers_download)
+		{
+			char s[96];
+			snprintf(s, sizeof(s), "Downloading covers in the background... %d left", st.covers.BackgroundLeft());
+			DrawText(W - 80 - TextWidth(s, 3), 112, s, 3, Rgb(170, 160, 210));
+		}
+		else if ((st.covers.Offline() || (st.covers.BackgroundLeft() > 0 && st.covers.BackgroundOffline())) &&
+				 cfg.covers_download)
 		{
 			const char* s = "Offline: covers next time";
 			DrawText(W - 80 - TextWidth(s, 3), 112, s, 3, Rgb(170, 160, 210));

@@ -20,8 +20,10 @@
 
 namespace jailbreak
 {
-// Genesis Plus GX PS5's helper (GENPLUS_HELPER_PORT on the host)
-constexpr int kHelperPort = 9077;
+// Genesis Plus GX PS5's helper (GENPLUS_HELPER_PORT on the host). Up to 1.4 the helper listened on 9077; 1.5's,
+// which also downloads the covers, listens on 9081, so an older helper still running (until the console restarts)
+// is left alone and the app starts its own.
+constexpr int kHelperPort = 9081;
 // the ELF loader the helper is sent to when it isn't running (GENPLUS_ELFLDR_PORT on the host)
 constexpr int kElfLoaderPort = 9021;
 
@@ -40,6 +42,8 @@ constexpr int32_t kCmdJailbreak = 5;
 // Our own (from Snes9x PS5): the helper answers with covers/wanted.txt (ret = its length, then the bytes), so the app can
 // prefetch covers before it asks for /data, as PS5SX2 does (fe_prefetch.h).
 constexpr int32_t kCmdWantedCovers = 6;
+// In the answer's msg2: the helper downloads the wanted covers itself, in the background (fe_coverworker.h).
+constexpr const char* kBackgroundCovers = "covers: background";
 constexpr int32_t kMaxWantedBytes = 1 << 20;
 constexpr int32_t kRetUntouched = -1337;
 
@@ -49,7 +53,8 @@ bool RequestForSelf(std::string& how);
 
 // The app side, before the jailbreak: the wanted-covers list from the helper (starting the helper through the
 // ELF loader if none answers). False when no helper could be reached; `text` may be empty (nothing wanted).
-bool FetchWantedCovers(std::string& text);
+// `background`: the helper downloads them itself (the app downloads nothing at start).
+bool FetchWantedCovers(std::string& text, bool* background = nullptr);
 
 // The helper ELF built into the app (helper_data.cpp in the native eboot; nothing elsewhere).
 struct Blob

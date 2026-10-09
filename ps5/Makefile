@@ -25,7 +25,7 @@
 PS5_PAYLOAD_SDK ?= /opt/ps5-payload-sdk
 PS5_HOST ?= ps5
 PS5_PORT ?= 9021
-VERSION ?= 1.4
+VERSION ?= 1.5
 CORE_VERSION := 1.7.4
 TITLE_ID ?= PPSA99011
 APP_OUT := build/app/$(TITLE_ID)
@@ -63,14 +63,16 @@ EMU_SRC := coreorbis/main-boot.cpp \
 	coreorbis/orbis-shims/ProsperoCrash.cpp coreorbis/orbis-shims/ProsperoCrt.cpp \
 	frontend/fe_emu.cpp frontend/fe_menu.cpp frontend/fe_settings.cpp frontend/fe_text.cpp \
 	frontend/fe_games.cpp frontend/fe_http.cpp frontend/fe_covers.cpp frontend/fe_shelf.cpp \
-	frontend/fe_prefetch.cpp
+	frontend/fe_prefetch.cpp frontend/fe_coverfetch.cpp frontend/fe_coverworker.cpp
 # minizip (zlib licence) for games inside a .zip, built as C with the core's zlib
 EMU_C_SRC := frontend/third_party/unzip.c frontend/third_party/ioapi.c
 # a C bridge to the core's own state (the Sega CD backup RAM), built with the core's defines and headers
 BRIDGE_C_SRC := frontend/fe_bram.c
 # the payloads: the helper, and the installer (= helper + install)
+# (the helper also downloads the covers in the background: fe_coverworker.cpp, with the app's HTTPS code)
 HELPER_SRC := coreorbis/orbis-shims/orbis_paths.cpp coreorbis/orbis-shims/ProsperoNotify.cpp \
-	coreorbis/orbis-shims/ProsperoHelper.cpp
+	coreorbis/orbis-shims/ProsperoHelper.cpp coreorbis/orbis-shims/ProsperoCrash.cpp \
+	frontend/fe_http.cpp frontend/fe_coverfetch.cpp frontend/fe_coverworker.cpp
 INSTALLER_SRC := installer/installer_main.cpp $(HELPER_SRC) coreorbis/orbis-shims/ProsperoInstall.cpp
 
 CORE_INCS := $(addprefix -I$(ROOT)/,$(CORE_DIRS)) -I$(ROOT)/$(CHD)/src -I$(ROOT)/$(CHD)/include \
@@ -102,7 +104,8 @@ PS5_OUT := build/ps5
 # The PS5's CPU is Zen 2 (PS5SX2 builds with the same -march).
 PS5_OPT := -O3 -fPIC -march=znver2 -fno-strict-aliasing
 # the payloads: notifications, and the kernel access the helper needs (libkernel_sys: sceKernelGetAppInfo)
-PS5_PAYLOAD_LIBS := -lkernel_sys
+# the payload SDK's network libraries (its http2_get sample's), for the helper's cover downloads
+PS5_PAYLOAD_LIBS := -lkernel_sys -lSceNet -lSceNetCtl -lSceSsl -lSceHttp2 -lpthread
 
 PS5_CORE_OBJ := $(patsubst %.cpp,$(PS5_OUT)/core/%.o,$(CORE_SRC)) $(patsubst %.c,$(PS5_OUT)/core/%.o,$(CORE_C_SRC))
 PS5_EMU_OBJ := $(patsubst %.cpp,$(PS5_OUT)/port/%.o,$(EMU_SRC)) $(patsubst %.c,$(PS5_OUT)/port/%.o,$(EMU_C_SRC)) \

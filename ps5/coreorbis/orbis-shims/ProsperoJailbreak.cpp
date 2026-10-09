@@ -143,9 +143,10 @@ bool SendHelper()
 namespace
 {
 // 1: the list came back (maybe empty), 0: nobody on the port, -1: a helper answered but not with a list.
-int AskWanted(int port, std::string& text)
+int AskWanted(int port, std::string& text, bool* background)
 {
 	text.clear();
+	*background = false;
 	const int fd = ConnectLocal(port);
 	if (fd < 0)
 		return 0;
@@ -174,6 +175,8 @@ int AskWanted(int port, std::string& text)
 		OrbisLog("[prefetch] helper answered %zu bytes, ret %d: no list", got, req.ret);
 		return -1;
 	}
+	req.msg2[sizeof(req.msg2) - 1] = 0;
+	*background = strcmp(req.msg2, kBackgroundCovers) == 0;
 	text.resize(size_t(req.ret));
 	size_t have = 0;
 	while (have < text.size())
@@ -195,17 +198,21 @@ int AskWanted(int port, std::string& text)
 }
 } // namespace
 
-bool FetchWantedCovers(std::string& text)
+bool FetchWantedCovers(std::string& text, bool* background)
 {
+	bool bg = false;
 	const int own = PortFromEnv("GENPLUS_HELPER_PORT", kHelperPort);
-	int r = AskWanted(own, text);
+	int r = AskWanted(own, text, &bg);
 	if (r == 0 && SendHelper())
 		for (int i = 0; i < 16 && r == 0; i++)
 		{
 			usleep(500 * 1000);
-			r = AskWanted(own, text);
+			r = AskWanted(own, text, &bg);
 		}
-	OrbisLog("[prefetch] wanted list from the helper: %s, %zu bytes", r == 1 ? "ok" : "unavailable", text.size());
+	OrbisLog("[prefetch] wanted list from the helper: %s, %zu bytes%s", r == 1 ? "ok" : "unavailable", text.size(),
+		r == 1 && bg ? " (the helper downloads in the background)" : "");
+	if (background)
+		*background = r == 1 && bg;
 	return r == 1;
 }
 

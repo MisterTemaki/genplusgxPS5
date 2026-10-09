@@ -1,5 +1,8 @@
 // Genesis Plus GX PS5: the cover prefetch, as PS5SX2 does it (its fe_ps5.cpp, orbis_frontend_prefetch_covers).
 //
+// 1.5: when the helper downloads the covers itself (fe_coverworker.h), none of this runs: the app asks for the
+// list (which tells it so) and starts at once. What follows is for a helper that doesn't (etaHEN's...).
+//
 // On the console the app downloads covers in one step at the very start, before it asks the helper for
 // /data, with a 30 s budget; after that the shelf downloads nothing (PS5SX2: "the rest came from the
 // prefetch, before the jailbreak"). The 1.6.1 console log showed why: on the shelf, after that request, every
@@ -34,6 +37,7 @@ struct PrefetchItem
 struct PrefetchResult
 {
 	bool helper_ok = false; // the helper answered (so a restart can prefetch again)
+	bool background = false; // the helper downloads the covers itself, while the app runs (fe_coverworker.h)
 	std::vector<PrefetchItem> items;
 	std::set<std::string> attempted; // files tried in this start
 	double seconds = 0;
@@ -50,6 +54,8 @@ bool NetConnected();
 
 // Keeps this start's prefetch outcome for CoversRestartIfNeeded.
 void RememberPrefetch(const PrefetchResult& result);
+// The helper downloads the covers in the background (this start's prefetch said so).
+bool BackgroundCovers();
 
 // The shelf, after a scan (console only): writes covers/wanted.txt for `games`. When it holds covers this
 // start didn't try (or `force`: Square on a game), the network is up and a helper answered, shows `text` with

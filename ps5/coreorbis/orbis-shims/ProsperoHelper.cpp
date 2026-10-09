@@ -13,6 +13,7 @@
 #include "ProsperoJailbreak.h"
 
 #include "OrbisPaths.h"
+#include "fe_coverworker.h"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -242,6 +243,8 @@ bool ServeHelper(void (*on_ready)())
 	OrbisLog("[helper] listening on 127.0.0.1:%d, pid %d", port, int(getpid()));
 	if (on_ready)
 		on_ready();
+	// the covers the app wants, downloaded while it runs (fe_coverworker.h)
+	fe::StartCoverWorker();
 	for (;;)
 	{
 		const int c = accept(srv, nullptr, nullptr);
@@ -263,6 +266,9 @@ bool ServeHelper(void (*on_ready)())
 			// covers/wanted.txt, written by the app after its last scan: a fixed file of ours, nothing else
 			const std::string text = ReadWantedList();
 			req.ret = int32_t(text.size());
+			// this helper downloads them itself, in the background: the app has nothing to wait for
+			memset(req.msg2, 0, sizeof(req.msg2));
+			snprintf(req.msg2, sizeof(req.msg2), "%s", kBackgroundCovers);
 			OrbisLog("[helper] pid %d: wanted-covers list, %zu bytes", req.pid, text.size());
 			if (SendUntil(c, &req, sizeof(req), deadline))
 				SendUntil(c, text.data(), text.size(), deadline);

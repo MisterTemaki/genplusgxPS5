@@ -3,6 +3,7 @@
 
 #include "fe_covers.h"
 
+#include "fe_coverworker.h"
 #include "fe_text.h"
 
 #include "OrbisPaths.h"
@@ -13,6 +14,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -93,12 +95,6 @@ bool WriteFileAtomic(const std::string& path, const std::vector<uint8_t>& data)
 		return false;
 	}
 	return true;
-}
-
-bool IsImage(const std::vector<uint8_t>& d)
-{
-	return (d.size() > 8 && d[0] == 0x89 && d[1] == 'P' && d[2] == 'N' && d[3] == 'G') ||
-		   (d.size() > 3 && d[0] == 0xFF && d[1] == 0xD8);
 }
 
 bool NonEmptyFile(const std::string& path)
@@ -347,31 +343,6 @@ std::string CoverFileFor(const GameInfo& g)
 	return std::string(Info(g.system).folder) + "/" + ThumbnailName(g.nointro) + ".png";
 }
 
-int FetchCoverUrl(Http& http, std::string url, const std::string& label, std::vector<uint8_t>& data)
-{
-	int status = http.Get(url, data);
-	// libretro-thumbnails keeps many variants as git symlinks: the "image" is then the name of the real
-	// file ("Donkey Kong Country (USA).png"), which sits in the same folder. Follow up to two of them.
-	for (int hop = 0; hop < 2 && status == 200 && !IsImage(data); hop++)
-	{
-		std::string target(data.begin(), data.end());
-		while (!target.empty() && (target.back() == '\n' || target.back() == '\r' || target.back() == ' '))
-			target.pop_back();
-		const size_t slash = target.find_last_of('/');
-		if (slash != std::string::npos)
-			target = target.substr(slash + 1);
-		if (target.empty() || data.size() > 512)
-			break;
-		const size_t dir_end = url.find_last_of('/');
-		url = url.substr(0, dir_end + 1) + UrlEncode(target);
-		OrbisLog("[covers] %s is a link to %s", label.c_str(), target.c_str());
-		status = http.Get(url, data);
-	}
-	if (status == 200 && !IsImage(data))
-		status = -3; // not an image
-	return status;
-}
-
 std::string WantedListPath()
 {
 	return OrbisDir("covers") + "/wanted.txt";
@@ -439,11 +410,18 @@ bool CoverService::NeedsDownload(int i) const
 	return !NonEmptyFile(cache) && !RecentlyMissing(cache.substr(0, cache.size() - 4) + ".missing");
 }
 
-void CoverService::Start(const std::vector<GameInfo>& games, bool allow_download)
+void CoverService::Start(const std::vector<GameInfo>& games, bool allow_download, bool background)
 {
 	Stop();
 	m_games = games;
 	m_allow_download = allow_download;
+	m_background = background && !allow_download;
+	m_placeholder.assign(games.size(), 0);
+	m_refetching.clear();
+	m_prio_focus = -1;
+	m_last_prio.clear();
+	m_bg_left = 0;
+	m_bg_offline = false;
 	m_quit = false;
 	m_state.assign(games.size(), 0);
 	m_fetched.assign(games.size(), 0);
@@ -454,7 +432,8 @@ void CoverService::Start(const std::vector<GameInfo>& games, bool allow_download
 		for (size_t i = 0; i < games.size(); i++)
 			need += NeedsDownload(int(i)) ? 1 : 0;
 	m_to_download = need;
-	OrbisLog("[covers] %zu game(s), %d cover(s) to download%s", games.size(), need, allow_download ? "" : " (downloads off)");
+	OrbisLog("[covers] %zu game(s), %d cover(s) to download%s", games.size(), need,
+		allow_download ? "" : m_background ? " (the helper downloads them in the background)" : " (downloads off)");
 	m_thread = ps5::BigThread([this] { Run(); }, 8 * 1024 * 1024);
 }
 
@@ -504,10 +483,14 @@ void CoverService::Refetch(int i)
 	unlink((cache.substr(0, cache.size() - 4) + ".missing").c_str());
 	if (NeedsDownload(i))
 		m_to_download++;
+	struct stat st = {};
+	const long long mtime = stat(cache.c_str(), &st) == 0 ? (long long)st.st_mtime : -1;
 	std::lock_guard<std::mutex> lock(m_lock);
 	m_fetched[size_t(i)] = 0;
 	if (m_state[size_t(i)] == 2)
 		m_state[size_t(i)] = 0;
+	if (m_background)
+		m_refetching[i] = mtime; // the helper's new file replaces the card when it lands (PollBackground)
 	m_wake.notify_one();
 }
 
@@ -609,6 +592,7 @@ CoverPtr CoverService::Load(int i, bool* downloaded)
 
 void CoverService::Run()
 {
+	auto last_poll = std::chrono::steady_clock::now() - std::chrono::seconds(1);
 	std::unique_lock<std::mutex> lock(m_lock);
 	while (!m_quit)
 	{
@@ -632,6 +616,7 @@ void CoverService::Run()
 			{
 				m_ready.emplace_back(best, tex);
 				m_state[size_t(best)] = 2;
+				m_placeholder[size_t(best)] = tex && !tex->real ? 1 : 0;
 			}
 			continue;
 		}
@@ -659,7 +644,86 @@ void CoverService::Run()
 			lock.lock();
 			continue;
 		}
+		if (m_background)
+		{
+			const auto now = std::chrono::steady_clock::now();
+			if (now - last_poll >= std::chrono::milliseconds(1000))
+			{
+				last_poll = now;
+				lock.unlock();
+				PollBackground(focus);
+				lock.lock();
+				continue;
+			}
+		}
 		m_wake.wait_for(lock, std::chrono::milliseconds(250));
 	}
+}
+
+void CoverService::PollBackground(int focus)
+{
+	const int lo = std::max(0, focus - kLoadRadius), hi = std::min(int(m_games.size()) - 1, focus + kLoadRadius);
+	// 1. covers the helper saved since: their placeholder cards are loaded again
+	std::vector<int> cards;
+	std::map<int, long long> refetching;
+	{
+		std::lock_guard<std::mutex> lock(m_lock);
+		for (int i = lo; i <= hi; i++)
+			if (m_state[size_t(i)] == 2 && m_placeholder[size_t(i)])
+				cards.push_back(i);
+		refetching = m_refetching;
+	}
+	std::vector<int> landed;
+	for (int i : cards)
+	{
+		const std::string cache = CachePath(i);
+		if (!cache.empty() && NonEmptyFile(cache))
+			landed.push_back(i);
+	}
+	for (const auto& r : refetching)
+	{
+		// Square: a new file (another mtime) once the helper has it
+		struct stat st = {};
+		const std::string cache = CachePath(r.first);
+		if (!cache.empty() && stat(cache.c_str(), &st) == 0 && st.st_size > 0 && (long long)st.st_mtime != r.second &&
+			!Exists(RefetchMarker(cache)))
+			landed.push_back(r.first);
+	}
+	if (!landed.empty())
+	{
+		std::lock_guard<std::mutex> lock(m_lock);
+		for (int i : landed)
+		{
+			m_refetching.erase(i);
+			if (m_state[size_t(i)] == 2)
+			{
+				m_state[size_t(i)] = 0;
+				m_placeholder[size_t(i)] = 0;
+			}
+		}
+	}
+	// 2. the covers around the selection go first: covers/priority.txt, nearest first
+	if (focus != m_prio_focus)
+	{
+		m_prio_focus = focus;
+		std::string text;
+		for (int d = 0; d <= kLoadRadius; d++)
+			for (int sgn = -1; sgn <= 1; sgn += 2)
+			{
+				const int i = focus + sgn * d;
+				if ((d == 0 && sgn > 0) || i < lo || i > hi || !NeedsDownload(i))
+					continue;
+				text += CoverFileFor(m_games[size_t(i)]) + "\t" + CoverUrlFor(m_games[size_t(i)]) + "\n";
+			}
+		if (text != m_last_prio)
+		{
+			m_last_prio = text;
+			WriteFileAtomic(PriorityListPath(), std::vector<uint8_t>(text.begin(), text.end()));
+		}
+	}
+	// 3. how far the helper got
+	const CoverProgress p = ReadCoverProgress();
+	m_bg_left = p.valid ? p.left : 0;
+	m_bg_offline = p.valid && p.state == "offline";
 }
 } // namespace fe

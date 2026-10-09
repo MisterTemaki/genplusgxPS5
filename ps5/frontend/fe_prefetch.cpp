@@ -4,6 +4,7 @@
 
 #include "fe_prefetch.h"
 
+#include "fe_coverfetch.h"
 #include "fe_covers.h"
 #include "fe_http.h"
 
@@ -29,39 +30,6 @@ double Now()
 	return ts.tv_sec + ts.tv_nsec / 1e9;
 }
 
-// A file name we accept from the list: a plain name in the covers folder, ending in .png.
-bool SafeName(const std::string& f)
-{
-	// "<system folder>/<name>.png": one of our system folders, then a name with no folder part, so no way out of
-	// the covers folder
-	const size_t slash = f.find('/');
-	if (slash == std::string::npos || f.find('\0') != std::string::npos)
-		return false;
-	bool known = false;
-	for (int s = 0; s < int(System::Count); s++)
-		known = known || (strlen(Info(System(s)).folder) == slash && f.compare(0, slash, Info(System(s)).folder) == 0);
-	const std::string name = f.substr(slash + 1);
-	return known && name.size() > 4 && name.size() < 250 && name.find('/') == std::string::npos &&
-		   name.find('\\') == std::string::npos && name != ".png" && name.compare(name.size() - 4, 4, ".png") == 0;
-}
-
-bool WriteAtomic(const std::string& path, const std::vector<uint8_t>& data)
-{
-	const std::string tmp = path + ".part";
-	FILE* f = fopen(tmp.c_str(), "wb");
-	if (!f)
-		return false;
-	bool ok = fwrite(data.data(), 1, data.size(), f) == data.size();
-	ok = fflush(f) == 0 && ok;
-	ok = fsync(fileno(f)) == 0 && ok;
-	ok = fclose(f) == 0 && ok;
-	if (!ok || rename(tmp.c_str(), path.c_str()) != 0)
-	{
-		unlink(tmp.c_str());
-		return false;
-	}
-	return true;
-}
 PrefetchResult g_last;
 bool g_have_last = false;
 } // namespace
@@ -69,8 +37,14 @@ bool g_have_last = false;
 void RememberPrefetch(const PrefetchResult& result)
 {
 	g_last.helper_ok = result.helper_ok;
+	g_last.background = result.background;
 	g_last.attempted = result.attempted;
 	g_have_last = true;
+}
+
+bool BackgroundCovers()
+{
+	return g_have_last && g_last.background;
 }
 
 void CoversRestartIfNeeded(const std::vector<GameInfo>& games, bool downloads_on, bool force, void (*show)(const char*))
@@ -82,6 +56,12 @@ void CoversRestartIfNeeded(const std::vector<GameInfo>& games, bool downloads_on
 	}
 	const std::vector<WantedCover> wanted = MissingCovers(games);
 	WriteWantedList(wanted);
+	if (BackgroundCovers())
+	{
+		if (!wanted.empty())
+			OrbisLog("[covers] %zu cover(s) wanted: the helper downloads them in the background", wanted.size());
+		return;
+	}
 	int fresh = 0;
 	for (const WantedCover& w : wanted)
 		fresh += g_last.attempted.count(w.file) ? 0 : 1;
@@ -155,24 +135,14 @@ PrefetchResult PrefetchCovers(double budget_s)
 	PrefetchResult r;
 	const double t0 = Now();
 	std::string text;
-	r.helper_ok = jailbreak::FetchWantedCovers(text);
-
-	std::vector<WantedCover> wanted;
-	size_t start = 0;
-	while (start < text.size())
+	r.helper_ok = jailbreak::FetchWantedCovers(text, &r.background);
+	if (r.background)
 	{
-		const size_t end = text.find('\n', start);
-		if (end == std::string::npos)
-			break; // a last line without its end could be cut: skip it
-		const std::string line = text.substr(start, end - start);
-		start = end + 1;
-		const size_t tab = line.find('\t');
-		if (tab == std::string::npos)
-			continue;
-		WantedCover w{line.substr(0, tab), line.substr(tab + 1)};
-		if (SafeName(w.file) && (w.url.compare(0, 8, "https://") == 0 || w.url.compare(0, 7, "http://") == 0))
-			wanted.push_back(w);
+		OrbisLog("[prefetch] the helper downloads the covers while the app runs: nothing to wait for");
+		r.seconds = Now() - t0;
+		return r;
 	}
+	const std::vector<WantedCover> wanted = ParseWantedList(text);
 	OrbisLog("[prefetch] %zu cover(s) to fetch before asking for /data (budget %.0f s)", wanted.size(), budget_s);
 	if (wanted.empty())
 	{
@@ -226,30 +196,9 @@ void SavePrefetched(const PrefetchResult& result)
 	int saved = 0, missing = 0;
 	for (const PrefetchItem& it : result.items)
 	{
-		const std::string path = dir + "/" + it.file;
-		OrbisMkdirs(path.substr(0, path.find_last_of('/')));
-		if (it.status == 200 && !it.data.empty())
-		{
-			if (WriteAtomic(path, it.data))
-			{
-				saved++;
-				unlink((path.substr(0, path.size() - 4) + ".refetch").c_str()); // Square's request is done
-			}
-			else
-				OrbisLog("[prefetch] can't write %s", path.c_str());
-		}
-		else if (it.status == 404)
-		{
-			// as the shelf does: no new try for 30 days (Square on the shelf asks again); a cover already there stays
-			unlink((path.substr(0, path.size() - 4) + ".refetch").c_str());
-			const std::string marker = path.substr(0, path.size() - 4) + ".missing";
-			if (FILE* f = fopen(marker.c_str(), "w"))
-			{
-				fprintf(f, "%s\n", it.url.c_str());
-				fclose(f);
-			}
-			missing++;
-		}
+		const int r = SaveCoverResult(dir, WantedCover{it.file, it.url}, it.status, it.data);
+		saved += r == 1 ? 1 : 0;
+		missing += r == 0 ? 1 : 0;
 	}
 	OrbisLog("[prefetch] saved %d cover(s) in %s, %d not on the server", saved, dir.c_str(), missing);
 }

@@ -31,7 +31,7 @@ compiled as they are: all 100 of their C files build for the PS5 without a singl
 core through its libretro interface -- the most complete of its ports -- and plays the part RetroArch plays on a
 PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
 
-> **Status (1.4):** builds with the ps5-payload-dev SDK into a signed native app, and passes 231 host tests, which
+> **Status (1.5):** builds with the ps5-payload-dev SDK into a signed native app, and passes 231 host tests, which
 > run the same code (the Genesis Plus GX core included) on Linux with the PS5 calls simulated: a test program for
 > each of Mega Drive, Master System and Game Gear is played through the whole chain -- the shelf, the pad, the
 > core, the video and sound output. Not yet confirmed on a console. If something fails, the logs in
@@ -51,8 +51,8 @@ icon, and the payload you send is its installer:
 When it opens, the app asks the helper to let it out of its sandbox; without that an app sees neither `/data`
 nor USB drives. The request is the one PS5SX2 makes:
 
-- **Who is asked, in order:** the Genesis Plus GX helper (127.0.0.1:9077), then etaHEN (9028) and the daemon on
-  port 9069.
+- **Who is asked, in order:** the Genesis Plus GX helper (127.0.0.1:9081; up to 1.4 the helper used 9077 and is
+  left alone), then etaHEN (9028) and the daemon on port 9069.
 - **If nobody answers:** the app carries a copy of the helper (`GenesisPlusGXPS5-helper.elf`), sends it to the ELF
   loader (127.0.0.1:9021) and asks again. So the icon keeps working after a reboot, as long as the ELF loader
   runs.
@@ -60,14 +60,20 @@ nor USB drives. The request is the one PS5SX2 makes:
   elfldr does for payloads. No other app is touched.
 
 Genesis Plus GX PS5 only uses `/data/genplus/`, `/data/homebrew/PPSA99011/` and its own
-`/user/appmeta/PPSA99011/`. It sits next to Snes9x PS5 (PPSA99009, helper port 9075), Mesen2 PS5 (PPSA99010, port
-9076) and PS5SX2 (PPSA99203) without touching them.
+`/user/appmeta/PPSA99011/`. It sits next to Snes9x PS5 (PPSA99009, helper port 9080), Mesen2 PS5 (PPSA99010, port
+9076), FBNeo PS5 (PPSA99012, port 9079) and PS5SX2 (PPSA99203) without touching them.
 
 ## Versions
 
-Every release carries its version in the file name: `GenesisPlusGXPS5-v1.4.elf` and `genplus-ps5-v1.4-src.zip`
+Every release carries its version in the file name: `GenesisPlusGXPS5-v1.5.elf` and `genplus-ps5-v1.5-src.zip`
 (`make dist`). When updating, replace the old ELF with the new one in your autoload or Payload Manager. In this
 README, "`GenesisPlusGXPS5.elf`" always means the current release's ELF.
+
+**1.5:** **Covers download in the background.** 1.4 downloaded them before the app opened (up to 30 s with the
+launch screen up) and restarted itself for new ones. Now the helper downloads them while you use the app: it starts
+at once, the covers around the selection come first, and each one appears on the shelf as it lands ("Downloading
+covers in the background... N left"). After updating, send `GenesisPlusGXPS5-v1.5.elf` once (or let the app start
+its helper itself): 1.4's helper keeps running until the console restarts, but 1.5 uses its own (port 9081).
 
 **1.4:** Square (fetch a cover again) works again on the console, and keeps the cover until the new one has
 arrived; a ROM named as its official name gets its cover fetched again. **1.3:** CRT shaders (CRT Easymode style by default; see [CRT shaders](#crt-shaders)); MD+ and MSU-MD documented
@@ -91,10 +97,10 @@ Every screen and notification of Genesis Plus GX PS5 is in English.
 
 1. **Send `GenesisPlusGXPS5.elf`** with PS5 Payload Manager, or from a PC on the same network:
    ```sh
-   nc -q0 PS5_IP 9021 < GenesisPlusGXPS5-v1.4.elf
+   nc -q0 PS5_IP 9021 < GenesisPlusGXPS5-v1.5.elf
    ```
    It installs the app in `/data/homebrew/PPSA99011/` (`eboot.bin`, `sce_module/libc.prx`, `param.json`, the
-   icon and the backgrounds), shows **"Genesis Plus GX PS5 1.4 installed. Open it from the Genesis Plus GX PS5
+   icon and the backgrounds), shows **"Genesis Plus GX PS5 1.5 installed. Open it from the Genesis Plus GX PS5
    icon on the home screen."** and stays running as the helper.
 2. **Open the Genesis Plus GX PS5 icon.** The game shelf appears and the controller works.
 3. **Copy your games** to their system's folder, over FTP for example. The app makes the folders on its first
@@ -177,15 +183,17 @@ wordmark: **github.com/MisterTemaki**.
     name and cover.
   - Loose names (`sonic the hedgehog.md`) are recognised too.
   - CRCs are cached in `covers/crc-cache.txt`, so each ROM is read once.
-- **Automatic covers, the PS5SX2 way:** box art comes from
+- **Automatic covers, in the background:** box art comes from
   [libretro-thumbnails](https://github.com/libretro-thumbnails) (each system's `Named_Boxarts`) over HTTPS, with
-  the console's own `libSceHttp2`/`libSceSsl`, in a **prefetch** step as the app opens, before it asks for
-  `/data` (30 s budget), exactly as PS5SX2 does. After that the shelf downloads nothing (on the console HTTPS
-  fails at that stage, as Snes9x PS5's logs showed).
-  - Every start writes the missing covers to `/data/genplus/covers/wanted.txt`; the helper hands that list to the
-    app at the next start, and the prefetch fetches them.
-  - **New games:** when the app finds covers it hasn't tried yet, it shows "Downloading covers..." and
-    **restarts itself** (as PS5SX2 re-executes its own eboot); the covers arrive on that start.
+  the console's own `libSceHttp2`/`libSceSsl`.
+  - The app can't download once it is out of its sandbox (on the console HTTPS fails at that stage, as Snes9x
+    PS5's logs showed), so the **helper** does it (a payload with network access of its own), while you use the
+    app. The app opens at once and lists the missing covers in `/data/genplus/covers/wanted.txt`, and the ones
+    around the selection in `covers/priority.txt` (fetched first); the helper downloads them one by one, and each
+    cover replaces its card on the shelf as it lands. The top right corner shows "Downloading covers in the
+    background... N left". The helper keeps going while the app is closed.
+  - With another jailbreak daemon instead of the Genesis Plus GX helper (etaHEN, 9069), 1.4's way still works: a
+    prefetch before the app asks for `/data` (30 s), and a restart when new games need covers.
   - Covers are saved in their system's folder, `covers/<system>/<name>.png`
     (`covers/MegaDrive/Sonic The Hedgehog (USA, Europe).png`), and never downloaded twice. Covers cached by an
     earlier build as `covers/md - <name>.png` are moved there at the next start. A cover the server doesn't
@@ -421,7 +429,7 @@ If something fails, send the files in `/data/genplus/logs/`: `boot.log` (the app
 `helper.log`, plus the previous session's `.prev.log` files. They record every step:
 
 - the sandbox request and who answered;
-- the cover prefetch, cover by cover;
+- the covers, one by one (`helper.log`: the background downloads; `boot.log`: the prefetch, when there is one);
 - every `sceVideoOut*` call, and the picture's size and place on the screen;
 - the controller handle and its first read;
 - the games found, with their system and name;
@@ -498,6 +506,8 @@ The build has three stages:
   - `fe_games.cpp` + `data/nointro.tsv`: the library, systems, `.cue` tracks, zips and names
     (`ps5/tools/make_gamedb.py` makes the table);
   - `fe_shelf.cpp`, `fe_covers.cpp`, `fe_prefetch.cpp`, `fe_http.cpp`: the 3D shelf and covers;
+  - `fe_coverworker.cpp`, `fe_coverfetch.cpp`: the helper's background downloads, and the fetch code the app and
+    the helper share;
   - `fe_menu.cpp`, `fe_settings.cpp`, `fe_text.cpp`: menus, settings, text with PS5SX2's fonts;
   - `third_party/`: minizip (unzip.c, ioapi.c), as in Snes9x.
 - **`ps5/proto/native/`**: ps5-native-app-boilerplate's tools (BlackBearReloaded, GPL-3.0), taken from PS5SX2

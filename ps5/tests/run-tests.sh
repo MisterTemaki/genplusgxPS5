@@ -395,13 +395,14 @@ expect "grep -q 'splash screen hidden' $T/root/logs/boot.log" "the splash screen
 fi
 
 if want 18; then
-echo "== 18. covers as PS5SX2: prefetched before asking for /data; new games restart the app to fetch them"
+echo "== 18. covers in the background: the helper downloads them while the shelf runs; an older helper: the prefetch"
 waitfor() { for i in $(seq 1 50); do grep -q "$2" "$1" 2>/dev/null && return 0; sleep 0.1; done; return 1; }
 stop_helpers() { pkill -f 'build/host/genplus-ps5-(installer|helper)' 2>/dev/null; pkill -f 'received.elf' 2>/dev/null; sleep 0.3; }
 stop_helpers
 T=$(newroot t18)
 SRV=$T/srv/Sega_-_Mega_Drive_-_Genesis/Named_Boxarts; mkdir -p "$SRV" "$T/root/covers"
-python3 -c "from PIL import Image; Image.new('RGB',(512,357),(255,0,0)).save('$SRV/Sonic The Hedgehog (USA, Europe).png')"
+COVER="Sonic The Hedgehog (USA, Europe).png"
+python3 -c "from PIL import Image; Image.new('RGB',(512,357),(255,0,0)).save('$SRV/$COVER')"
 $ROM "$T/root/roms/Sonic The Hedgehog (USA, Europe).md" ntsc >/dev/null
 PORT=18081
 (cd "$T/srv" && exec python3 -m http.server $PORT --bind 127.0.0.1 >/dev/null 2>&1) &
@@ -409,19 +410,54 @@ SRVPID=$!
 GENPLUS_PS5_ROOT=$T/root ASAN_OPTIONS=detect_leaks=0 timeout 120 "$HELPER" >"$T/helper.txt" 2>&1 &
 waitfor "$T/root/logs/helper.log" "listening" || sleep 1
 URL="http://127.0.0.1:$PORT/\${repo}/Named_Boxarts/\${name}.png"
-SHELFQUIT="0:0;30:$OPTIONS;32:0;40:$CROSS;42:0"
-rc=$(OFFLINE= COVER_URL="$URL" run "$T" "$SHELFQUIT" "")
-expect "grep -q 'MegaDrive/Sonic The Hedgehog (USA, Europe).png' $T/root/covers/wanted.txt" "first start: the missing cover goes to covers/wanted.txt"
-expect "grep -q 'restarting .* so the prefetch gets them' $T/root/logs/boot*.log" "first start: the app restarts itself for the new cover"
-expect "[ ! -f '$T/root/covers/MegaDrive/Sonic The Hedgehog (USA, Europe).png' ]" "first start: nothing downloaded on the shelf (as PS5SX2)"
-rm -f "$T/root/covers/restart.stamp"
-rc=$(OFFLINE= COVER_URL="$URL" run "$T" "$SHELFQUIT" "")
-expect "[ $rc = 0 ]" "second start: exit code 0 (got $rc)"
-expect "cmp -s '$T/root/covers/MegaDrive/Sonic The Hedgehog (USA, Europe).png' '$SRV/Sonic The Hedgehog (USA, Europe).png'" "second start: the cover was prefetched and saved"
-expect "awk '/\[prefetch\] 1 of 1 fetched/{p=NR} /\[jailbreak\] pid/{j=NR} END{exit !(p && j && p<j)}' $T/root/logs/boot.log" "the download happened before the request for /data"
-expect "! grep -q 'restarting' $T/root/logs/boot.log" "second start: no restart (nothing new)"
-expect "[ ! -s $T/root/covers/wanted.txt ]" "second start: the wanted list is empty"
+rc=$(OFFLINE= COVER_URL="$URL" GENPLUS_HOST_REALTIME=1 run "$T" "0:0;300:$OPTIONS;302:0;310:$CROSS;312:0" "20,280")
+expect "[ $rc = 0 ]" "exit code 0 (got $rc)"
+expect "grep -q 'the helper downloads the covers while the app runs: nothing to wait for' $T/root/logs/boot.log && ! grep -q 'restarting' $T/root/logs/boot*.log" "the app starts at once: no download before /data, no restart"
+expect "grep -q 'MegaDrive/Sonic The Hedgehog (USA, Europe).png' $T/root/covers/wanted.txt" "the missing cover goes to covers/wanted.txt"
+expect "grep -q 'MegaDrive/Sonic The Hedgehog (USA, Europe).png -> 200' $T/root/logs/helper.log && cmp -s '$T/root/covers/MegaDrive/$COVER' '$SRV/$COVER'" "the helper downloaded it into covers/MegaDrive"
+expect "! $CHECK $T/dump/flip00020.ppm 960 420 255 0 0 >/dev/null 2>&1 && $CHECK $T/dump/flip00280.ppm 960 420 255 0 0 >/dev/null" "the shelf showed its card, then the cover once it landed"
+expect "grep -q '^0 1 idle' $T/root/covers/progress.txt" "covers/progress.txt: nothing left, 1 fetched"
 kill $SRVPID 2>/dev/null
+stop_helpers
+# an older helper (1.4's protocol: the list without "covers: background"): the prefetch before /data, as before
+T=$(newroot t18b)
+mkdir -p "$T/srv/Sega_-_Mega_Drive_-_Genesis/Named_Boxarts" "$T/root/covers"
+cp "$SRV/$COVER" "$T/srv/Sega_-_Mega_Drive_-_Genesis/Named_Boxarts/"
+$ROM "$T/root/roms/Sonic The Hedgehog (USA, Europe).md" ntsc >/dev/null
+(cd "$T/srv" && exec python3 -m http.server $PORT --bind 127.0.0.1 >/dev/null 2>&1) &
+SRVPID=$!
+printf 'MegaDrive/%s\thttp://127.0.0.1:%s/Sega_-_Mega_Drive_-_Genesis/Named_Boxarts/Sonic%%20The%%20Hedgehog%%20%%28USA%%2C%%20Europe%%29.png\n' "$COVER" $PORT >"$T/wanted.txt"
+python3 - "$GENPLUS_HELPER_PORT" "$T/wanted.txt" <<'PY' &
+import socket, struct, sys, time
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(('127.0.0.1', int(sys.argv[1]))); s.listen(4); s.settimeout(60)
+text = open(sys.argv[2], 'rb').read()
+end = time.time() + 60
+while time.time() < end:
+    try:
+        c, _ = s.accept()
+    except OSError:
+        break
+    req = b''
+    while len(req) < 0xA10:
+        d = c.recv(0xA10 - len(req))
+        if not d: break
+        req += d
+    if len(req) == 0xA10:
+        magic, cmd, pid, ret = struct.unpack_from('<IiiI', req, 0)
+        out = bytearray(req)
+        if cmd == 6:
+            struct.pack_into('<i', out, 12, len(text)); c.sendall(bytes(out) + text)
+        elif cmd == 5:
+            struct.pack_into('<i', out, 12, 0); out[16:18] = b'ok'; c.sendall(bytes(out))
+    c.close()
+PY
+OLDPID=$!
+sleep 0.5
+rc=$(OFFLINE= COVER_URL="$URL" run "$T" "0:0;30:$OPTIONS;32:0;40:$CROSS;42:0" "")
+expect "[ $rc = 0 ]" "exit code 0 (got $rc)"
+expect "grep -q '\[prefetch\] 1 of 1 fetched' $T/root/logs/boot.log && cmp -s '$T/root/covers/MegaDrive/$COVER' '$SRV/$COVER'" "an older helper: the cover is prefetched before /data and saved"
+kill $OLDPID $SRVPID 2>/dev/null
 stop_helpers
 fi
 
@@ -680,17 +716,20 @@ rc=$(OFFLINE= COVER_URL="$URL" GENPLUS_HOST_REALTIME=1 run "$T" "$SQ" "")
 kill $SRVPID 2>/dev/null
 expect "cmp -s '$T/root/covers/MegaDrive/Sonic The Hedgehog (USA, Europe).png' '$SRV/Sonic The Hedgehog (USA, Europe).png'" "the server has it: the new cover replaces the old one"
 nosan "$T"
-# as on the console (a helper answers, so the shelf downloads nothing): Square puts the cover on the wanted list and
-# restarts the app so the prefetch fetches it; the cover stays meanwhile
+# as on the console (a helper answers, so the shelf downloads nothing): Square puts the cover on the wanted list
+# and the helper fetches it in the background (1.5; no restart); the old cover stays until the new one lands
 T2=$(newroot t24g)
 mkdir -p "$T2/root/roms/MegaDrive" "$T2/root/covers/MegaDrive"
 $ROM "$T2/root/roms/MegaDrive/Sonic The Hedgehog (USA, Europe).md" ntsc >/dev/null
 cp "$T/old.png" "$T2/root/covers/MegaDrive/Sonic The Hedgehog (USA, Europe).png"
+(cd "$T/srv" && exec python3 -m http.server $PORT --bind 127.0.0.1 >/dev/null 2>&1) &
+SRVPID=$!
 GENPLUS_PS5_ROOT=$T2/root ASAN_OPTIONS=detect_leaks=0 timeout 60 "$HELPER" >"$T2/helper.txt" 2>&1 &
 for i in $(seq 1 50); do grep -q listening "$T2/root/logs/helper.log" 2>/dev/null && break; sleep 0.1; done
-rc=$(OFFLINE= COVER_URL="$URL" run "$T2" "0:0;40:$SQUARE;42:0;200:$OPTIONS;202:0;210:$CROSS;212:0" "")
-expect "grep -q 'MegaDrive/Sonic The Hedgehog (USA, Europe).png' $T2/root/covers/wanted.txt && grep -q 'restarting .* so the prefetch gets them' $T2/root/logs/boot*.log" "console: Square lists the cover and restarts the app to fetch it"
-expect "cmp -s '$T2/root/covers/MegaDrive/Sonic The Hedgehog (USA, Europe).png' $T/old.png" "and the cover stays until a new one arrives"
+rc=$(OFFLINE= COVER_URL="$URL" GENPLUS_HOST_REALTIME=1 run "$T2" "0:0;40:$SQUARE;42:0;300:$OPTIONS;302:0;310:$CROSS;312:0" "")
+expect "grep -q 'MegaDrive/Sonic The Hedgehog (USA, Europe).png' $T2/root/covers/wanted.txt && ! grep -q 'restarting' $T2/root/logs/boot*.log" "console: Square lists the cover for the helper, no restart"
+expect "grep -q 'MegaDrive/Sonic The Hedgehog (USA, Europe).png -> 200' $T2/root/logs/helper.log && cmp -s '$T2/root/covers/MegaDrive/Sonic The Hedgehog (USA, Europe).png' '$SRV/Sonic The Hedgehog (USA, Europe).png' && [ ! -e '$T2/root/covers/MegaDrive/Sonic The Hedgehog (USA, Europe).refetch' ]" "the helper fetched the new cover over the old one"
+kill $SRVPID 2>/dev/null
 pkill -f "$HELPER" 2>/dev/null; sleep 0.3
 # downloads still work after the shelf restarted its cover worker (another tab)
 T=$(newroot t24f)
