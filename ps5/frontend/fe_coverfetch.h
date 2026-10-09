@@ -26,7 +26,7 @@ bool IsImage(const std::vector<uint8_t>& d);
 
 // One GET per address until one has an image, following libretro-thumbnails' git symlinks (an "image" that is
 // the real file's name). The HTTP status (404 only when no address has it); `data` is the image when it is 200.
-int FetchCoverUrl(Http& http, std::string urls, const std::string& label, std::vector<uint8_t>& data);
+int FetchCoverUrl(HttpClient& http, std::string urls, const std::string& label, std::vector<uint8_t>& data);
 
 // "file<TAB>url[<TAB>url...]" lines -> the covers, keeping only plain names in a system's cover folder ("MegaDrive/x.png")
 // and http(s) addresses; a last line without its end (a list being written) is skipped.

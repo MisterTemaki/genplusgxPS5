@@ -20,10 +20,10 @@
 
 namespace jailbreak
 {
-// Genesis Plus GX PS5's helper (GENPLUS_HELPER_PORT on the host). Up to 1.4 the helper listened on 9077; 1.5's,
-// which also downloads the covers, listens on 9081, so an older helper still running (until the console restarts)
-// is left alone and the app starts its own.
-constexpr int kHelperPort = 9081;
+// Genesis Plus GX PS5's helper (GENPLUS_HELPER_PORT on the host). Up to 1.4 the helper listened on 9077, 1.5's
+// (the first to download the covers) on 9081; 1.6's, with its own HTTPS, listens on 9084, so an older helper still
+// running (until the console restarts) is left alone and the app starts its own.
+constexpr int kHelperPort = 9084;
 // the ELF loader the helper is sent to when it isn't running (GENPLUS_ELFLDR_PORT on the host)
 constexpr int kElfLoaderPort = 9021;
 

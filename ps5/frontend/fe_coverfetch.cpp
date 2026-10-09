@@ -38,7 +38,7 @@ bool WriteFileAtomicTo(const std::string& path, const std::vector<uint8_t>& data
 
 namespace
 {
-int FetchOne(Http& http, std::string url, const std::string& label, std::vector<uint8_t>& data)
+int FetchOne(HttpClient& http, std::string url, const std::string& label, std::vector<uint8_t>& data)
 {
 	int status = http.Get(url, data);
 	// libretro-thumbnails keeps many variants as git symlinks: the "image" is then the name of the real
@@ -64,7 +64,7 @@ int FetchOne(Http& http, std::string url, const std::string& label, std::vector<
 }
 } // namespace
 
-int FetchCoverUrl(Http& http, std::string urls, const std::string& label, std::vector<uint8_t>& data)
+int FetchCoverUrl(HttpClient& http, std::string urls, const std::string& label, std::vector<uint8_t>& data)
 {
 	// several addresses, tab-separated (CoverUrlFor): the first that has an image; 404 only when none has
 	int status = -1;

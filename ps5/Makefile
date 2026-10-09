@@ -25,7 +25,7 @@
 PS5_PAYLOAD_SDK ?= /opt/ps5-payload-sdk
 PS5_HOST ?= ps5
 PS5_PORT ?= 9021
-VERSION ?= 1.5
+VERSION ?= 1.6
 CORE_VERSION := 1.7.4
 TITLE_ID ?= PPSA99011
 APP_OUT := build/app/$(TITLE_ID)
@@ -72,7 +72,11 @@ BRIDGE_C_SRC := frontend/fe_bram.c
 # (the helper also downloads the covers in the background: fe_coverworker.cpp, with the app's HTTPS code)
 HELPER_SRC := coreorbis/orbis-shims/orbis_paths.cpp coreorbis/orbis-shims/ProsperoNotify.cpp \
 	coreorbis/orbis-shims/ProsperoHelper.cpp coreorbis/orbis-shims/ProsperoCrash.cpp \
-	frontend/fe_http.cpp frontend/fe_coverfetch.cpp frontend/fe_coverworker.cpp
+	frontend/fe_http.cpp frontend/fe_coverfetch.cpp frontend/fe_coverworker.cpp frontend/fe_tlshttp.cpp
+# the helper's own HTTPS (fe_tlshttp.cpp): Mbed TLS 3.6 (Apache-2.0), with fe_mbedtls_config.h on its default settings
+MBEDTLS := frontend/third_party/mbedtls
+MBEDTLS_SRC := $(sort $(wildcard $(MBEDTLS)/library/*.c))
+MBEDTLS_FLAGS := -I$(MBEDTLS)/include -Ifrontend '-DMBEDTLS_USER_CONFIG_FILE="fe_mbedtls_config.h"'
 INSTALLER_SRC := installer/installer_main.cpp $(HELPER_SRC) coreorbis/orbis-shims/ProsperoInstall.cpp
 
 CORE_INCS := $(addprefix -I$(ROOT)/,$(CORE_DIRS)) -I$(ROOT)/$(CHD)/src -I$(ROOT)/$(CHD)/include \
@@ -94,6 +98,9 @@ GAMEDB_DEFS := -DGAMEDB_TSV='"$(abspath frontend/data/nointro.tsv)"'
 %/port/frontend/fe_text.o: EXTRA_FLAGS = -DFE_FONT_DIR='"$(abspath frontend/assets/fonts)"' -Wno-error -Wno-sign-compare -Wno-unused-function
 %/port/frontend/fe_text.o: frontend/assets/fonts/Roboto-Regular.ttf frontend/assets/fonts/promptfont.otf \
 	frontend/assets/fonts/fa-brands-400.otf
+# the helper's HTTPS client: Mbed TLS's headers, and Mozilla's CA list built in
+%/port/frontend/fe_tlshttp.o: EXTRA_FLAGS = $(MBEDTLS_FLAGS) -DCACERT_PEM='"$(abspath frontend/data/cacert.pem)"'
+%/port/frontend/fe_tlshttp.o: frontend/data/cacert.pem frontend/fe_mbedtls_config.h
 # the helper payload is installer_main.cpp without the install step
 %/port/installer/helper_main.o: EXTRA_FLAGS = -DGENPLUS_HELPER_ONLY
 
@@ -110,8 +117,9 @@ PS5_PAYLOAD_LIBS := -lkernel_sys -lSceNet -lSceNetCtl -lSceSsl -lSceHttp2 -lpthr
 PS5_CORE_OBJ := $(patsubst %.cpp,$(PS5_OUT)/core/%.o,$(CORE_SRC)) $(patsubst %.c,$(PS5_OUT)/core/%.o,$(CORE_C_SRC))
 PS5_EMU_OBJ := $(patsubst %.cpp,$(PS5_OUT)/port/%.o,$(EMU_SRC)) $(patsubst %.c,$(PS5_OUT)/port/%.o,$(EMU_C_SRC)) \
 	$(patsubst %.c,$(PS5_OUT)/bridge/%.o,$(BRIDGE_C_SRC))
-PS5_HELPER_OBJ := $(PS5_OUT)/port/installer/helper_main.o $(patsubst %.cpp,$(PS5_OUT)/port/%.o,$(HELPER_SRC))
-PS5_INSTALLER_OBJ := $(patsubst %.cpp,$(PS5_OUT)/port/%.o,$(INSTALLER_SRC))
+PS5_MBEDTLS_OBJ := $(patsubst $(MBEDTLS)/library/%.c,$(PS5_OUT)/mbedtls/%.o,$(MBEDTLS_SRC))
+PS5_HELPER_OBJ := $(PS5_OUT)/port/installer/helper_main.o $(patsubst %.cpp,$(PS5_OUT)/port/%.o,$(HELPER_SRC)) $(PS5_MBEDTLS_OBJ)
+PS5_INSTALLER_OBJ := $(patsubst %.cpp,$(PS5_OUT)/port/%.o,$(INSTALLER_SRC)) $(PS5_MBEDTLS_OBJ)
 
 ps5: $(PS5_OUT)/GenesisPlusGXPS5.elf
 # the core alone
@@ -121,6 +129,10 @@ ps5-core: $(PS5_CORE_OBJ)
 $(PS5_OUT)/core/%.o: $(ROOT)/%.c
 	@mkdir -p $(dir $@)
 	$(PS5_CC) $(PS5_OPT) $(CORE_DEFS) $(CORE_INCS) -w -c -o $@ $<
+
+$(PS5_OUT)/mbedtls/%.o: $(MBEDTLS)/library/%.c frontend/fe_mbedtls_config.h
+	@mkdir -p $(dir $@)
+	$(PS5_CC) -Os -fPIC -march=znver2 $(MBEDTLS_FLAGS) -c -o $@ $<
 
 $(PS5_OUT)/port/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -272,8 +284,10 @@ HOST_CORE_OPT := -O2 -g1 -mavx2
 HOST_CORE_OBJ := $(patsubst %.cpp,$(HOST_OUT)/core/%.o,$(CORE_SRC)) $(patsubst %.c,$(HOST_OUT)/core/%.o,$(CORE_C_SRC))
 HOST_EMU_OBJ := $(patsubst %.cpp,$(HOST_OUT)/port/%.o,$(EMU_SRC) host/sce_host.cpp) $(patsubst %.c,$(HOST_OUT)/port/%.o,$(EMU_C_SRC)) \
 	$(patsubst %.c,$(HOST_OUT)/bridge/%.o,$(BRIDGE_C_SRC))
-HOST_HELPER_OBJ := $(HOST_OUT)/port/installer/helper_main.o $(patsubst %.cpp,$(HOST_OUT)/port/%.o,$(HELPER_SRC) host/sce_host.cpp)
-HOST_INSTALLER_OBJ := $(patsubst %.cpp,$(HOST_OUT)/port/%.o,$(INSTALLER_SRC) host/sce_host.cpp)
+HOST_MBEDTLS_OBJ := $(patsubst $(MBEDTLS)/library/%.c,$(HOST_OUT)/mbedtls/%.o,$(MBEDTLS_SRC))
+HOST_HELPER_OBJ := $(HOST_OUT)/port/installer/helper_main.o $(patsubst %.cpp,$(HOST_OUT)/port/%.o,$(HELPER_SRC) host/sce_host.cpp) \
+	$(HOST_MBEDTLS_OBJ)
+HOST_INSTALLER_OBJ := $(patsubst %.cpp,$(HOST_OUT)/port/%.o,$(INSTALLER_SRC) host/sce_host.cpp) $(HOST_MBEDTLS_OBJ)
 
 host-core: $(HOST_CORE_OBJ)
 host: $(HOST_OUT)/genplus-ps5-host $(HOST_OUT)/genplus-ps5-installer $(HOST_OUT)/genplus-ps5-helper
@@ -281,6 +295,10 @@ host: $(HOST_OUT)/genplus-ps5-host $(HOST_OUT)/genplus-ps5-installer $(HOST_OUT)
 $(HOST_OUT)/core/%.o: $(ROOT)/%.c
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -fPIC $(HOST_CORE_OPT) $(HOST_CORE_SAN) $(CORE_DEFS) $(CORE_INCS) -w -c -o $@ $<
+
+$(HOST_OUT)/mbedtls/%.o: $(MBEDTLS)/library/%.c frontend/fe_mbedtls_config.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -O2 -g1 $(MBEDTLS_FLAGS) -c -o $@ $<
 
 $(HOST_OUT)/port/%.o: %.c
 	@mkdir -p $(dir $@)

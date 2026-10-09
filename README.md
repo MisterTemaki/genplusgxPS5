@@ -31,7 +31,7 @@ compiled as they are: all 100 of their C files build for the PS5 without a singl
 core through its libretro interface -- the most complete of its ports -- and plays the part RetroArch plays on a
 PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
 
-> **Status (1.5):** builds with the ps5-payload-dev SDK into a signed native app, and passes 231 host tests, which
+> **Status (1.6):** builds with the ps5-payload-dev SDK into a signed native app, and passes 242 host tests, which
 > run the same code (the Genesis Plus GX core included) on Linux with the PS5 calls simulated: a test program for
 > each of Mega Drive, Master System and Game Gear is played through the whole chain -- the shelf, the pad, the
 > core, the video and sound output. If something fails, the logs in
@@ -51,8 +51,8 @@ icon, and the payload you send is its installer:
 When it opens, the app asks the helper to let it out of its sandbox; without that an app sees neither `/data`
 nor USB drives. The request is the one PS5SX2 makes:
 
-- **Who is asked, in order:** the Genesis Plus GX helper (127.0.0.1:9081; up to 1.4 the helper used 9077 and is
-  left alone), then etaHEN (9028) and the daemon on port 9069.
+- **Who is asked, in order:** the Genesis Plus GX helper (127.0.0.1:9084; older helpers used 9077 up to 1.4 and
+  9081 in 1.5, and are left alone), then etaHEN (9028) and the daemon on port 9069.
 - **If nobody answers:** the app carries a copy of the helper (`GenesisPlusGXPS5-helper.elf`), sends it to the ELF
   loader (127.0.0.1:9021) and asks again. So the icon keeps working after a reboot, as long as the ELF loader
   runs.
@@ -65,9 +65,16 @@ Genesis Plus GX PS5 only uses `/data/genplus/`, `/data/homebrew/PPSA99011/` and 
 
 ## Versions
 
-Every release carries its version in the file name: `GenesisPlusGXPS5-v1.5.elf` and `genplus-ps5-v1.5-src.zip`
+Every release carries its version in the file name: `GenesisPlusGXPS5-v1.6.elf` and `genplus-ps5-v1.6-src.zip`
 (`make dist`). When updating, replace the old ELF with the new one in your autoload or Payload Manager. In this
 README, "`GenesisPlusGXPS5.elf`" always means the current release's ELF.
+
+**1.6:** **The helper downloads the covers with its own HTTPS.** In 1.5 the helper got nothing: the console's own HTTPS
+(libSceSsl) fails outside the app's sandbox, and every cover failed in a few milliseconds while the counter went
+down. The helper now has its own HTTPS: Mbed TLS, with Mozilla's list of certificate authorities, the server's
+certificate checked as a browser does. It also keeps one connection for all its downloads. After updating, send
+`GenesisPlusGXPS5-v1.6.elf` once (or let the app start its helper itself): 1.5's helper keeps running until the
+console restarts, but 1.6 uses its own (port 9084).
 
 **1.5:** **Covers download in the background.** 1.4 downloaded them before the app opened (up to 30 s with the
 launch screen up) and restarted itself for new ones. Now the helper downloads them while you use the app: it starts
@@ -97,10 +104,10 @@ Every screen and notification of Genesis Plus GX PS5 is in English.
 
 1. **Send `GenesisPlusGXPS5.elf`** with PS5 Payload Manager, or from a PC on the same network:
    ```sh
-   nc -q0 PS5_IP 9021 < GenesisPlusGXPS5-v1.5.elf
+   nc -q0 PS5_IP 9021 < GenesisPlusGXPS5-v1.6.elf
    ```
    It installs the app in `/data/homebrew/PPSA99011/` (`eboot.bin`, `sce_module/libc.prx`, `param.json`, the
-   icon and the backgrounds), shows **"Genesis Plus GX PS5 1.5 installed. Open it from the Genesis Plus GX PS5
+   icon and the backgrounds), shows **"Genesis Plus GX PS5 1.6 installed. Open it from the Genesis Plus GX PS5
    icon on the home screen."** and stays running as the helper.
 2. **Open the Genesis Plus GX PS5 icon.** The game shelf appears and the controller works.
 3. **Copy your games** to their system's folder, over FTP for example. The app makes the folders on its first
@@ -184,11 +191,11 @@ wordmark: **github.com/MisterTemaki**.
   - Loose names (`sonic the hedgehog.md`) are recognised too.
   - CRCs are cached in `covers/crc-cache.txt`, so each ROM is read once.
 - **Automatic covers, in the background:** box art comes from
-  [libretro-thumbnails](https://github.com/libretro-thumbnails) (each system's `Named_Boxarts`) over HTTPS, with
-  the console's own `libSceHttp2`/`libSceSsl`.
-  - The app can't download once it is out of its sandbox (on the console HTTPS fails at that stage, as Snes9x
-    PS5's logs showed), so the **helper** does it (a payload with network access of its own), while you use the
-    app. The app opens at once and lists the missing covers in `/data/genplus/covers/wanted.txt`, and the ones
+  [libretro-thumbnails](https://github.com/libretro-thumbnails) (each system's `Named_Boxarts`) over HTTPS.
+  - The console's own HTTPS (`libSceHttp2`/`libSceSsl`) only works inside the app's sandbox, and the app can't
+    see `/data` until it is out of it. So the **helper** downloads the covers, while you use the app, with HTTPS of
+    its own (since 1.6): Mbed TLS, the server's certificate checked against Mozilla's list of certificate
+    authorities, one connection kept for all the downloads. The app opens at once and lists the missing covers in `/data/genplus/covers/wanted.txt`, and the ones
     around the selection in `covers/priority.txt` (fetched first); the helper downloads them one by one, and each
     cover replaces its card on the shelf as it lands. The top right corner shows "Downloading covers in the
     background... N left". The helper keeps going while the app is closed.
@@ -508,22 +515,27 @@ The build has three stages:
   - `fe_shelf.cpp`, `fe_covers.cpp`, `fe_prefetch.cpp`, `fe_http.cpp`: the 3D shelf and covers;
   - `fe_coverworker.cpp`, `fe_coverfetch.cpp`: the helper's background downloads, and the fetch code the app and
     the helper share;
+  - `fe_tlshttp.cpp`, `fe_mbedtls_config.h`, `data/cacert.pem`: the helper's own HTTPS client (sockets, Mbed TLS,
+    Mozilla's CA list);
   - `fe_menu.cpp`, `fe_settings.cpp`, `fe_text.cpp`: menus, settings, text with PS5SX2's fonts;
-  - `third_party/`: minizip (unzip.c, ioapi.c), as in Snes9x.
+  - `third_party/`: minizip (unzip.c, ioapi.c), as in Snes9x; Mbed TLS 3.6.7 (`mbedtls/`, its `include/` and
+    `library/` as released).
 - **`ps5/proto/native/`**: ps5-native-app-boilerplate's tools (BlackBearReloaded, GPL-3.0), taken from PS5SX2
   and PS5_Vulkan (mihawk-99): `ps5-native-tool`, `app_crt.cpp`, `ps5-pie.ld`, `libc_builder.cpp` and its
   manifests.
 - **`ps5/app/sce_sys/`**: param.json, icon and backgrounds.
 - **`ps5/host/sce_host.cpp`** and **`ps5/tests/`**: the PS5 functions implemented on Linux, test programs for
   Mega Drive (NTSC and PAL), Master System and Game Gear (`make_test_rom.py`, tiny hand-assembled 68000 and Z80
-  programs), and the 231 tests: picture and input on each system, the Sega CD BIOS message and `.cue` tracks,
+  programs), and the 242 tests: picture and input on each system, the Sega CD BIOS message and `.cue` tracks,
   save states, PAL timing, zip, sound latency, integer scale and scanlines, the shelf's tabs, the system
   folders, the controls (pad type, 4-player adapter, button layout), the CRT shaders (the default, each one
   drawing under ASan/UBSan, the menu), settings, fast forward and rewind, covers per system, install, helper and
   sandbox request (unknown titles refused, slow clients, links), saves per system and their integrity (old saves
   moved, an erased battery save written, unchanged ones left alone), and the audit's fixes (720p picture, Resume,
   FIFOs, `.cue` sheets, long zip names and paths, the CRC cache, covers kept offline, downloads after a tab change),
-  and the debug logs setting (off: nothing written by the app or the helper).
+  the debug logs setting (off: nothing written by the app or the helper), and the helper's HTTPS (a local
+  server with a test certificate authority: a certificate from another authority or for another name refused,
+  chunked answers, redirects, the connection kept).
 
 ## License and credits
 
@@ -542,6 +554,10 @@ The build has three stages:
   `app_cpp_runtime.cpp`, `ps5-pie.ld` and the `libc.prx` generator, via PS5SX2 and PS5_Vulkan (mihawk-99).
 - The VideoOut tiling and setup follow the SDK's SDL2 port (zlib license).
 - **minizip** (Gilles Vollant): zlib license.
+- **Mbed TLS** 3.6.7 ([github.com/Mbed-TLS/mbedtls](https://github.com/Mbed-TLS/mbedtls), the Mbed TLS
+  contributors): Apache-2.0 (`ps5/frontend/third_party/mbedtls/LICENSE`).
+- **Mozilla's CA certificate list** (`ps5/frontend/data/cacert.pem`, as packaged by
+  [certifi](https://github.com/certifi/python-certifi) 2026.07.22): MPL-2.0.
 - **CRT shaders** from libretro's [slang-shaders](https://github.com/libretro/slang-shaders), rewritten for the CPU:
   crt-lottes and crt-lottes-fast (Timothy Lottes, public domain), crt-1tap and crt-2tap (fishku, CC0), monoCRT
   (hunterk, public domain), newpixie-mini (Mattias Gustavsson, Unlicense), crt-hyllian-fast and crt-nobody

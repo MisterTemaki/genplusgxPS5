@@ -23,6 +23,11 @@
 
 namespace fe
 {
+__attribute__((weak)) std::unique_ptr<HttpClient> MakeCoverWorkerHttp()
+{
+	return std::make_unique<Http>();
+}
+
 namespace
 {
 constexpr long kMissingRetrySeconds = 30L * 24 * 3600; // as the shelf: a 404 isn't asked again for 30 days
@@ -88,7 +93,7 @@ struct Worker
 	int left = 0, fetched = 0;
 	std::map<std::string, time_t> tried; // file -> when it last failed (not a 404)
 	std::string last_progress;
-	Http http;
+	std::unique_ptr<HttpClient> http = MakeCoverWorkerHttp();
 
 	bool Needs(const WantedCover& w)
 	{
@@ -181,7 +186,7 @@ struct Worker
 			const WantedCover w = *next; // the lists can be reloaded below
 			Progress("busy");
 			std::vector<uint8_t> data;
-			const int status = FetchCoverUrl(http, w.url, w.file, data);
+			const int status = FetchCoverUrl(*http, w.url, w.file, data);
 			const int saved = SaveCoverResult(CoversDir(), w, status, data);
 			OrbisLog("[covers] %s -> %d (%zu bytes)%s", w.file.c_str(), status, data.size(),
 				saved == 1 ? "" : saved == 0 ? ": not on the server" : ": not saved");
@@ -191,10 +196,10 @@ struct Worker
 				tried[w.file] = time(nullptr);
 			if (left > 0)
 				left--;
-			if (status == -1 && http.Offline())
+			if (status == -1 && http->Offline())
 			{
 				OrbisLog("[covers] the console is offline: trying again in %ld s", kOfflinePauseSeconds);
-				http.Term();
+				http->Term();
 				offline_until = time(nullptr) + kOfflinePauseSeconds;
 			}
 		}
