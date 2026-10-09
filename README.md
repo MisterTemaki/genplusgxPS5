@@ -34,7 +34,7 @@ PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
 > **Status (1.5):** builds with the ps5-payload-dev SDK into a signed native app, and passes 231 host tests, which
 > run the same code (the Genesis Plus GX core included) on Linux with the PS5 calls simulated: a test program for
 > each of Mega Drive, Master System and Game Gear is played through the whole chain -- the shelf, the pad, the
-> core, the video and sound output. Not yet confirmed on a console. If something fails, the logs in
+> core, the video and sound output. If something fails, the logs in
 > `/data/genplus/logs/` say where.
 
 ## How it works
