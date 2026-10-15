@@ -359,7 +359,35 @@ std::vector<std::string> CueTracks(const std::string& dir)
 	return tracks;
 }
 
-void Walk(const std::string& dir, int depth, bool usb, std::vector<GameInfo>& out)
+// A zip's system (the ROM inside it), from the cache while the zip hasn't changed: opening every zip at every
+// start is slow on a USB drive with a big library. "sys:<path>" -> "size\tmtime\t<system>".
+bool CachedArchiveSystem(CrcCache& cache, const std::string& path, const struct stat& st, System* out)
+{
+	const std::string key = "sys:" + path;
+	cache.seen[key] = true;
+	char stamp[64];
+	snprintf(stamp, sizeof(stamp), "%lld\t%lld\t", (long long)st.st_size, (long long)st.st_mtime);
+	auto it = cache.lines.find(key);
+	if (it != cache.lines.end() && it->second.compare(0, strlen(stamp), stamp) == 0)
+	{
+		const std::string v = it->second.substr(strlen(stamp));
+		if (v == "none")
+			return false;
+		const int n = atoi(v.c_str());
+		if (n >= 0 && n < int(System::Count) && System(n) != System::SegaCd)
+		{
+			*out = System(n);
+			return true;
+		}
+	}
+	const bool ok = ArchiveSystem(path, out);
+	cache.lines[key] = std::string(stamp) + (ok ? std::to_string(int(*out)) : std::string("none"));
+	cache.dirty = true;
+	return ok;
+}
+
+void Walk(const std::string& dir, int depth, bool usb, std::vector<GameInfo>& out, CrcCache& cache,
+	const ScanProgress& progress)
 {
 	const std::vector<std::string> tracks = CueTracks(dir);
 	DIR* d = opendir(dir.c_str());
@@ -376,7 +404,7 @@ void Walk(const std::string& dir, int depth, bool usb, std::vector<GameInfo>& ou
 		if (S_ISDIR(st.st_mode))
 		{
 			if (depth < 4)
-				Walk(path, depth + 1, usb, out);
+				Walk(path, depth + 1, usb, out, cache, progress);
 			continue;
 		}
 		if (!S_ISREG(st.st_mode))
@@ -390,7 +418,7 @@ void Walk(const std::string& dir, int depth, bool usb, std::vector<GameInfo>& ou
 		GameInfo g;
 		if (ext == ".zip")
 		{
-			if (!ArchiveSystem(path, &g.system))
+			if (!CachedArchiveSystem(cache, path, st, &g.system))
 				continue;
 		}
 		else if (!SystemForExt(ext, &g.system))
@@ -400,6 +428,8 @@ void Walk(const std::string& dir, int depth, bool usb, std::vector<GameInfo>& ou
 		g.ext = ext;
 		g.on_usb = usb;
 		out.push_back(std::move(g));
+		if (progress)
+			progress(0, out.size(), 0);
 	}
 	closedir(d);
 }
@@ -485,6 +515,33 @@ bool ArchiveSystem(const std::string& path, System* out)
 		*out = s;
 		return true;
 	});
+	unzClose(z);
+	return ok;
+}
+
+// The CRC a zip stores for its ROM, when the ROM has no copier header to skip (its size isn't 512 bytes past a
+// multiple of 1 KiB): true and the name inside; false when the data has to be read.
+bool StoredZipCrc(const std::string& path, std::string* inner, uint32_t* crc)
+{
+	unzFile z = unzOpen(path.c_str());
+	if (!z)
+		return false;
+	bool ok = FindInZip(z, [&](const std::string& name) {
+		System s;
+		if (!SystemForExt(ExtOf(name), &s) || s == System::SegaCd)
+			return false;
+		*inner = name;
+		return true;
+	});
+	if (ok)
+	{
+		unz_file_info info;
+		ok = unzGetCurrentFileInfo(z, &info, nullptr, 0, nullptr, 0, nullptr, 0) == UNZ_OK &&
+			 info.uncompressed_size > 0 && info.uncompressed_size <= 16u * 1024 * 1024 &&
+			 (info.uncompressed_size & 0x3ff) != 0x200;
+		if (ok)
+			*crc = uint32_t(info.crc);
+	}
 	unzClose(z);
 	return ok;
 }
@@ -587,7 +644,16 @@ bool RomCrc32(const std::string& path, uint32_t* whole, uint32_t* body, std::str
 	System sys;
 	if (ext == ".zip")
 	{
+		// the zip keeps its ROM's CRC: read only when a 512-byte copier header has to come off for the body's
 		std::string inner;
+		uint32_t stored = 0;
+		if (StoredZipCrc(path, &inner, &stored))
+		{
+			if (inner_ext)
+				*inner_ext = ExtOf(inner);
+			*whole = *body = stored;
+			return true;
+		}
 		if (!ReadFromZip(path, &inner, &data))
 			return false;
 		ext = ExtOf(inner);
@@ -660,17 +726,20 @@ void PrepareFolders()
 		OrbisLog("[games] moved %zu cached cover file(s) into covers/<system>/", moves.size());
 }
 
-std::vector<GameInfo> ScanGames()
+std::vector<GameInfo> ScanGames(const ScanProgress& progress)
 {
 	PrepareFolders();
 	std::vector<GameInfo> games;
-	for (const std::string& root : OrbisRomRoots())
-		Walk(root, 0, root.rfind("/mnt/", 0) == 0, games);
-
 	CrcCache cache;
 	cache.Load();
+	for (const std::string& root : OrbisRomRoots())
+		Walk(root, 0, root.rfind("/mnt/", 0) == 0, games, cache, progress);
+
+	size_t identified = 0;
 	for (GameInfo& g : games)
 	{
+		if (progress)
+			progress(1, identified++, games.size());
 		System found = g.system;
 		g.nointro = gamedb::Exact(g.system, g.file_base, &found);
 		if (g.nointro.empty())

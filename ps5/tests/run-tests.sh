@@ -952,6 +952,40 @@ nosan "$T2"
 stop28
 fi
 
+if want 29; then
+echo "== 29. a big library: the scan stays quick (a zip's CRC from its directory, each zip's system remembered)"
+T=$(newroot t29)
+mkdir -p "$T/root/roms/md"
+$ROM "$T/one.md" ntsc >/dev/null
+python3 - "$T/one.md" "$T/root/roms/md" <<'PY'
+import os, random, sys, zipfile
+rom = open(sys.argv[1], "rb").read()
+random.seed(3)
+words = "Sonic Streets Rage Golden Axe Shinobi Phantasy Star Ecco Gunstar Heroes Castle Vectorman Comix Zone".split()
+for i in range(800):
+    name = " ".join(random.sample(words, 3)) + " %04d (Hack)" % i
+    with zipfile.ZipFile(os.path.join(sys.argv[2], name + ".zip"), "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr(name + ".md", rom + bytes([i & 255, i >> 8]) * 512)
+PY
+scan_time() { python3 - "$1" <<'PY'
+import re, sys
+t = {}
+for line in open(sys.argv[1], errors='replace'):
+    m = re.match(r'\[\s*([0-9.]+)\] \[(boot|games)\] (Genesis Plus GX PS5 |800 ROM)', line)
+    if m: t.setdefault(m.group(2), float(m.group(1)))
+print('%.2f' % (t['games'] - t['boot']) if 'boot' in t and 'games' in t else 'none')
+PY
+}
+rc=$(run "$T" "0:0;100:$OPTIONS;102:0;110:$CROSS;112:0" "")
+first=$(scan_time $T/root/logs/boot.log)
+expect "[ $rc = 0 ] && grep -q '\[games\] 800 ROM(s)' $T/root/logs/boot.log" "800 zipped ROMs found"
+expect "[ \$(grep -c '^sys:' $T/root/covers/crc-cache.txt) = 800 ] && [ \$(grep -c '\.zip	[0-9]*	[0-9]*	[0-9A-F]\{8\}	' $T/root/covers/crc-cache.txt) = 800 ]" "each zip's system and CRC remembered"
+rc=$(run "$T" "0:0;100:$OPTIONS;102:0;110:$CROSS;112:0" "")
+second=$(scan_time $T/root/logs/boot.log)
+expect "python3 -c 'import sys; sys.exit(0 if float(\"$first\") < 4 and float(\"$second\") < 2 else 1)'" "first scan ${first} s (under 4), the next ${second} s (under 2)"
+nosan "$T"
+fi
+
 echo
 echo "passed $PASS, failed $FAIL  (work dir $WORK)"
 [ $FAIL = 0 ]

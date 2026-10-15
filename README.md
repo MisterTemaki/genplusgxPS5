@@ -33,7 +33,7 @@ compiled as they are: all 100 of their C files build for the PS5 without a singl
 core through its libretro interface -- the most complete of its ports -- and plays the part RetroArch plays on a
 PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
 
-> **Status (1.7):** builds with the ps5-payload-dev SDK into a signed native app, and passes 271 host tests, which
+> **Status (1.7):** builds with the ps5-payload-dev SDK into a signed native app, and passes 275 host tests, which
 > run the same code (the Genesis Plus GX core included) on Linux with the PS5 calls simulated: a test program for
 > each of Mega Drive, Master System and Game Gear is played through the whole chain -- the shelf, the pad, the
 > core, the video and sound output. If something fails, the logs in
@@ -74,7 +74,10 @@ README, "`GenesisPlusGXPS5.elf`" always means the current release's ELF.
 [New title ID](#new-title-id-ppsa99921)). Nothing under the old ID is touched (it may be
 another app's): an earlier version of ours stays as its own icon until you delete it. Games, saves and settings are shared. The helper listens on port 9088.
 **Updates from the app** (Settings, SYSTEM, Updates), as Porpoise does: see [Updates](#updates). The pic0/pic1
-backgrounds are built into the ELF once (they are the same picture), so it is 22 MB instead of 30 MB.
+backgrounds are built into the ELF once (they are the same picture), so it is 22 MB instead of 30 MB. A big library
+no longer holds "Looking for games..." for long: a zipped ROM's CRC comes from the zip's directory (nothing is
+unpacked), each zip's system is remembered between starts, and the screen counts the games found, then shows a bar
+while they are identified (1500 zips: 5.4 s on the PC the first time before, 0.5 s now).
 
 **1.6:** **The helper downloads the covers with its own HTTPS.** In 1.5 the helper got nothing: the console's own HTTPS
 (libSceSsl) fails outside the app's sandbox, and every cover failed in a few milliseconds while the counter went
@@ -521,7 +524,7 @@ make ps5 -j$(nproc)              # build/ps5/GenesisPlusGXPS5.elf (installer + h
 make send PS5_HOST=192.168.0.10  # sends it to elfldr (port 9021)
 make dist                        # build/dist/GenesisPlusGXPS5-v<version>.elf, the release zip, the source zip
 make app                         # only build/app/PPSA99921/, to copy by hand
-make test                        # Linux builds (app, installer, helper) + 271 host tests (ASan/UBSan)
+make test                        # Linux builds (app, installer, helper) + 275 host tests (ASan/UBSan)
 ```
 
 The build has three stages:
@@ -580,7 +583,7 @@ The build has three stages:
 - **`ps5/app/sce_sys/`**: param.json, icon and backgrounds.
 - **`ps5/host/sce_host.cpp`** and **`ps5/tests/`**: the PS5 functions implemented on Linux, test programs for
   Mega Drive (NTSC and PAL), Master System and Game Gear (`make_test_rom.py`, tiny hand-assembled 68000 and Z80
-  programs), and the 271 tests: picture and input on each system, the Sega CD BIOS message and `.cue` tracks,
+  programs), and the 275 tests: picture and input on each system, the Sega CD BIOS message and `.cue` tracks,
   save states, PAL timing, zip, sound latency, integer scale and scanlines, the shelf's tabs, the system
   folders, the controls (pad type, 4-player adapter, button layout), the CRT shaders (the default, each one
   drawing under ASan/UBSan, the menu), settings, fast forward and rewind, covers per system, install, helper and

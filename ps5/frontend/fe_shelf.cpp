@@ -597,6 +597,21 @@ void Loading(const char* text)
 	CenterText(H / 2 - 20, text, 4, Rgb(220, 220, 235));
 	ps5video::Present(0, 0, 0, 0, true);
 }
+
+// The same, with a bar under the text: fraction 0..1, or below 0 for none.
+void LoadingProgress(const char* text, float fraction)
+{
+	ps5video::FillRect(0, 0, W, H, Rgb(12, 10, 26));
+	DrawText(80, 50, "Genesis Plus GX PS5", 6, Rgb(150, 125, 255));
+	CenterText(H / 2 - 20, text, 4, Rgb(220, 220, 235));
+	if (fraction >= 0)
+	{
+		const int bw = 800, bh = 16, bx = (W - bw) / 2, by = H / 2 + 60;
+		ps5video::FillRect(bx, by, bw, bh, Rgb(40, 36, 70));
+		ps5video::FillRect(bx, by, int(bw * std::min(1.0f, fraction)), bh, Rgb(150, 125, 255));
+	}
+	ps5video::Present(0, 0, 0, 0, true);
+}
 } // namespace
 
 void ShelfShutdown()
@@ -613,7 +628,21 @@ std::string Shelf()
 
 	GENPLUS_STAGE(Shelf, "scan games");
 	Loading("Looking for games...");
-	std::vector<GameInfo> games = ScanGames();
+	// a big library takes a while the first time (each new ROM is read once for its CRC): say how far it is,
+	// redrawn at most ten times a second
+	double drawn = Now();
+	std::vector<GameInfo> games = ScanGames([&drawn](int stage, size_t done, size_t total) {
+		const double now = Now();
+		if (now - drawn < 0.1)
+			return;
+		drawn = now;
+		char text[96];
+		if (stage == 0)
+			snprintf(text, sizeof(text), "Looking for games... %zu found", done);
+		else
+			snprintf(text, sizeof(text), "Identifying games... %d%% (%zu of %zu)", total ? int(done * 100 / total) : 0, done, total);
+		LoadingProgress(text, stage == 0 ? -1.0f : total ? float(done) / float(total) : 0.f);
+	});
 	bool same = games.size() == st.all.size();
 	for (size_t i = 0; same && i < games.size(); i++)
 		same = games[i].path == st.all[i].path;
