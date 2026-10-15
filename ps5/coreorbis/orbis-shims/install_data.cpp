@@ -22,7 +22,14 @@ GENPLUS_INCBIN(genplus_app_eboot, APP_EBOOT)
 GENPLUS_INCBIN(genplus_app_param, APP_PARAM)
 GENPLUS_INCBIN(genplus_app_icon0, APP_ICON0)
 GENPLUS_INCBIN(genplus_app_pic0, APP_PIC0)
+#ifndef APP_PIC1_IS_PIC0
 GENPLUS_INCBIN(genplus_app_pic1, APP_PIC1)
+#else
+// the two backgrounds are the same image (the Makefile compared them): built in once, which keeps the payload
+// under the 30 MiB the PS5 Payload Manager / the ELF loader take
+#define genplus_app_pic1_begin genplus_app_pic0_begin
+#define genplus_app_pic1_end genplus_app_pic0_end
+#endif
 GENPLUS_INCBIN(genplus_app_libc, APP_LIBC)
 
 const EmbeddedAppFile* EmbeddedAppFiles()

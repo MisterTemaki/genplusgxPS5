@@ -765,10 +765,10 @@ expect "[ \"\$(cat $T/root/logs/boot.log)\" = 'OLD RUN' ] && [ ! -e $T/root/logs
 expect "! grep -q '^\[genplus-ps5' $T/out.txt" "nothing on stdout either"
 expect "grep -q '^debug_logs=0' $T/root/genplus-ps5.ini" "the setting stays off"
 nosan "$T"
-# Settings (Triangle) -> Debug logs (Up twice from Shader: Back, then Debug logs) -> Off: that line is the last one
+# Settings (Triangle) -> Debug logs (Up three times from Shader: Back, Updates, then Debug logs) -> Off: that line is the last one
 T=$(newroot t25b)
 $ROM "$T/root/roms/test.md" ntsc >/dev/null
-rc=$(run "$T" "0:0;30:$TRIANGLE;32:0;50:$UP;52:0;60:$UP;62:0;70:$CROSS;72:0;90:$CIRCLE;92:0;$(SHELFQUIT_AT 120)" "")
+rc=$(run "$T" "0:0;30:$TRIANGLE;32:0;50:$UP;52:0;60:$UP;62:0;65:$UP;67:0;70:$CROSS;72:0;90:$CIRCLE;92:0;$(SHELFQUIT_AT 120)" "")
 expect "[ $rc = 0 ]" "exit code 0 (got $rc)"
 expect "grep -q '^debug_logs=0' $T/root/genplus-ps5.ini" "Debug logs Off saved"
 expect "tail -1 $T/root/logs/boot.log | grep -q 'debug logs turned off'" "the last line of boot.log says the logs were turned off"
@@ -777,7 +777,7 @@ nosan "$T"
 T=$(newroot t25c)
 $ROM "$T/root/roms/test.md" ntsc >/dev/null
 echo "debug_logs=0" >>"$T/root/genplus-ps5.ini"
-rc=$(run "$T" "0:0;30:$TRIANGLE;32:0;50:$UP;52:0;60:$UP;62:0;70:$CROSS;72:0;90:$CIRCLE;92:0;$(SHELFQUIT_AT 120)" "")
+rc=$(run "$T" "0:0;30:$TRIANGLE;32:0;50:$UP;52:0;60:$UP;62:0;65:$UP;67:0;70:$CROSS;72:0;90:$CIRCLE;92:0;$(SHELFQUIT_AT 120)" "")
 expect "grep -q '^debug_logs=1' $T/root/genplus-ps5.ini" "Debug logs On saved"
 expect "grep -q 'debug logs turned on' $T/root/logs/boot.log && ! grep -q 'Genesis Plus GX PS5 1\.[0-9], Genesis' $T/root/logs/boot.log" "boot.log starts at the switch (nothing from before it)"
 nosan "$T"
@@ -882,6 +882,74 @@ expect "waitfor27 $T/root/logs/installer.log 'listening on 127.0.0.1'" "installe
 expect "[ ! -e $T/homebrew/$OLDID ] && ! grep -q 'title ID is now' $T/inst.txt" "no old version: nothing made or said under $OLDID"
 expect "! grep -q 'runtime error\|AddressSanitizer' $WORK/t27a/inst.txt $WORK/t27b/inst.txt $T/inst.txt" "no sanitizer reports"
 stop27
+fi
+
+if want 28; then
+echo "== 28. updates from GitHub's releases (Settings, SYSTEM, Updates): the helper checks, downloads, checks every file, installs"
+T=$(newroot t28)
+UPD="python3 tests/update_client.py $GENPLUS_HELPER_PORT"
+stop28() { pkill -f 'build/host/genplus-ps5-(installer|helper)' 2>/dev/null; pkill -f 'http.server 1[89][0-9][0-9][0-9]' 2>/dev/null; sleep 0.3; }
+waitfor28() { for i in $(seq 1 80); do grep -q "$2" "$1" 2>/dev/null && return 0; sleep 0.1; done; return 1; }
+stop28
+SRV=$T/srv; mkdir -p "$SRV" "$T/appmeta/PPSA99921"; echo old >"$T/appmeta/PPSA99921/icon0.png"
+SPORT=$((18000 + RANDOM % 1900))
+(cd "$SRV" && exec python3 -m http.server $SPORT --bind 127.0.0.1 >/dev/null 2>&1) &
+# the release: the installed app with a new eboot, a newer param.json, a new file; the old manifest lists a file that goes
+release() { # tag contentVersion [bad]
+	rm -rf "$T/rel" && mkdir -p "$T/rel" && cp -r "$T/homebrew/PPSA99921" "$T/rel/PPSA99921" && rm -f "$T/rel/PPSA99921/manifest.sha256" "$T/rel/PPSA99921/sce_sys/old.bin"
+	echo "eboot $1" >"$T/rel/PPSA99921/eboot.bin"; echo "new art" >"$T/rel/PPSA99921/sce_sys/icon0.png"; echo extra >"$T/rel/PPSA99921/sce_sys/extra.bin"
+	sed -i "s/\"contentVersion\": \"[0-9.]*\"/\"contentVersion\": \"$2\"/" "$T/rel/PPSA99921/sce_sys/param.json"
+	python3 tools/make_release_zip.py "$T/rel/PPSA99921" PPSA99921 "$SRV/GenesisPlusGXPS5-$1-PPSA99921.zip" >/dev/null
+	local sha size
+	sha=$(sha256sum "$SRV/GenesisPlusGXPS5-$1-PPSA99921.zip" | cut -c1-64); size=$(stat -c %s "$SRV/GenesisPlusGXPS5-$1-PPSA99921.zip")
+	[ -n "${3:-}" ] && sha=0000${sha:4}
+	printf '{"tag_name":"%s","name":"Genesis Plus GX PS5 %s","assets":[{"name":"GenesisPlusGXPS5-%s.elf","size":1,"browser_download_url":"http://127.0.0.1:%s/x.elf"},{"name":"GenesisPlusGXPS5-%s-PPSA99921.zip","size":%s,"digest":"sha256:%s","browser_download_url":"http://127.0.0.1:%s/GenesisPlusGXPS5-%s-PPSA99921.zip"}]}' \
+		"$1" "$1" "$1" $SPORT "$1" $size $sha $SPORT "$1" >"$SRV/latest.json"
+}
+# the app installed by the payload (1.7), which then stays as the helper; the updater asks the test server
+GENPLUS_UPDATE_API=http://127.0.0.1:$SPORT/latest.json GENPLUS_PS5_ROOT=$T/root GENPLUS_PS5_HOMEBREW=$T/homebrew GENPLUS_PS5_APPMETA=$T/appmeta \
+	ASAN_OPTIONS=detect_leaks=0 timeout 120 "$INSTALLER" >"$T/inst.txt" 2>&1 &
+expect "waitfor28 $T/root/logs/installer.log 'listening on 127.0.0.1'" "the payload installed 1.7 and serves as the helper"
+expect "[ \"\$($UPD status 1.7 | cut -d'|' -f1)\" = idle ]" "the updater answers: idle"
+release v1.7 01.070.000
+expect "$UPD check 1.7 --until uptodate,failed | grep -q '^uptodate|1.7|'" "the newest release is this version: up to date"
+echo gone >"$T/homebrew/PPSA99921/sce_sys/old.bin"
+printf '%s *sce_sys/old.bin\n' "$(sha256sum <"$T/homebrew/PPSA99921/sce_sys/old.bin" | cut -c1-64)" >"$T/homebrew/PPSA99921/manifest.sha256"
+release v9.9 99.000.000 bad
+expect "$UPD check 1.7 --until available,failed | grep -q '^available|9.9|'" "a newer release (9.9): available, with its size"
+cp "$T/homebrew/PPSA99921/eboot.bin" "$T/eboot.before"
+expect "$UPD install 1.7 --until done,failed | grep -q \"^failed|.*SHA-256 doesn't match\"" "a download whose SHA-256 isn't GitHub's: refused"
+expect "cmp -s $T/homebrew/PPSA99921/eboot.bin $T/eboot.before && [ -z \"\$(find $T/homebrew -name '*.new')\" ]" "and nothing was changed"
+release v9.9 99.000.000
+expect "$UPD check 1.7 --until available,failed | grep -q '^available|9.9|'" "checked again"
+expect "$UPD install 1.7 --until done,failed | grep -q '^done|9.9|'" "downloaded, every file checked, installed"
+expect "grep -q 'eboot v9.9' $T/homebrew/PPSA99921/eboot.bin && grep -q '\"contentVersion\": \"99.000.000\"' $T/homebrew/PPSA99921/sce_sys/param.json" "the new eboot.bin and param.json in place"
+expect "[ -f $T/homebrew/PPSA99921/sce_sys/extra.bin ] && [ ! -e $T/homebrew/PPSA99921/sce_sys/old.bin ] && grep -q 'sce_sys/extra.bin' $T/homebrew/PPSA99921/manifest.sha256" "a new file added, one the old manifest had removed, the manifest kept"
+expect "grep -q 'new art' $T/appmeta/PPSA99921/icon0.png && [ -z \"\$(find $T/homebrew -name '*.new')\" ]" "the home screen's copy of the art refreshed; no .new files left"
+expect "$UPD status 9.9 | grep -q '^done|'" "the result stays until the app is opened again"
+stop28
+(cd "$SRV" && exec python3 -m http.server $SPORT --bind 127.0.0.1 >/dev/null 2>&1) &
+# the old payload sent again (an autoload): the newer version is left alone
+GENPLUS_UPDATE_API=http://127.0.0.1:$SPORT/latest.json GENPLUS_PS5_ROOT=$T/root GENPLUS_PS5_HOMEBREW=$T/homebrew GENPLUS_PS5_APPMETA=$T/appmeta \
+	ASAN_OPTIONS=detect_leaks=0 timeout 120 "$INSTALLER" >"$T/inst2.txt" 2>&1 &
+expect "waitfor28 $T/inst2.txt 'a newer version is installed'" "an older payload sent again: says a newer version is installed"
+expect "grep -q 'eboot v9.9' $T/homebrew/PPSA99921/eboot.bin && grep -q 'new art' $T/appmeta/PPSA99921/icon0.png" "and leaves the update (and its art) as they are"
+expect "$UPD check 9.9 --until uptodate,available,failed | grep -q '^uptodate|9.9|'" "the app says which version it is: an older helper finds it up to date"
+stop28
+# the app: at start the daily check (the helper finds 9.9); Settings (Triangle), Up twice to "Updates" (it shows
+# "Install 9.9"), Cross: the helper installs it
+T2=$(newroot t28b)
+(cd "$SRV" && exec python3 -m http.server $SPORT --bind 127.0.0.1 >/dev/null 2>&1) &
+GENPLUS_UPDATE_API=http://127.0.0.1:$SPORT/latest.json GENPLUS_PS5_ROOT=$T2/root GENPLUS_PS5_HOMEBREW=$T2/homebrew GENPLUS_PS5_APPMETA=$T2/appmeta \
+	ASAN_OPTIONS=detect_leaks=0 timeout 120 "$INSTALLER" >"$T2/inst.txt" 2>&1 &
+waitfor28 $T2/root/logs/installer.log 'listening on 127.0.0.1'
+$ROM "$T2/root/roms/test.md" ntsc >/dev/null
+rc=$(GENPLUS_HOST_REALTIME=1 GENPLUS_PS5_APPMETA=$T2/appmeta run "$T2" "0:0;30:$TRIANGLE;32:0;40:$UP;42:0;46:$UP;48:0;56:$CROSS;58:0;150:$CIRCLE;152:0;$(QUITAT 170)" "54,140")
+expect "grep -q 'daily check asked of the helper' $T2/root/logs/boot.log && [ -f $T2/root/update-check.txt ]" "at start: the daily check asked of the helper"
+expect "grep -q 'update install' $T2/root/logs/installer.log && grep -q 'eboot v9.9' $T2/homebrew/PPSA99921/eboot.bin" "Cross on \"Install 9.9\": the helper installs it"
+expect "grep -q 'is available: Settings, SYSTEM, Updates' $T2/inst.txt $T2/root/logs/installer.log" "the daily check found 9.9: a notification says so"
+nosan "$T2"
+stop28
 fi
 
 echo

@@ -62,7 +62,8 @@ int main()
 
 	const char* open_hint = "Open it from the Genesis Plus GX PS5 icon on the home screen.";
 	char msg[1024];
-	switch (InstallApp())
+	const InstallResult installed = InstallApp();
+	switch (installed)
 	{
 		case InstallResult::Installed:
 			snprintf(msg, sizeof(msg), "Genesis Plus GX PS5 %s installed. %s", GENPLUS_PS5_VERSION, open_hint);
@@ -73,6 +74,12 @@ int main()
 		case InstallResult::UpToDate:
 			snprintf(msg, sizeof(msg), "Genesis Plus GX PS5 %s is ready. %s", GENPLUS_PS5_VERSION, open_hint);
 			break;
+		case InstallResult::NewerInstalled:
+			snprintf(msg, sizeof(msg),
+				"Genesis Plus GX PS5: a newer version is installed (updated from the app); this payload (%s) left it as it is. "
+				"Put the newer payload in your autoload. %s",
+				GENPLUS_PS5_VERSION, open_hint);
+			break;
 		case InstallResult::Failed:
 			snprintf(msg, sizeof(msg), "Genesis Plus GX PS5: could not install the app in %s (see %s/logs/installer.log)",
 				AppInstallDir().c_str(), OrbisRoot().c_str());
@@ -81,7 +88,7 @@ int main()
 			snprintf(msg, sizeof(msg), "Genesis Plus GX PS5: nothing to install");
 			break;
 	}
-	if (SyncAppMeta() > 0)
+	if (installed != InstallResult::NewerInstalled && SyncAppMeta() > 0)
 	{
 		const size_t len = strlen(msg);
 		snprintf(msg + len, sizeof(msg) - len, " Home screen art updated (restart the PS5 if it doesn't show).");

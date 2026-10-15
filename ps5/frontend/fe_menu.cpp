@@ -12,6 +12,8 @@
 #include "fe_text.h"
 
 #include "OrbisPaths.h"
+#include "ProsperoJailbreak.h"
+#include "ProsperoUpdate.h"
 #include "ProsperoCrt.h"
 #include "ProsperoInput.h"
 #include "ProsperoSce.h"
@@ -21,6 +23,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <unistd.h>
 #include <vector>
 
 namespace fe
@@ -227,11 +230,84 @@ enum SettingRow
 	S_COVERS,
 	H_SYSTEM,
 	S_DEBUGLOGS,
+	S_UPDATES,
 	S_COUNT
 };
 
 const int kFfSteps[] = {150, 200, 300, 400, 500, 1000, 0};
 constexpr int kFfCount = int(sizeof(kFfSteps) / sizeof(kFfSteps[0]));
+
+// ---- updates (ProsperoUpdate.h): the helper checks, downloads and installs; this screen shows it ----------------
+struct UpdateView
+{
+	update::Status st;
+	bool helper = false;
+	double polled = -1;
+};
+UpdateView g_upd;
+
+void PollUpdate(bool force)
+{
+	if (!force && Now() - g_upd.polled < 0.5)
+		return;
+	g_upd.polled = Now();
+	std::string reply;
+	g_upd.helper = jailbreak::UpdateRequest("status", reply) && update::Decode(reply, g_upd.st);
+}
+
+std::string UpdateValue()
+{
+	char buf[96];
+	if (!g_upd.helper)
+		return "Needs the helper";
+	const update::Status& st = g_upd.st;
+	switch (st.phase)
+	{
+		case update::Phase::Checking: return "Checking...";
+		case update::Phase::UpToDate: return "Up to date";
+		case update::Phase::Available:
+			snprintf(buf, sizeof(buf), "Install %s (%.1f MB)", st.latest.c_str(), st.size / 1048576.0);
+			return buf;
+		case update::Phase::Downloading:
+			snprintf(buf, sizeof(buf), "Downloading %d%%", st.total ? int(st.done * 100 / st.total) : 0);
+			return buf;
+		case update::Phase::Installing:
+			snprintf(buf, sizeof(buf), "Installing %d/%d", int(st.done), int(st.total));
+			return buf;
+		case update::Phase::Done: return "Installed: restart";
+		case update::Phase::Failed: return "Failed: try again";
+		default: return "Check now";
+	}
+}
+
+void UpdateAction()
+{
+	std::string reply;
+	switch (g_upd.st.phase)
+	{
+		case update::Phase::Available: jailbreak::UpdateRequest("install", reply); break;
+		case update::Phase::Checking:
+		case update::Phase::Downloading:
+		case update::Phase::Installing: break;
+		case update::Phase::Done:
+		{
+			// the new build, opened in this one's place
+			const char* path = "/data/homebrew/" GENPLUS_TITLE_ID "/eboot.bin";
+			OrbisLog("[update] restarting %s", path);
+			Config().Save();
+			OrbisLogClose();
+			const int rc = sceSystemServiceLoadExec(path, nullptr);
+			if (rc == 0)
+				for (int i = 0; i < 100; i++)
+					usleep(100 * 1000);
+			OrbisLogOpen("boot-after-update");
+			OrbisLog("[update] sceSystemServiceLoadExec(%s) -> %x: close the app and open it again", path, unsigned(rc));
+			break;
+		}
+		default: jailbreak::UpdateRequest("check", reply); break;
+	}
+	PollUpdate(true);
+}
 
 Row SettingRowFor(int s)
 {
@@ -271,6 +347,7 @@ Row SettingRowFor(int s)
 		case S_COVERS: return {"Download covers", OnOff(c.covers_download)};
 		case H_SYSTEM: return {"SYSTEM", "", true, true};
 		case S_DEBUGLOGS: return {"Debug logs", OnOff(c.debug_logs)};
+		case S_UPDATES: return {"Updates (this is " GENPLUS_PS5_VERSION ")", UpdateValue()};
 		default:
 			if (s >= S_BTN_FIRST && s <= S_BTN_LAST)
 			{
@@ -365,9 +442,14 @@ void SettingsScreen(bool over_game)
 	int sel = S_SHADER;
 	for (;;)
 	{
+		PollUpdate(false);
 		const std::vector<Row> rows = SettingRows();
 		Background(over_game);
 		DrawOptionBox("Settings", rows, sel, over_game);
+		if (sel == S_UPDATES && g_upd.st.phase == update::Phase::Failed && !g_upd.st.error.empty())
+			DrawText(80, H - 130, FitText(g_upd.st.error, 2, W - 160).c_str(), 2, kAccent);
+		else if (sel == S_UPDATES && !g_upd.helper)
+			DrawText(80, H - 130, "Updates are downloaded by the helper: send the payload, then open Settings again.", 2, kDim);
 		if (!over_game)
 			Footer(std::string(icon::Cross) + " Change     " + icon::DpadLeftRight + " Adjust     " + icon::Circle + " Back");
 		Present();
@@ -376,7 +458,12 @@ void SettingsScreen(bool over_game)
 			sel = Step(sel, -1, rows);
 		if (n.down)
 			sel = Step(sel, 1, rows);
-		if (sel < S_COUNT && (n.left || n.right || n.ok))
+		if (sel == S_UPDATES)
+		{
+			if (n.ok)
+				UpdateAction();
+		}
+		else if (sel < S_COUNT && (n.left || n.right || n.ok))
 			ChangeSetting(sel, n.left ? -1 : 1);
 		if (n.back || n.options || n.menu || (n.ok && sel == S_COUNT))
 		{

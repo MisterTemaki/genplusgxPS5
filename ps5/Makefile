@@ -28,6 +28,8 @@ PS5_PORT ?= 9021
 VERSION ?= 1.7
 CORE_VERSION := 1.7.4
 TITLE_ID ?= PPSA99921
+# where the app looks for its updates (Settings, SYSTEM, Updates): this repository's GitHub releases
+UPDATE_REPO ?= MisterTemaki/genplusgxPS5
 APP_OUT := build/app/$(TITLE_ID)
 
 ROOT := ..
@@ -60,7 +62,7 @@ EMU_SRC := coreorbis/main-boot.cpp \
 	coreorbis/orbis-shims/orbis_paths.cpp coreorbis/orbis-shims/ProsperoNotify.cpp \
 	coreorbis/orbis-shims/ProsperoVideo.cpp coreorbis/orbis-shims/ProsperoAudio.cpp \
 	coreorbis/orbis-shims/ProsperoInput.cpp coreorbis/orbis-shims/ProsperoJailbreak.cpp \
-	coreorbis/orbis-shims/ProsperoCrash.cpp coreorbis/orbis-shims/ProsperoCrt.cpp \
+	coreorbis/orbis-shims/ProsperoCrash.cpp coreorbis/orbis-shims/ProsperoCrt.cpp coreorbis/orbis-shims/ProsperoUpdate.cpp \
 	frontend/fe_emu.cpp frontend/fe_menu.cpp frontend/fe_settings.cpp frontend/fe_text.cpp \
 	frontend/fe_games.cpp frontend/fe_http.cpp frontend/fe_covers.cpp frontend/fe_shelf.cpp \
 	frontend/fe_prefetch.cpp frontend/fe_coverfetch.cpp frontend/fe_coverworker.cpp
@@ -72,6 +74,7 @@ BRIDGE_C_SRC := frontend/fe_bram.c
 # (the helper also downloads the covers in the background: fe_coverworker.cpp, with the app's HTTPS code)
 HELPER_SRC := coreorbis/orbis-shims/orbis_paths.cpp coreorbis/orbis-shims/ProsperoNotify.cpp \
 	coreorbis/orbis-shims/ProsperoHelper.cpp coreorbis/orbis-shims/ProsperoCrash.cpp coreorbis/orbis-shims/ProsperoMigrate.cpp \
+	coreorbis/orbis-shims/ProsperoUpdate.cpp \
 	frontend/fe_http.cpp frontend/fe_coverfetch.cpp frontend/fe_coverworker.cpp frontend/fe_tlshttp.cpp
 # the helper's own HTTPS (fe_tlshttp.cpp): Mbed TLS 3.6 (Apache-2.0), with fe_mbedtls_config.h on its default settings
 MBEDTLS := frontend/third_party/mbedtls
@@ -84,7 +87,7 @@ CORE_INCS := $(addprefix -I$(ROOT)/,$(CORE_DIRS)) -I$(ROOT)/$(CHD)/src -I$(ROOT)
 	-I$(ROOT)/$(CHD)/deps/zlib-1.3.1 -I$(ROOT)/libretro -I$(ROOT)/libretro/libretro-common/include
 INCS := -Icoreorbis/include-orbis -Icoreorbis/orbis-shims -Ifrontend -isystem $(ROOT)/libretro/libretro-common/include \
 	-isystem $(ROOT)/$(CHD)/deps/zlib-1.3.1
-DEFS := -DGENPLUS_PS5_VERSION='"$(VERSION)"' -DGENPLUS_CORE_VERSION='"$(CORE_VERSION)"' -DGENPLUS_TITLE_ID='"$(TITLE_ID)"'
+DEFS := -DGENPLUS_PS5_VERSION='"$(VERSION)"' -DGENPLUS_CORE_VERSION='"$(CORE_VERSION)"' -DGENPLUS_TITLE_ID='"$(TITLE_ID)"' -DGENPLUS_UPDATE_REPO='"$(UPDATE_REPO)"'
 MINIZIP_FLAGS := -DNOUNCRYPT -I$(ROOT)/$(CHD)/deps/zlib-1.3.1 -w
 PORT_WARN := -Wall -Wextra -Werror -Wno-unused-parameter -Wno-missing-field-initializers
 
@@ -164,7 +167,8 @@ APP_FILES = $(APP_OUT)/eboot.bin $(APP_OUT)/sce_sys/param.json $(APP_OUT)/sce_sy
 APP_DATA_DEFS = -DAPP_EBOOT='"$(abspath $(APP_OUT)/eboot.bin)"' -DAPP_PARAM='"$(abspath $(APP_OUT)/sce_sys/param.json)"' \
 	-DAPP_ICON0='"$(abspath $(APP_OUT)/sce_sys/icon0.png)"' -DAPP_PIC0='"$(abspath $(APP_OUT)/sce_sys/pic0.dds)"' \
 	-DAPP_PIC1='"$(abspath $(APP_OUT)/sce_sys/pic1.dds)"' \
-	-DAPP_LIBC='"$(abspath $(APP_OUT)/sce_module/libc.prx)"'
+	-DAPP_LIBC='"$(abspath $(APP_OUT)/sce_module/libc.prx)"' \
+	$(if $(shell cmp -s app/sce_sys/pic0.dds app/sce_sys/pic1.dds && echo same),-DAPP_PIC1_IS_PIC0)
 
 $(PS5_OUT)/install_data.o: coreorbis/orbis-shims/install_data.cpp coreorbis/orbis-shims/ProsperoInstall.h $(APP_FILES)
 	$(PS5_CXX) -std=c++17 $(PS5_OPT) $(DEFS) $(INCS) $(PORT_WARN) $(APP_DATA_DEFS) -c -o $@ $<
@@ -180,9 +184,12 @@ strip: $(PS5_OUT)/GenesisPlusGXPS5-stripped.elf
 
 # the release files, named with the version: build/dist/GenesisPlusGXPS5-v$(VERSION).elf and the sources zip
 DIST := build/dist
-dist: $(PS5_OUT)/GenesisPlusGXPS5.elf
+# + the app folder as a stored zip with its manifest (GenesisPlusGXPS5-v$(VERSION)-$(TITLE_ID).zip): attach it to the
+# GitHub release tagged v$(VERSION), so the app can update itself (Settings, SYSTEM, Updates)
+dist: $(PS5_OUT)/GenesisPlusGXPS5.elf $(APP_FILES)
 	@mkdir -p $(DIST)
 	cp $< $(DIST)/GenesisPlusGXPS5-v$(VERSION).elf
+	python3 tools/make_release_zip.py $(APP_OUT) $(TITLE_ID) $(DIST)/GenesisPlusGXPS5-v$(VERSION)-$(TITLE_ID).zip
 	cd ../.. && rm -f $(abspath $(DIST))/genplus-ps5-v$(VERSION)-src.zip && \
 		zip -qr $(abspath $(DIST))/genplus-ps5-v$(VERSION)-src.zip $(notdir $(abspath ..)) \
 		-x '*/ps5/build/*' '*/proto/native/build/*' '*.o' '*/.git/*'
