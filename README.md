@@ -1,5 +1,7 @@
 # Genesis Plus GX PS5
 
+> **The title ID is now PPSA99921** (it was PPSA99011 up to 1.6, which PS5 FSR4 Showcase uses too). From 1.7 on the app installs in `/data/homebrew/PPSA99921/`; our old version under `/data/homebrew/PPSA99011/` stays as a separate icon until you delete it (check that the folder is ours first), and your games, saves and settings are kept. Replace the old ELF in your autoload. See [New title ID](#new-title-id-ppsa99921).
+
 [Genesis Plus GX](https://github.com/ekeeke/Genesis-Plus-GX) 1.7.4, the accurate Sega 8/16-bit emulator, running on
 a jailbroken PS5 as a **native home-screen app** with its own icon and background. One app plays:
 
