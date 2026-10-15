@@ -31,7 +31,7 @@ compiled as they are: all 100 of their C files build for the PS5 without a singl
 core through its libretro interface -- the most complete of its ports -- and plays the part RetroArch plays on a
 PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
 
-> **Status (1.7):** builds with the ps5-payload-dev SDK into a signed native app, and passes 269 host tests, which
+> **Status (1.7):** builds with the ps5-payload-dev SDK into a signed native app, and passes 252 host tests, which
 > run the same code (the Genesis Plus GX core included) on Linux with the PS5 calls simulated: a test program for
 > each of Mega Drive, Master System and Game Gear is played through the whole chain -- the shelf, the pad, the
 > core, the video and sound output. If something fails, the logs in
@@ -69,8 +69,8 @@ Every release carries its version in the file name: `GenesisPlusGXPS5-v1.7.elf` 
 README, "`GenesisPlusGXPS5.elf`" always means the current release's ELF.
 
 **1.7:** **New title ID: PPSA99921** (it was PPSA99011, which another app in the homebrew catalog uses; see
-[New title ID](#new-title-id-ppsa99921)). Updating moves the install to the new ID and removes the old icon by itself;
-games, saves and settings are kept. The helper listens on port 9088.
+[New title ID](#new-title-id-ppsa99921)). Nothing under the old ID is touched (it may be
+another app's): an earlier version of ours stays as its own icon until you delete it. Games, saves and settings are shared. The helper listens on port 9088.
 
 **1.6:** **The helper downloads the covers with its own HTTPS.** In 1.5 the helper got nothing: the console's own HTTPS
 (libSceSsl) fails outside the app's sandbox, and every cover failed in a few milliseconds while the counter went
@@ -95,27 +95,23 @@ backup RAM written while the game runs; crash-safe writes; a stricter helper; an
 ## New title ID (PPSA99921)
 
 Up to 1.6, Genesis Plus GX PS5 used the title ID PPSA99011. The homebrew catalog
-([homebrew.page](https://homebrew.page/app/PPSA99011/)) lists that ID for another app, PS5 FSR4 Showcase, and two apps with one
-title ID can't be on the console together: the second one's folder and home-screen icon take the first one's place.
-So from 1.7 on the app is **PPSA99921**, an ID no listed app uses.
+([homebrew.page](https://homebrew.page/app/PPSA99011/)) lists that ID for another app, and two apps with one title ID
+can't be on the console together: the second one's folder and home-screen icon take the first one's place. So
+from 1.7 on the app is **PPSA99921**, an ID no listed app uses, and it installs in `/data/homebrew/PPSA99921/`.
 
-**Updating from 1.6 or older needs nothing special:** send `GenesisPlusGXPS5-v1.7.elf` as usual. The installer:
+**Nothing under the old ID is touched:** `/data/homebrew/PPSA99011/` may just as well be the other app's, so the
+installer never renames, removes or unregisters it. When our own earlier version is still there (its
+`param.json` carries Genesis Plus GX PS5's content ID), the notification says so: it is a separate icon, the old version. To
+remove it, delete the folder `/data/homebrew/PPSA99011/` (over FTP, for example), then select the old icon on the home
+screen, press **OPTIONS** and choose **Delete** (deleting only the icon isn't enough: ShadowMountPlus finds the folder
+again and puts the icon back).
 
-1. renames our old folder, `/data/homebrew/PPSA99011`, to `/data/homebrew/PPSA99921` and brings it up to date. It reads
-   the folder's `param.json` first: another app's folder under PPSA99011 is never touched.
-2. removes the old icon through ShadowMountPlus's API (`127.0.0.1:10101`, or the `api_port` in
-   `/data/shadowmount/config.ini`), after checking that the title registered as PPSA99011 has our content ID, and asks
-   it to scan again, so the icon of PPSA99921 shows up. ShadowMountPlus refuses while an app is open (PS5 Payload
-   Manager, for instance); then the notification says "The old icon is removed in the background" and the helper
-   tries again every 30 seconds.
-3. without ShadowMountPlus's API (an older ShadowMountPlus, or `api_enabled=0`), the notification says to remove the
-   old icon yourself: select it on the home screen, press **OPTIONS**, choose **Delete**.
+Games, saves, states, covers and settings live in `/data/genplus/`, which doesn't depend on the title ID: the new
+version finds everything where it was. The helper listens on a new port, because the helpers of 1.6 and older
+only let PPSA99011 out.
 
-Games, saves, states, covers and settings live in `/data/genplus/`, which doesn't depend on the title ID: nothing is
-lost. The helper moved to port 9088, because the helpers of 1.6 and older only let PPSA99011 out.
-
-**Replace the old ELF in your autoload** with `GenesisPlusGXPS5-v1.7.elf`. An old payload that runs again puts the old folder
-back; the app removes it the next time it opens, and the helper removes the old icon again.
+**Replace the old ELF in your autoload** with the new ELF, or the old version keeps
+being installed beside the new one.
 
 ## Language
 
@@ -495,7 +491,7 @@ make ps5 -j$(nproc)              # build/ps5/GenesisPlusGXPS5.elf (installer + h
 make send PS5_HOST=192.168.0.10  # sends it to elfldr (port 9021)
 make dist                        # build/dist/GenesisPlusGXPS5-v<version>.elf + the source zip
 make app                         # only build/app/PPSA99921/, to copy by hand
-make test                        # Linux builds (app, installer, helper) + 269 host tests (ASan/UBSan)
+make test                        # Linux builds (app, installer, helper) + 252 host tests (ASan/UBSan)
 ```
 
 The build has three stages:
