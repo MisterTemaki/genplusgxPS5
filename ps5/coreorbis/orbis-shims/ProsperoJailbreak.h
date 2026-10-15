@@ -8,7 +8,7 @@
 // those two. When nobody answers, the app sends the helper built into it (GenesisPlusGXPS5-helper.elf) to the
 // console's ELF loader (127.0.0.1:9021) and asks again.
 //
-// The helper only lets out the Genesis Plus GX PS5 title (PPSA99011): it gives the process root's folder view
+// The helper only lets out the Genesis Plus GX PS5 title (PPSA99921 since 1.7; PPSA99011 before): it gives the process root's folder view
 // (/data, /mnt/usbN) and uid 0. It never touches another title.
 //
 // SPDX-License-Identifier: MIT
@@ -22,8 +22,9 @@ namespace jailbreak
 {
 // Genesis Plus GX PS5's helper (GENPLUS_HELPER_PORT on the host). Up to 1.4 the helper listened on 9077, 1.5's
 // (the first to download the covers) on 9081; 1.6's, with its own HTTPS, listens on 9084, so an older helper still
-// running (until the console restarts) is left alone and the app starts its own.
-constexpr int kHelperPort = 9084;
+// running (until the console restarts) is left alone and the app starts its own. 1.7 moved the app to a new title
+// ID (PPSA99921): 1.6's helper only lets PPSA99011 out, so 1.7's listens on 9088.
+constexpr int kHelperPort = 9088;
 // the ELF loader the helper is sent to when it isn't running (GENPLUS_ELFLDR_PORT on the host)
 constexpr int kElfLoaderPort = 9021;
 

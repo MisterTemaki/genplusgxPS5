@@ -7,10 +7,10 @@
   "attribute": 0,
   "attribute2": 0,
   "attribute3": 0,
-  "conceptId": "99011",
+  "conceptId": "99921",
   "contentBadgeType": 1,
-  "contentId": "UP9000-PPSA99011_00-GENPLUSGXPS50001",
-  "contentVersion": "01.060.000",
+  "contentId": "UP9000-PPSA99921_00-GENPLUSGXPS50001",
+  "contentVersion": "01.070.000",
   "downloadDataSize": 256,
   "gameIntent": {
     "permittedIntents": [
@@ -33,6 +33,6 @@
   },
   "requiredSystemSoftwareVersion": "0x0000000000000000",
   "sdkVersion": "0x0000000000000000",
-  "titleId": "PPSA99011",
+  "titleId": "PPSA99921",
   "versionFileUri": ""
 }

@@ -31,7 +31,7 @@ compiled as they are: all 100 of their C files build for the PS5 without a singl
 core through its libretro interface -- the most complete of its ports -- and plays the part RetroArch plays on a
 PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
 
-> **Status (1.6):** builds with the ps5-payload-dev SDK into a signed native app, and passes 242 host tests, which
+> **Status (1.7):** builds with the ps5-payload-dev SDK into a signed native app, and passes 269 host tests, which
 > run the same code (the Genesis Plus GX core included) on Linux with the PS5 calls simulated: a test program for
 > each of Mega Drive, Master System and Game Gear is played through the whole chain -- the shelf, the pad, the
 > core, the video and sound output. If something fails, the logs in
@@ -44,30 +44,33 @@ icon, and the payload you send is its installer:
 
 | Piece | What it is | In PS5SX2 |
 |---|---|---|
-| `eboot.bin` in `/data/homebrew/PPSA99011/` | **Genesis Plus GX itself**, a native app opened from its icon | PCSX2 (PPSA99203) |
+| `eboot.bin` in `/data/homebrew/PPSA99921/` | **Genesis Plus GX itself**, a native app opened from its icon | PCSX2 (PPSA99203) |
 | `sce_module/libc.prx` | the C runtime module every native app carries | the same file, byte for byte |
 | `GenesisPlusGXPS5.elf` (payload) | the **installer**: installs or updates the app, then stays running as the **helper** | PS5SX2Installer.elf + PS5SX2Helper.elf |
 
 When it opens, the app asks the helper to let it out of its sandbox; without that an app sees neither `/data`
 nor USB drives. The request is the one PS5SX2 makes:
 
-- **Who is asked, in order:** the Genesis Plus GX helper (127.0.0.1:9084; older helpers used 9077 up to 1.4 and
+- **Who is asked, in order:** the Genesis Plus GX helper (127.0.0.1:9088 since 1.7; 1.6's used 9084; older helpers used 9077 up to 1.4 and
   9081 in 1.5, and are left alone), then etaHEN (9028) and the daemon on port 9069.
 - **If nobody answers:** the app carries a copy of the helper (`GenesisPlusGXPS5-helper.elf`), sends it to the ELF
   loader (127.0.0.1:9021) and asks again. So the icon keeps working after a reboot, as long as the ELF loader
   runs.
-- **What the helper allows:** only title PPSA99011. It gives the process the system's root folder and uid 0, as
+- **What the helper allows:** only title PPSA99921. It gives the process the system's root folder and uid 0, as
   elfldr does for payloads. No other app is touched.
 
-Genesis Plus GX PS5 only uses `/data/genplus/`, `/data/homebrew/PPSA99011/` and its own
-`/user/appmeta/PPSA99011/`. It sits next to Snes9x PS5 (PPSA99009, helper port 9080), Mesen2 PS5 (PPSA99010, port
-9076), FBNeo PS5 (PPSA99012, port 9079) and PS5SX2 (PPSA99203) without touching them.
+Genesis Plus GX PS5 only uses `/data/genplus/`, `/data/homebrew/PPSA99921/` and its own
+`/user/appmeta/PPSA99921/`. It sits next to Snes9x PS5 (PPSA99922, helper port 9089), Mesen2 PS5 (PPSA99923, port 9091), FBNeo PS5 (PPSA99924, port 9092) and PS5SX2 (PPSA99203) without touching them.
 
 ## Versions
 
-Every release carries its version in the file name: `GenesisPlusGXPS5-v1.6.elf` and `genplus-ps5-v1.6-src.zip`
+Every release carries its version in the file name: `GenesisPlusGXPS5-v1.7.elf` and `genplus-ps5-v1.7-src.zip`
 (`make dist`). When updating, replace the old ELF with the new one in your autoload or Payload Manager. In this
 README, "`GenesisPlusGXPS5.elf`" always means the current release's ELF.
+
+**1.7:** **New title ID: PPSA99921** (it was PPSA99011, which another app in the homebrew catalog uses; see
+[New title ID](#new-title-id-ppsa99921)). Updating moves the install to the new ID and removes the old icon by itself;
+games, saves and settings are kept. The helper listens on port 9088.
 
 **1.6:** **The helper downloads the covers with its own HTTPS.** In 1.5 the helper got nothing: the console's own HTTPS
 (libSceSsl) fails outside the app's sandbox, and every cover failed in a few milliseconds while the counter went
@@ -89,6 +92,31 @@ backup RAM written while the game runs; crash-safe writes; a stricter helper; an
 (720p picture, Resume, odd files in the library, covers, downloads); a setting to turn the debug logs off.
 **1.0:** the first release.
 
+## New title ID (PPSA99921)
+
+Up to 1.6, Genesis Plus GX PS5 used the title ID PPSA99011. The homebrew catalog
+([homebrew.page](https://homebrew.page/app/PPSA99011/)) lists that ID for another app, PS5 FSR4 Showcase, and two apps with one
+title ID can't be on the console together: the second one's folder and home-screen icon take the first one's place.
+So from 1.7 on the app is **PPSA99921**, an ID no listed app uses.
+
+**Updating from 1.6 or older needs nothing special:** send `GenesisPlusGXPS5-v1.7.elf` as usual. The installer:
+
+1. renames our old folder, `/data/homebrew/PPSA99011`, to `/data/homebrew/PPSA99921` and brings it up to date. It reads
+   the folder's `param.json` first: another app's folder under PPSA99011 is never touched.
+2. removes the old icon through ShadowMountPlus's API (`127.0.0.1:10101`, or the `api_port` in
+   `/data/shadowmount/config.ini`), after checking that the title registered as PPSA99011 has our content ID, and asks
+   it to scan again, so the icon of PPSA99921 shows up. ShadowMountPlus refuses while an app is open (PS5 Payload
+   Manager, for instance); then the notification says "The old icon is removed in the background" and the helper
+   tries again every 30 seconds.
+3. without ShadowMountPlus's API (an older ShadowMountPlus, or `api_enabled=0`), the notification says to remove the
+   old icon yourself: select it on the home screen, press **OPTIONS**, choose **Delete**.
+
+Games, saves, states, covers and settings live in `/data/genplus/`, which doesn't depend on the title ID: nothing is
+lost. The helper moved to port 9088, because the helpers of 1.6 and older only let PPSA99011 out.
+
+**Replace the old ELF in your autoload** with `GenesisPlusGXPS5-v1.7.elf`. An old payload that runs again puts the old folder
+back; the app removes it the next time it opens, and the helper removes the old icon again.
+
 ## Language
 
 Every screen and notification of Genesis Plus GX PS5 is in English.
@@ -104,10 +132,10 @@ Every screen and notification of Genesis Plus GX PS5 is in English.
 
 1. **Send `GenesisPlusGXPS5.elf`** with PS5 Payload Manager, or from a PC on the same network:
    ```sh
-   nc -q0 PS5_IP 9021 < GenesisPlusGXPS5-v1.6.elf
+   nc -q0 PS5_IP 9021 < GenesisPlusGXPS5-v1.7.elf
    ```
-   It installs the app in `/data/homebrew/PPSA99011/` (`eboot.bin`, `sce_module/libc.prx`, `param.json`, the
-   icon and the backgrounds), shows **"Genesis Plus GX PS5 1.6 installed. Open it from the Genesis Plus GX PS5
+   It installs the app in `/data/homebrew/PPSA99921/` (`eboot.bin`, `sce_module/libc.prx`, `param.json`, the
+   icon and the backgrounds), shows **"Genesis Plus GX PS5 1.7 installed. Open it from the Genesis Plus GX PS5
    icon on the home screen."** and stays running as the helper.
 2. **Open the Genesis Plus GX PS5 icon.** The game shelf appears and the controller works.
 3. **Copy your games** to their system's folder, over FTP for example. The app makes the folders on its first
@@ -149,10 +177,10 @@ running. Send `GenesisPlusGXPS5.elf` and open the icon again.
 ### The home-screen app
 
 ```
-/data/homebrew/PPSA99011/
+/data/homebrew/PPSA99921/
   eboot.bin              Genesis Plus GX (a native app, signed as PS5SX2's is), with the helper inside
   sce_module/libc.prx    the native app's C runtime (the same as PS5SX2's and ps5-native-app-boilerplate's)
-  sce_sys/param.json     title "Genesis Plus GX PS5", ID PPSA99011
+  sce_sys/param.json     title "Genesis Plus GX PS5", ID PPSA99921
   sce_sys/icon0.png      the icon: the "Genesis Plus GX for PS5" art (512x512; ps5/app/sce_sys/icon0.png in the source)
   sce_sys/pic0.dds       the home-screen background while the icon is selected (3840x2160, BC7)
   sce_sys/pic1.dds       the launch background (the same image)
@@ -168,7 +196,7 @@ ps5-native-app-boilerplate's `tools/prepare-assets.sh --background` does). For a
 `make ps5 TITLE_ID=XXXX00000`.
 
 **Home-screen art:** ShadowMountPlus copies the art in `sce_sys` (icon, backgrounds, `param.json`) to
-`/user/appmeta/PPSA99011/` only when it first registers the title, and the system keeps the art it saw at that
+`/user/appmeta/PPSA99921/` only when it first registers the title, and the system keeps the art it saw at that
 moment. The installer keeps that folder current on every update, but if the title was registered before the art
 changed, register it again once: select **Genesis Plus GX PS5** on the home screen, press **OPTIONS**, choose
 **Delete** (your games, saves and covers in `/data/genplus/` stay), then send `GenesisPlusGXPS5.elf` again.
@@ -466,8 +494,8 @@ cd ps5
 make ps5 -j$(nproc)              # build/ps5/GenesisPlusGXPS5.elf (installer + helper, with the app inside)
 make send PS5_HOST=192.168.0.10  # sends it to elfldr (port 9021)
 make dist                        # build/dist/GenesisPlusGXPS5-v<version>.elf + the source zip
-make app                         # only build/app/PPSA99011/, to copy by hand
-make test                        # Linux builds (app, installer, helper) + 231 host tests (ASan/UBSan)
+make app                         # only build/app/PPSA99921/, to copy by hand
+make test                        # Linux builds (app, installer, helper) + 269 host tests (ASan/UBSan)
 ```
 
 The build has three stages:

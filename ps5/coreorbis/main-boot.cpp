@@ -18,6 +18,7 @@
 #include "ProsperoCrash.h"
 #include "ProsperoInput.h"
 #include "ProsperoJailbreak.h"
+#include "ProsperoMigrate.h"
 #include "ProsperoNotify.h"
 #include "ProsperoSce.h"
 #include "ProsperoVideo.h"
@@ -169,7 +170,12 @@ int Run(int argc, char** argv)
 	if (!have_data)
 		OrbisLog("[boot] can't create %s: no access to /data", OrbisRoot().c_str());
 	else
+	{
 		WritePid();
+		// an old payload (1.6 or older, in an autoload) may have put the app back under its old title ID:
+		// our old folder goes, and the helper removes its home-screen registration (ProsperoMigrate.h)
+		migrate::Run(false);
+	}
 	fe::Config().Load();
 
 	GENPLUS_STAGE(Boot, "video");

@@ -13,7 +13,7 @@
 #include <string>
 
 #ifndef GENPLUS_TITLE_ID
-#define GENPLUS_TITLE_ID "PPSA99011"
+#define GENPLUS_TITLE_ID "PPSA99921"
 #endif
 
 struct EmbeddedAppFile
