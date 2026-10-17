@@ -13,6 +13,8 @@
 #include "fe_bram.h"
 
 #include <fcntl.h>
+#include <stdlib.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -31,6 +33,7 @@ static const uint8 kFormatTail[0x20] = {0x53, 0x45, 0x47, 0x41, 0x5f, 0x43, 0x44
 
 static uint32 s_crc[2];
 static int s_active;
+static int s_backed[2]; /* the file was copied to <file>.bak before this session's first write */
 
 static const char* InternalPath(void)
 {
@@ -73,8 +76,38 @@ static int WriteAtomic(const char* path, const uint8* data, size_t size)
 	return 1;
 }
 
+/* Before the first write of a session, the file as it was is copied to <file>.bak (the Sega CD's backup RAM holds
+ * the saves of every game of that region: one bad write must not cost them all). */
+static void BackupOnce(const char* path, int which)
+{
+	char bak[300];
+	struct stat st;
+	uint8* buf;
+	ssize_t n;
+	int fd;
+	if (s_backed[which])
+		return;
+	s_backed[which] = 1;
+	if (snprintf(bak, sizeof(bak), "%s.bak", path) >= (int)sizeof(bak))
+		return;
+	fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return;
+	if (fstat(fd, &st) != 0 || st.st_size <= 0 || st.st_size > 0x100000 || !(buf = (uint8*)malloc((size_t)st.st_size)))
+	{
+		close(fd);
+		return;
+	}
+	n = read(fd, buf, (size_t)st.st_size);
+	close(fd);
+	if (n == st.st_size)
+		WriteAtomic(bak, buf, (size_t)n);
+	free(buf);
+}
+
 void fe_bram_start(void)
 {
+	s_backed[0] = s_backed[1] = 0;
 	s_active = system_hw == SYSTEM_MCD;
 	if (!s_active)
 		return;
@@ -93,6 +126,7 @@ int fe_bram_flush(void)
 		const char* path = InternalPath();
 		if (crc != s_crc[0] && path && path[0] && !memcmp(scd.bram + 0x2000 - 0x20, kFormatTail, 0x20))
 		{
+			BackupOnce(path, 0);
 			if (WriteAtomic(path, scd.bram, 0x2000))
 			{
 				s_crc[0] = crc;
@@ -108,6 +142,7 @@ int fe_bram_flush(void)
 		const uint32 crc = crc32(0, scd.cartridge.area, size);
 		if (crc != s_crc[1] && CART_BRAM[0] && !memcmp(scd.cartridge.area + size - 0x20, kFormatTail, 0x20))
 		{
+			BackupOnce(CART_BRAM, 1);
 			if (WriteAtomic(CART_BRAM, scd.cartridge.area, size))
 			{
 				s_crc[1] = crc;

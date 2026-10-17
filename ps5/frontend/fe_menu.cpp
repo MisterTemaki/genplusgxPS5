@@ -220,6 +220,7 @@ enum SettingRow
 	S_REWIND,
 	S_REGION,
 	S_SPRITES,
+	S_ADDON,
 	H_CONTROLS,
 	S_PADTYPE,
 	S_MULTITAP,
@@ -339,6 +340,7 @@ Row SettingRowFor(int s)
 		case S_REWIND: return {"Rewind (hold L2 + R2)", OnOff(c.rewind)};
 		case S_REGION: return {"Console region", emu::kRegions[c.region % emu::kRegionCount].name};
 		case S_SPRITES: return {"Remove the sprite limit", OnOff(c.no_sprite_limit)};
+		case S_ADDON: return {"CD add-on (MD+ / MSU-MD)", emu::kAddOns[c.add_on % emu::kAddOnCount].name};
 		case H_CONTROLS: return {"CONTROLS (Mega Drive pad button  ->  PS5 button)", "", true, true};
 		case S_PADTYPE: return {"Mega Drive / Sega CD pad", emu::kPadTypes[c.pad_type % emu::kPadTypeCount].name};
 		case S_MULTITAP: return {"4-player adapter", emu::kMultitaps[c.multitap % emu::kMultitapCount].name};
@@ -394,6 +396,7 @@ void ChangeSetting(int s, int dir)
 		case S_REWIND: c.rewind = !c.rewind; break;
 		case S_REGION: c.region = Cycle(c.region, dir, emu::kRegionCount); break;
 		case S_SPRITES: c.no_sprite_limit = !c.no_sprite_limit; break;
+		case S_ADDON: c.add_on = Cycle(c.add_on, dir, emu::kAddOnCount); break;
 		case S_COVERS: c.covers_download = !c.covers_download; break;
 		case S_DEBUGLOGS:
 			c.debug_logs = !c.debug_logs;
@@ -445,7 +448,7 @@ void SettingsScreen(bool over_game)
 		PollUpdate(false);
 		const std::vector<Row> rows = SettingRows();
 		Background(over_game);
-		DrawOptionBox("Settings", rows, sel, over_game);
+		DrawOptionBox(GameHasOwnSettings() ? "Settings: " + emu::GameName() : std::string("Settings"), rows, sel, over_game);
 		if (sel == S_UPDATES && g_upd.st.phase == update::Phase::Failed && !g_upd.st.error.empty())
 			DrawText(80, H - 130, FitText(g_upd.st.error, 2, W - 160).c_str(), 2, kAccent);
 		else if (sel == S_UPDATES && !g_upd.helper)
@@ -515,8 +518,10 @@ PauseAction PauseMenu()
 		I_RESUME,
 		I_SAVE,
 		I_LOAD,
+		I_UNDO,
 		I_SLOT,
 		I_SETTINGS,
+		I_OWN,
 		I_RESET,
 		I_POWER,
 		I_LIST,
@@ -538,7 +543,10 @@ PauseAction PauseMenu()
 		rows[I_LOAD] = {buf, "", emu::StateExists(cfg.state_slot)};
 		snprintf(buf, sizeof(buf), "%d%s", cfg.state_slot, emu::StateExists(cfg.state_slot) ? " (used)" : " (empty)");
 		rows[I_SLOT] = {"State slot", buf};
-		rows[I_SETTINGS] = {"Settings", ""};
+		snprintf(buf, sizeof(buf), "Load the previous state (slot %d)", cfg.state_slot);
+		rows[I_UNDO] = {buf, "", emu::PreviousStateExists(cfg.state_slot)};
+		rows[I_SETTINGS] = {GameHasOwnSettings() ? "Settings (this game's)" : "Settings", ""};
+		rows[I_OWN] = {"Settings for this game", GameHasOwnSettings() ? "Its own" : "The global ones"};
 		rows[I_RESET] = {"Reset", ""};
 		rows[I_POWER] = {"Power cycle", ""};
 		rows[I_LIST] = {"Back to the game list", ""};
@@ -570,6 +578,18 @@ PauseAction PauseMenu()
 			cfg.state_slot = n.left ? (cfg.state_slot + 8) % 10 + 1 : cfg.state_slot % 10 + 1;
 			cfg.Save();
 		}
+		else if (sel == I_OWN && (n.left || n.right || n.ok))
+		{
+			const bool own = !GameHasOwnSettings();
+			if (SetGameOwnSettings(own))
+			{
+				emu::ApplySettings();
+				toast = own ? "This game now keeps its own settings." : "This game uses the global settings again.";
+			}
+			else
+				toast = "Could not save this game's settings.";
+			toast_until = Now() + 2.5;
+		}
 		else if (n.ok)
 		{
 			switch (sel)
@@ -583,7 +603,13 @@ PauseAction PauseMenu()
 				case I_LOAD:
 					if (emu::LoadState(cfg.state_slot))
 						return PauseAction::Resume;
-					toast = "This slot is empty.";
+					toast = emu::StateExists(cfg.state_slot) ? "This state can't be loaded." : "This slot is empty.";
+					toast_until = Now() + 2.0;
+					break;
+				case I_UNDO:
+					if (emu::LoadPreviousState(cfg.state_slot))
+						return PauseAction::Resume;
+					toast = "This slot has no previous state.";
 					toast_until = Now() + 2.0;
 					break;
 				case I_SETTINGS:

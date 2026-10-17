@@ -5,7 +5,11 @@ Each ROM shows a red backdrop; while the pad's Cross button is held -- Mega Driv
 button 1 with the port's mapping -- the backdrop turns green. So a de-tiled flip shows whether the whole chain
 works: the core's CPU and video for that system, the port's scaler and tiler, and the pad -> core input mapping.
 
-    make_test_rom.py out.<md|gen|bin|sms|gg> [ntsc|pal]
+    make_test_rom.py out.<md|gen|bin|sms|gg> [ntsc|pal|sram|mdplus|cdbios]
+
+mdplus: a Mega Drive ROM that asks an MD+ (MegaSD) for CD track 2, looped (tests/make_test_cd.py's tones).
+cdbios: a stand-in Sega CD BIOS (save it as bios/bios_CD_U.bin): the picture as above, and the RAM cartridge's
+first byte $42, or $FF while Cross is held.
 """
 import struct
 import sys
@@ -68,7 +72,7 @@ def sms():
     return bytes(rom)
 
 
-def md(region, sram=False):
+def md(region, sram=False, mdplus=False, cdram=False):
     # Mega Drive (68000, big endian): backdrop = CRAM colour 0, red; green while B is held (pad port A, TH high:
     # bit 4 = B, 0 = pressed). No TMSS: the core boots the cartridge directly.
     code = bytes.fromhex(
@@ -78,21 +82,34 @@ def md(region, sram=False):
         "30BC8144"          # move.w #$8144,(a0)  mode 2: display on, mode 5
         "30BC8700"          # move.w #$8700,(a0)  backdrop: palette 0, colour 0
         "13FC004000A10009"  # move.b #$40,$A10009 port A: TH is an output
+    )
+    if mdplus:
+        # MD+ (MegaSD): open the overlay, then "play track 2 and loop" (command $12): the test disc's tones
+        code += bytes.fromhex(
+            "33FCCD540003F7FA"  # move.w #$CD54,$03F7FA
+            "33FC12020003F7FE"  # move.w #$1202,$03F7FE
+        )
+    if cdram:
+        # a stand-in Sega CD BIOS: the 512 KiB backup RAM cartridge (Mode 2), write-enabled
+        code += bytes.fromhex("13FC0001007FFFFF")  # move.b #1,$7FFFFF
+    loop = len(code)  # offset of "loop" in code
+    code += bytes.fromhex(
         # loop:
         "13FC004000A10003"  # move.b #$40,$A10003 TH high
         "4E714E71"          # nop; nop
         "103900A10003"      # move.b $A10003,d0
     )
-    if sram:
-        # battery RAM: $42 at $200001 every frame, or $FF (the game "erases its save") while B is held
+    if sram or cdram:
+        # battery RAM: $42 at $200001 every frame, or $FF (the game "erases its save") while B is held; with cdram,
+        # the same at $600001: the Sega CD RAM cartridge's first byte
         code += bytes.fromhex(
             "143C0042"          # move.b #$42,d2
             "08000004"          # btst #4,d0          B
             "6604"              # bne.s keep
             "143C00FF"          # move.b #$FF,d2
             # keep:
-            "13C200200001"      # move.b d2,$200001
         )
+        code += bytes.fromhex("13C200600001" if cdram else "13C200200001")  # move.b d2,$600001 / $200001
     code += bytes.fromhex(
         "323C000E"          # move.w #$000E,d1    red (0000 BBB0 GGG0 RRR0)
         "08000004"          # btst #4,d0          B
@@ -102,7 +119,6 @@ def md(region, sram=False):
         "20BCC0000000"      # move.l #$C0000000,(a0)  CRAM write, address 0
         "3281"              # move.w d1,(a1)
     )
-    loop = 6 + 6 + 4 + 4 + 4 + 8  # offset of "loop" in code
     disp = loop - (len(code) + 2)
     code += bytes([0x60, disp & 0xFF])  # bra.s loop
     rom = bytearray([0xFF] * 0x20000)
@@ -156,13 +172,15 @@ def main():
     out = sys.argv[1]
     region = sys.argv[2] if len(sys.argv) > 2 else "ntsc"
     ext = out.rsplit(".", 1)[-1].lower()
-    data = {
-        "md": lambda: md("ntsc", sram=True) if region == "sram" else md(region),
-        "gen": lambda: md(region),
-        "bin": lambda: md(region),
-        "sms": sms,
-        "gg": gg,
-    }[ext]()
+    def mega():
+        if region == "sram":
+            return md("ntsc", sram=True)
+        if region == "mdplus":
+            return md("ntsc", mdplus=True)
+        if region == "cdbios":
+            return md("ntsc", cdram=True)
+        return md(region)
+    data = {"md": mega, "gen": mega, "bin": mega, "sms": sms, "gg": gg}[ext]()
     with open(out, "wb") as f:
         f.write(data)
     print(f"wrote {out} ({ext}, {region}, {len(data)} bytes)")

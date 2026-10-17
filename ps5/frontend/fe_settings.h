@@ -28,6 +28,7 @@ struct Settings
 	bool rewind = true; // L2 + R2 rewinds
 	int region = 0; // emu::kRegions: auto, USA, Europe, Japan
 	bool no_sprite_limit = false;
+	int add_on = 0; // emu::kAddOns: the CD add-on of a cartridge game with a disc beside it (MD+, MSU-MD)
 	int state_slot = 1; // 1..10
 	// controls
 	int pad_type = 0; // emu::kPadTypes: auto (the game's header), 3 buttons, 6 buttons (Mega Drive, Sega CD)
@@ -45,8 +46,24 @@ struct Settings
 	std::string last_rom; // the shelf puts the selection on this game
 
 	void Load();
+	// Writes the settings: the global file, and -- while a game with its own settings runs -- that game's file
+	// (the game's keys go there, the global file keeps the global ones).
 	void Save() const;
+
+	// The settings parser and writer, for any file. game_keys_only: only the keys a game can have of its own.
+	bool LoadFrom(const std::string& path);
+	bool SaveTo(const std::string& path, bool game_keys_only) const;
 };
 
 Settings& Config();
+
+// Per-game settings (/data/genplus/games/<system>/<game>.ini): the picture, sound, emulation and control settings a
+// game can keep of its own; the library, logs, fast forward and rewind stay global.
+// BeginGame: when the game has its own file, its settings replace the global ones until EndGame.
+void BeginGame(const std::string& game_ini);
+void EndGame();
+bool GameHasOwnSettings();
+// Makes the running game use its own settings (starting from the current ones), or the global ones again (its
+// file removed). False when no game runs or the file can't be written.
+bool SetGameOwnSettings(bool own);
 } // namespace fe

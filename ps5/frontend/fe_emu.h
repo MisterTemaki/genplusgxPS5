@@ -28,6 +28,8 @@ extern const Choice kFmChips[]; // genesis_plus_gx_ym2612
 extern const int kFmChipCount;
 extern const Choice kRegions[]; // genesis_plus_gx_region_detect
 extern const int kRegionCount;
+extern const Choice kAddOns[]; // genesis_plus_gx_add_on: auto, MegaSD (MD+), Sega CD (MSU-MD), none
+extern const int kAddOnCount;
 extern const Choice kPadTypes[]; // Mega Drive / Sega CD pad: auto (the game's header), 3 buttons, 6 buttons
 extern const int kPadTypeCount;
 extern const Choice kMultitaps[]; // off, EA 4-Way Play, Sega Team Player
@@ -82,6 +84,9 @@ void Resume();
 bool SaveState(int slot); // 1..10, /data/genplus/states/<game>.state<slot>
 bool LoadState(int slot);
 bool StateExists(int slot);
+// The state the slot held before its last save (<state>.prev), kept when a state is written over another.
+bool LoadPreviousState(int slot);
+bool PreviousStateExists(int slot);
 void Reset();
 void PowerCycle(); // the game loaded again, as switching the console off and on
 void Osd(const std::string& text); // a message over the game for a few seconds

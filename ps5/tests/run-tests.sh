@@ -173,7 +173,7 @@ expect "grep -q 'loading .*game.zip -> game.md' $T/root/logs/boot.log" "the game
 expect "$CHECK $T/dump/flip00100.ppm 960 540 red >/dev/null" "the zipped game runs"
 u2=$(grep -o 'audio queued .*underruns [0-9]*' "$T/root/logs/boot.log" | sed -n 2p | grep -o '[0-9]*$')
 u3=$(grep -o 'audio queued .*underruns [0-9]*' "$T/root/logs/boot.log" | sed -n 3p | grep -o '[0-9]*$')
-lat=$(grep -o 'audio queued [0-9]* ([0-9]* ms)' "$T/root/logs/boot.log" | sed -n 3p | grep -o '([0-9]*' | tr -d '(')
+lat=$(grep -o 'audio queued [0-9]* ([0-9]* ms' "$T/root/logs/boot.log" | sed -n 3p | grep -o '([0-9]*' | tr -d '(')
 under=$(( ${u3:-999} - ${u2:-0} ))
 expect "[ $under -le 2 ]" "audio underruns over 5 s of play: $under"
 # the floor is low: a slow test machine (ASan, 2 cores) runs a little under 60 fps and drains the ring toward it
@@ -503,7 +503,8 @@ rc=$(GENPLUS_HOST_QUIT_AFTER=3 run "$T" "0:0" "" "$T/root/roms/test.md")
 expect "grep -q 'controllers: Auto (the game.s) pad, Team Player (Sega)' $T/root/logs/boot.log" "Team Player plugged in"
 T=$(newroot t20d)
 $ROM "$T/root/roms/Alpha (USA).md" ntsc >/dev/null
-rc=$(run "$T" "0:0;30:$TRIANGLE;32:0;40:$DOWN;42:0;46:$DOWN;48:0;52:$DOWN;54:0;58:$DOWN;60:0;64:$DOWN;66:0;70:$DOWN;72:0;76:$DOWN;78:0;82:$DOWN;84:0;88:$DOWN;90:0;94:$DOWN;96:0;100:$DOWN;102:0;106:$DOWN;108:0;112:$DOWN;114:0;118:$DOWN;120:0;124:$DOWN;126:0;130:$DOWN;132:0;136:$DOWN;138:0;142:$RIGHT;144:0;148:$RIGHT;150:0;154:$DOWN;156:0;160:$RIGHT;162:0;166:$DOWN;168:0;172:$RIGHT;174:0;182:$CIRCLE;184:0;192:$OPTIONS;194:0;200:$CROSS;202:0" "178")
+# (1.8: the "CD add-on" row after "Sprite limit": one more Down)
+rc=$(run "$T" "0:0;30:$TRIANGLE;32:0;40:$DOWN;42:0;46:$DOWN;48:0;52:$DOWN;54:0;58:$DOWN;60:0;64:$DOWN;66:0;70:$DOWN;72:0;76:$DOWN;78:0;82:$DOWN;84:0;88:$DOWN;90:0;94:$DOWN;96:0;100:$DOWN;102:0;106:$DOWN;108:0;112:$DOWN;114:0;118:$DOWN;120:0;124:$DOWN;126:0;130:$DOWN;132:0;136:$DOWN;138:0;142:$DOWN;144:0;148:$RIGHT;150:0;154:$RIGHT;156:0;160:$DOWN;162:0;166:$RIGHT;168:0;172:$DOWN;174:0;178:$RIGHT;180:0;188:$CIRCLE;190:0;198:$OPTIONS;200:0;206:$CROSS;208:0" "184")
 expect "[ $rc = 0 ]" "settings screen: exit code 0 (got $rc)"
 expect "grep -q '^pad_type=2$' $T/root/genplus-ps5.ini && grep -q '^multitap=1$' $T/root/genplus-ps5.ini" "the settings screen set a 6-button pad and the 4 Way Play"
 expect "grep -q '^btn_a=3$' $T/root/genplus-ps5.ini" "the settings screen moved A to Triangle"
@@ -983,6 +984,136 @@ expect "[ \$(grep -c '^sys:' $T/root/covers/crc-cache.txt) = 800 ] && [ \$(grep 
 rc=$(run "$T" "0:0;100:$OPTIONS;102:0;110:$CROSS;112:0" "")
 second=$(scan_time $T/root/logs/boot.log)
 expect "python3 -c 'import sys; sys.exit(0 if float(\"$first\") < 4 and float(\"$second\") < 2 else 1)'" "first scan ${first} s (under 4), the next ${second} s (under 2)"
+nosan "$T"
+fi
+
+# a press of each button in turn, from frame $1, 8 frames apart: SEQ 200 $L3R3 $DOWN $CROSS
+SEQ() { local f=$1 out="" b; shift; for b in "$@"; do out="$out;$f:$b;$((f + 2)):0"; f=$((f + 8)); done; echo "${out#;}"; }
+TONE="python3 $PWD/tests/check_tone.py"
+CD="python3 $PWD/tests/make_test_cd.py"
+
+if want 30; then
+echo "== 30. CD audio through MD+ (bin/cue, wav, CHD): the tones come out at their pitch, both channels, clean"
+# tests/make_test_rom.py mdplus asks the MegaSD for track 2 (looped); the disc's track 2 is 1000 Hz left, 1500 Hz right
+for kind in cue wcue; do
+	T=$(newroot t30$kind)
+	$ROM "$T/root/roms/mdp.md" mdplus >/dev/null
+	$CD "$T/root/roms/mdp.$kind" --loop >/dev/null
+	rc=$(GENPLUS_HOST_AUDIO_DUMP=$T/audio.raw run "$T" "0:0;$(QUITAT 300)" "" "$T/root/roms/mdp.md")
+	expect "[ $rc = 0 ]" "MD+ $kind: exit code 0 (got $rc)"
+	expect "$TONE $T/audio.raw >$T/tone.txt" "MD+ $kind: 1000 Hz left, 1500 Hz right, in tune and clean"
+	sed 's/^/    /' $T/tone.txt
+	nosan "$T"
+done
+# a CHD beside the ROM: with "CD add-on: MegaSD (MD+)" it plays (chdman's big-endian audio read right)...
+T=$(newroot t30chd)
+echo "add_on=1" >>"$T/root/genplus-ps5.ini"
+$ROM "$T/root/roms/mdp.md" mdplus >/dev/null
+$CD "$T/root/roms/mdp.chd" >/dev/null
+rc=$(GENPLUS_HOST_AUDIO_DUMP=$T/audio.raw run "$T" "0:0;$(QUITAT 300)" "" "$T/root/roms/mdp.md")
+expect "[ $rc = 0 ] && $TONE $T/audio.raw >$T/tone.txt" "MD+ chd (add-on MegaSD): the tones, in tune and clean"
+sed 's/^/    /' $T/tone.txt
+nosan "$T"
+# ...with Auto it is taken for an MSU-MD disc (Sega CD): no MD+ sound -- the reason for the setting
+T=$(newroot t30auto)
+$ROM "$T/root/roms/mdp.md" mdplus >/dev/null
+$CD "$T/root/roms/mdp.chd" >/dev/null
+rc=$(GENPLUS_HOST_AUDIO_DUMP=$T/audio.raw run "$T" "0:0;$(QUITAT 300)" "" "$T/root/roms/mdp.md")
+expect "[ $rc = 0 ] && ! $TONE $T/audio.raw >/dev/null" "MD+ chd with add-on Auto: not played as MD+ (documented)"
+# the setting's row: Triangle -> Settings, Up from Shader to the add-on row is not fixed; the ini key is checked instead
+expect "grep -q '^add_on=1$' $T/../t30chd/root/genplus-ps5.ini" "add_on is kept in the settings file"
+nosan "$T"
+fi
+
+if want 31; then
+echo "== 31. Sega CD with a stand-in BIOS: cue and chd boot, the region's BIOS, the RAM cart saved with a .bak"
+for kind in cue chd; do
+	T=$(newroot t31$kind)
+	mkdir -p "$T/root/bios"
+	$ROM "$T/root/bios/bios_CD_U.bin" cdbios >/dev/null
+	$CD "$T/root/roms/Test (USA).$kind" --region U >/dev/null
+	rc=$(run "$T" "0:0;100:$CROSS;140:0;$(QUITAT 200)" "90,130" "$T/root/roms/Test (USA).$kind")
+	expect "[ $rc = 0 ] && grep -q 'running \"Test (USA)\" (Sega CD)' $T/root/logs/boot.log" "$kind: the disc boots as a Sega CD game"
+	expect "$CHECK $T/dump/flip00090.ppm 960 540 red >/dev/null && $CHECK $T/dump/flip00130.ppm 960 540 green >/dev/null" "$kind: the BIOS runs (red), the pad reaches it (green)"
+	nosan "$T"
+done
+# a European disc with only the European BIOS
+T=$(newroot t31e)
+mkdir -p "$T/root/bios"
+$ROM "$T/root/bios/bios_CD_E.bin" cdbios >/dev/null
+$CD "$T/root/roms/Test (Europe).cue" --region E >/dev/null
+rc=$(run "$T" "0:0;$(QUITAT 200)" "90" "$T/root/roms/Test (Europe).cue")
+expect "[ $rc = 0 ] && grep -q 'running \"Test (Europe)\" (Sega CD)' $T/root/logs/boot.log && $CHECK $T/dump/flip00090.ppm 960 540 red >/dev/null" "a European disc boots with bios_CD_E.bin"
+nosan "$T"
+# the RAM cart: the "BIOS" writes \$42 to its first byte; the next run erases it (\$FF while Cross is held): the file
+# follows, and the cart as it was is kept in cart.brm.bak
+T=$(newroot t31b)
+mkdir -p "$T/root/bios"
+$ROM "$T/root/bios/bios_CD_U.bin" cdbios >/dev/null
+$CD "$T/root/roms/Test (USA).cue" >/dev/null
+rc=$(run "$T" "0:0;$(QUITAT 200)" "" "$T/root/roms/Test (USA).cue")
+C=$T/root/saves/cart.brm
+expect "[ -f $C ] && python3 -c 'import sys; sys.exit(0 if open(\"$C\",\"rb\").read()[0] == 0x42 else 1)'" "the RAM cart is saved"
+expect "[ ! -e $C.bak ]" "no .bak while there was nothing to keep"
+rc=$(run "$T" "0:0;20:$CROSS;$(QUITAT 200)" "" "$T/root/roms/Test (USA).cue")
+expect "python3 -c 'import sys; sys.exit(0 if open(\"$C\",\"rb\").read()[0] == 0xFF and open(\"$C.bak\",\"rb\").read()[0] == 0x42 else 1)'" "the erase is saved; cart.brm.bak keeps the cart as it was"
+nosan "$T"
+fi
+
+if want 32; then
+echo "== 32. saves kept safe: the previous state, a damaged state refused, 10 save/load cycles, battery save .bak"
+T=$(newroot t32)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+rc=$(run "$T" "0:0;100:$L2UP;105:0;150:$L2UP;155:0;$(QUITAT 200)" "" "$T/root/roms/test.md")
+ST=$T/root/states/MegaDrive/test.state1
+expect "[ $rc = 0 ] && [ -f $ST ] && [ -f $ST.prev ] && [ ! -e $ST.part ]" "a state saved over another keeps it as .prev"
+# pause, Down 3 -> "Load the previous state (slot 1)", Cross
+rc=$(run "$T" "0:0;$(SEQ 100 $L3R3 $DOWN $DOWN $DOWN $CROSS);$(QUITAT 200)" "" "$T/root/roms/test.md")
+expect "[ $rc = 0 ] && grep -q 'load state 1 (previous): ok' $T/root/logs/boot.log" "the pause menu loads the previous state"
+nosan "$T"
+# a damaged (cut) state: refused, the game goes on
+head -c 1000 $ST >$ST.cut && mv $ST.cut $ST
+rc=$(run "$T" "0:0;100:$L2DOWN;105:0;$(QUITAT 200)" "190" "$T/root/roms/test.md")
+expect "[ $rc = 0 ] && grep -q 'load state 1 (.*): 1000 bytes, .*refused' $T/root/logs/boot.log && $CHECK $T/dump/flip00190.ppm 960 540 red >/dev/null" "a damaged state is refused and the game goes on"
+nosan "$T"
+# 10 saves and loads in a row
+T=$(newroot t32c)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+pad="0:0"
+for i in $(seq 0 9); do f=$((100 + i * 30)); pad="$pad;$f:$L2UP;$((f + 5)):0;$((f + 15)):$L2DOWN;$((f + 20)):0"; done
+rc=$(run "$T" "$pad;$(QUITAT 450)" "440" "$T/root/roms/test.md")
+expect "[ $rc = 0 ] && [ \$(grep -c 'load state 1: ok' $T/root/logs/boot.log) = 10 ] && $CHECK $T/dump/flip00440.ppm 960 540 red >/dev/null" "10 save/load cycles: all loaded, the game still runs"
+nosan "$T"
+# battery RAM: the save as it was before this session's first write is kept as .srm.bak
+T=$(newroot t32s)
+$ROM "$T/root/roms/save.md" sram >/dev/null
+rc=$(run "$T" "0:0;$(QUITAT 100)" "" "$T/root/roms/save.md")
+S=$T/root/saves/MegaDrive/save.srm
+expect "[ -f $S ] && [ ! -e $S.bak ]" "a first battery save: nothing to keep"
+rc=$(run "$T" "0:0;20:$CROSS;$(QUITAT 100)" "" "$T/root/roms/save.md")
+expect "[ -f $S.bak ] && python3 -c 'import sys; sys.exit(0 if 0x42 in open(\"$S.bak\",\"rb\").read() and 0x42 not in open(\"$S\",\"rb\").read() else 1)'" "the game's erase is saved, the save before it kept as .srm.bak"
+nosan "$T"
+fi
+
+if want 33; then
+echo "== 33. settings for one game: kept in games/<system>/<game>.ini, the global ones untouched"
+T=$(newroot t33)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+G=$T/root/games/MegaDrive/test.ini
+# pause, Down 6 -> "Settings for this game", Cross: "Its own" (the menu stays), Circle: back to the game
+rc=$(run "$T" "0:0;$(SEQ 100 $L3R3 $DOWN $DOWN $DOWN $DOWN $DOWN $DOWN $CROSS $CIRCLE);$(QUITAT 240)" "" "$T/root/roms/test.md")
+expect "[ $rc = 0 ] && [ -f $G ] && grep -q \"this game's own settings\" $G" "the game gets its own settings file"
+# its own shader: this game is drawn through it, another game and the global file aren't changed
+sed -i 's/^shader=.*/shader=3/' $G
+$ROM "$T/root/roms/other.md" ntsc >/dev/null
+rc=$(run "$T" "0:0;$(QUITAT 100)" "" "$T/root/roms/test.md")
+expect "[ $rc = 0 ] && grep -q \"this game's own settings\" $T/root/logs/boot.log && grep -q 'shader crt-lottes-fast' $T/root/logs/boot.log" "the game runs with its own shader"
+expect "grep -q '^shader=0$' $T/root/genplus-ps5.ini && grep -q '^shader=3$' $G" "the global file keeps shader=0"
+rc=$(run "$T" "0:0;$(QUITAT 100)" "" "$T/root/roms/other.md")
+expect "[ $rc = 0 ] && ! grep -q 'shader crt-lottes-fast' $T/root/logs/boot.log" "another game uses the global settings"
+# back to the global ones: the file goes
+rc=$(run "$T" "0:0;$(SEQ 100 $L3R3 $DOWN $DOWN $DOWN $DOWN $DOWN $DOWN $CROSS $CIRCLE);$(QUITAT 240)" "" "$T/root/roms/test.md")
+expect "[ $rc = 0 ] && [ ! -e $G ] && grep -q '^shader=0$' $T/root/genplus-ps5.ini" "\"The global ones\" removes the game's file"
 nosan "$T"
 fi
 

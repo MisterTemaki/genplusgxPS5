@@ -25,7 +25,7 @@
 PS5_PAYLOAD_SDK ?= /opt/ps5-payload-sdk
 PS5_HOST ?= ps5
 PS5_PORT ?= 9021
-VERSION ?= 1.7
+VERSION ?= 1.8
 CORE_VERSION := 1.7.4
 TITLE_ID ?= PPSA99921
 # where the app looks for its updates (Settings, SYSTEM, Updates): this repository's GitHub releases
@@ -351,8 +351,18 @@ $(HOST_OUT)/genplus-ps5-host: $(HOST_CORE_OBJ) $(HOST_EMU_OBJ) $(HOST_OUT)/helpe
 test: host
 	bash tests/run-tests.sh
 
+# the CRT shaders' drawing time on this computer, built with the PS5's flags (tools/shader_bench.cpp)
+shader-bench: $(HOST_OUT)/shader-bench
+	$(HOST_OUT)/shader-bench 300
+	$(HOST_OUT)/shader-bench 300 720
+
+$(HOST_OUT)/shader-bench: tools/shader_bench.cpp coreorbis/orbis-shims/ProsperoCrt.cpp coreorbis/orbis-shims/ProsperoCrt.h
+	@mkdir -p $(dir $@)
+	$(HOST_CXX) -std=c++17 -O3 -march=znver2 -fno-strict-aliasing $(INCS) -o $@ tools/shader_bench.cpp \
+		coreorbis/orbis-shims/ProsperoCrt.cpp -lpthread
+
 clean:
 	rm -rf build
 
-.PHONY: ps5 ps5-core host-core host test send strip app dist clean
+.PHONY: shader-bench ps5 ps5-core host-core host test send strip app dist clean
 .SECONDARY:

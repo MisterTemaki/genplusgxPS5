@@ -33,11 +33,13 @@ compiled as they are: all 100 of their C files build for the PS5 without a singl
 core through its libretro interface -- the most complete of its ports -- and plays the part RetroArch plays on a
 PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
 
-> **Status (1.7):** builds with the ps5-payload-dev SDK into a signed native app, and passes 275 host tests, which
+> **Status (1.8):** builds with the ps5-payload-dev SDK into a signed native app, and passes 314 host tests, which
 > run the same code (the Genesis Plus GX core included) on Linux with the PS5 calls simulated: a test program for
-> each of Mega Drive, Master System and Game Gear is played through the whole chain -- the shelf, the pad, the
-> core, the video and sound output. If something fails, the logs in
-> `/data/genplus/logs/` say where.
+> each of Mega Drive, Master System and Game Gear, a stand-in Sega CD BIOS and stand-in discs (cue/bin, wav, CHD)
+> are played through the whole chain -- the shelf, the pad, the core, the CD drive, the video and sound output.
+> **No real Sega CD game, BIOS or MD+ / MSU-MD game has been run with this port on a PS5 yet**: see
+> [Sega CD: what is tested, and how to check a game](#sega-cd-what-is-tested-and-how-to-check-a-game). If
+> something fails, the logs in `/data/genplus/logs/` say where.
 
 ## How it works
 
@@ -66,9 +68,27 @@ Genesis Plus GX PS5 only uses `/data/genplus/`, `/data/homebrew/PPSA99921/` and 
 
 ## Versions
 
-Every release carries its version in the file name: `GenesisPlusGXPS5-v1.7.elf` and `genplus-ps5-v1.7-src.zip`
+Every release carries its version in the file name: `GenesisPlusGXPS5-v1.8.elf` and `genplus-ps5-v1.8-src.zip`
 (`make dist`). When updating, replace the old ELF with the new one in your autoload or Payload Manager. In this
 README, "`GenesisPlusGXPS5.elf`" always means the current release's ELF.
+
+**1.8:** the improvements asked for by a technical audit of 1.7.
+- **Saves kept safe:** a state saved over another one keeps it as `.state1.prev`... and the pause menu can load it
+  back (**Load the previous state**); a state of the wrong size (cut short, or from another core version) is
+  refused instead of loaded, and the game goes on; before a session's first write, the battery save and the Sega CD
+  backup RAM / RAM cart are copied to `.srm.bak` / `.brm.bak` (see [Saves kept safe](#saves-kept-safe)).
+- **Settings for one game:** pause menu, **Settings for this game: Its own**. The picture, sound, emulation and
+  control settings changed from then on apply to that game only (`/data/genplus/games/<system>/<game>.ini`); the
+  others keep the global ones.
+- **CD add-on** setting (Settings, EMULATION): Auto, MegaSD (MD+), Sega CD (MSU-MD) or None. An MD+ game whose
+  tracks are in a `.chd` needs **MegaSD**: with Auto the core takes a `.chd` for an MSU-MD disc.
+- **Sound:** the resampler (44.1 to 48 kHz) is now a 4-point Hermite instead of a linear one (cleaner high notes,
+  CD music included); `boot.log` shows the queued sound's range and the rate control's range every minute.
+- **Shaders:** if the shader takes most of the frame while the game runs slow, a message says to pick a lighter
+  one (once a game). `make shader-bench` measures them; see [How heavy each shader is](#how-heavy-each-shader-is).
+- **Tests:** CD music through MD+ from `.cue`/`.bin`, `.wav` and `.chd`, checked by ear in software (the pitch, both
+  channels, the noise); Sega CD discs (`.cue`, `.chd`, US and European) booting a stand-in BIOS; the RAM cart's
+  save and its `.bak`; states (`.prev`, a damaged one, 10 save/load cycles); per-game settings.
 
 **1.7:** **New title ID: PPSA99921** (it was PPSA99011, which another app in the homebrew catalog uses; see
 [New title ID](#new-title-id-ppsa99921)). Nothing under the old ID is touched (it may be
@@ -197,7 +217,8 @@ running. Send `GenesisPlusGXPS5.elf` and open the icon again.
 | `/data/genplus/roms/<system>` | your games: `MegaDrive`, `SegaCD`, `MasterSystem`, `GameGear`, `SG1000` |
 | `/data/genplus/bios` | `bios_CD_U.bin` / `bios_CD_E.bin` / `bios_CD_J.bin` for the Sega CD |
 | `/data/genplus/saves` | battery saves, one folder per system (`saves/MegaDrive/<game>.srm`, written within 3 seconds of a change and when the game closes, an erase included) and the Sega CD backup RAM (`scd_U.brm`..., also written within 3 seconds of a change) |
-| `/data/genplus/states` | save states, one folder per system: `states/MegaDrive/<game>.state1` to `.state10` (a Mega Drive and a Master System game of the same name never share one; saves of the first 1.0 builds, directly in `saves/` and `states/`, are moved there the first time the game starts) |
+| `/data/genplus/games` | the settings of games that have their own (`games/<system>/<game>.ini`, see [Settings](#settings)) |
+| `/data/genplus/states` | save states, one folder per system: `states/MegaDrive/<game>.state1` to `.state10`, each with the one it replaced as `.prev` (a Mega Drive and a Master System game of the same name never share one; saves of the first 1.0 builds, directly in `saves/` and `states/`, are moved there the first time the game starts) |
 | `/data/genplus/covers/<system>` | downloaded covers and your own, one folder per system (the same names as in `roms/`); `covers/` itself keeps `wanted.txt` and `crc-cache.txt` |
 | `/data/genplus/logs` | `boot.log` (the app), `installer.log` (installer/helper), `helper.log` (the helper the app starts), and the previous session's `.prev.log` files |
 | `/data/genplus/genplus-ps5.ini` | the menu settings |
@@ -338,7 +359,7 @@ unless the settings choose one.
 
 | Combination | Does |
 |---|---|
-| L3 + R3 | pause menu: save / load state, slot, settings, reset, power cycle, back to the list, quit |
+| L3 + R3 | pause menu: save / load state, load the previous state, slot, settings, settings for this game, reset, power cycle, back to the list, quit |
 | L2 + Up / Down | save / load the state in the current slot |
 | L2 + Left / Right | change slot (1-10) |
 | hold R2 | fast forward (speed in the settings) |
@@ -359,7 +380,8 @@ Triangle on the shelf, or "Settings" in the pause menu:
 - **Audio:** sound on/off, volume, **FM sound chip** (MAME YM2612, MAME ASIC YM3438, Nuked YM2612, Nuked YM3438
   -- the Nuked cores are cycle-accurate and heavier), low-pass filter.
 - **Emulation:** fast-forward speed (150% to unlimited), rewind on/off, console region (auto, USA, Europe, Japan),
-  remove the sprite limit.
+  remove the sprite limit, **CD add-on** for Mega Drive games with CD music (Auto, MegaSD (MD+), Sega CD (MSU-MD),
+  None; see [MD+ and MSU-MD](#md-and-msu-md-cd-music-in-mega-drive-games)).
 - **Controls:**
   - **Mega Drive / Sega CD pad:** Auto (the default: a 6-button pad for games whose header says they support one,
     a 3-button pad for the rest, as the core decides), 3 buttons, or 6 buttons. Some old games misbehave with a
@@ -378,6 +400,28 @@ Triangle on the shelf, or "Settings" in the pause menu:
   [Updates](#updates).
 
 The settings go to the core as its libretro options (`genesis_plus_gx_*`), so they behave as in RetroArch.
+
+**Settings for one game.** In a game, the pause menu's **Settings for this game** switches between **The global
+ones** (the default) and **Its own**. With its own, the game gets a file of its own,
+`/data/genplus/games/<system>/<game>.ini` (for example `games/MegaDrive/Sonic The Hedgehog (USA, Europe).ini`),
+and from then on what you change in Settings during that game -- shader, picture, sound, FM chip, region, sprite
+limit, CD add-on, pad type, 4-player adapter, button layout -- is kept there and applies to that game only (the pause
+menu then says **Settings (this game's)**). The global file keeps its values for the other games. Switching back to
+**The global ones** deletes the game's file. The things that are not about a game (FPS counter, sound on/off,
+fast-forward speed, rewind, state slot, covers, debug logs) are always global.
+
+### Saves kept safe
+
+- **Save states:** saving over a slot keeps the state that was there as `<game>.state1.prev` (each slot its own);
+  the pause menu's **Load the previous state** loads it back, if the last save was a mistake. A state is written in
+  full to a temporary file before it takes the slot's name, so a crash or a full disk never leaves half a state. A
+  state of the wrong size (damaged, or saved by another core version) is refused with a message, and the game goes
+  on.
+- **Battery saves:** the first time a session writes `<game>.srm`, the file as it was is copied to `<game>.srm.bak`
+  (one copy, replaced each session).
+- **Sega CD:** the same for the backup RAM (`scd_U.brm.bak`...) and the RAM cartridge (`cart.brm.bak`), which hold
+  the saves of every Sega CD game of a region: one bad write must not cost them all.
+- To go back to a `.bak`, rename it over the file (over FTP) with the app closed.
 
 ## CRT shaders
 
@@ -409,6 +453,39 @@ is running (the shelf is drawn without them).
 | 8 | newpixie-mini | strongly curved TV, colour bleed, vignette, film tone | heavy | Mattias Gustavsson (Unlicense) |
 | 9 / 10 | crt-blurPi-sharp / crt-blurPi-soft | light blur and screen-space scanlines (sharp or bilinear) | light | Oriol Ferrer Mesià (MIT) |
 | 11 | monoCRT | a monochrome monitor (made for black-and-white pictures) | light | hunterk (public domain) |
+
+### How heavy each shader is
+
+`make shader-bench` (in `ps5/`) runs each shader the way the app does -- built with the PS5's flags (`-O3
+-march=znver2`), with the same thread pool -- on a 320x224 Mega Drive picture, and prints the time per frame.
+Measured on a 2-thread Xeon at 2.3 GHz (a cloud machine); the PS5 gives the pool six threads at 3.5 GHz, so expect
+its times to be several times lower, but the order is the same. The budget is a 60 Hz frame (16.7 ms), shared with
+the emulator.
+
+| Shader | 1080p (1440x1080) | 720p (960x720) |
+|---|---|---|
+| Off | -- (the plain scaler) | -- |
+| monoCRT | 4.6 ms | 2.6 ms |
+| crt-hyllian-fast | 5.0 ms | 2.7 ms |
+| crt-blurPi-sharp | 6.2 ms | 3.1 ms |
+| **CRT Easymode style** (default) | 8.5 ms | 4.2 ms |
+| crt-blurPi-soft | 10.5 ms | 5.5 ms |
+| crt-1tap | 12.7 ms | 5.7 ms |
+| crt-lottes-fast | 15.0 ms | 6.9 ms |
+| crt-nobody | 20.2 ms | 9.4 ms |
+| crt-lottes | 20.3 ms | 9.5 ms |
+| crt-2tap | 21.3 ms | 9.6 ms |
+| newpixie-mini | 25.4 ms | 11.6 ms |
+
+In a game, `boot.log` gives the shader's real time on the PS5 every minute (`shader N ms`), and if the shader takes
+more than 60% of the frame while the game runs below 95% speed, the app says so once ("... is too heavy here:
+choose a lighter shader").
+
+**The GPU, 4K, Mega Bezel.** The picture and the shaders are drawn by the CPU: until recently no homebrew app could
+use the PS5's GPU. That is also why there is no 4K output (four times the pixels of 1080p for the CPU to draw) and
+no multi-pass shaders (Mega Bezel, crt-guest-advanced, crt-royale, ScaleFX): they need a GPU. A homebrew Vulkan
+driver for the PS5 now exists ([PS5_Vulkan](https://github.com/mihawk-99/PS5_Vulkan), Mesa's RADV); a GPU
+backend through it is being worked on for a later version of the port.
 
 Which to pick: **CRT Easymode style** for a sharp, flat arcade-monitor look; **crt-hyllian-fast** for stronger
 scanlines and a visible dot mask; **crt-lottes** or **crt-nobody** for a curved TV; **crt-1tap / crt-2tap** when a
@@ -454,8 +531,11 @@ MegaSD/Mega EverDrive flash carts and the Sega CD do. Two kinds of patches exist
 2. For MSU-MD, put the Sega CD BIOS in `/data/genplus/bios/`.
 3. On the shelf, **start the ROM** (it shows as a Mega Drive game). The core finds the `.cue` of the same name by
    itself and mounts its tracks. A `.chd` of the same name works too.
-4. Leave the defaults: the port leaves the core's CD add-on setting on **Auto**, which picks MD+ when the `.cue`
-   has `REM LOOP` lines and the Sega CD hardware otherwise.
+4. Leave **CD add-on** (Settings, EMULATION) on **Auto**: the core picks MD+ when the `.cue` has `REM LOOP` /
+   `REM NOLOOP` lines and the Sega CD hardware otherwise. Two cases need the setting:
+   - an **MD+ game whose tracks are in a `.chd`** (a `.chd` has no `REM LOOP` lines, so Auto takes it for MSU-MD):
+     choose **MegaSD (MD+)**, best as one of that game's own settings (pause menu, **Settings for this game**);
+   - an MD+ `.cue` without `REM` lines: **MegaSD (MD+)** too.
 
 Good to know:
 
@@ -464,16 +544,46 @@ Good to know:
 - MSU-MD without the BIOS: the game plays, but **without its CD music** (the core falls back to the plain
   cartridge). `boot.log` shows the core's lines about the BIOS (`[core] ...`).
 - The ROM must not be inside a `.zip` (the core looks for the `.cue` next to the file it opened).
-- This support comes from Genesis Plus GX itself; on the PS5 it has been checked against the core's code, not yet
-  with a real MD+ or MSU-MD game on a console.
+- This support comes from Genesis Plus GX itself. The host tests play a test ROM that asks the MegaSD for a track
+  (the real MD+ commands) with the tracks as `.bin`, `.wav` and `.chd`, and check the sound that comes out (see
+  below); MSU-MD and real MD+ / MSU-MD games have not been tried on a console yet.
+
+## Sega CD: what is tested, and how to check a game
+
+**What the tests cover (1.8).** On Linux, with the port's own code and the core:
+
+| Checked | How |
+|---|---|
+| A disc boots as a Sega CD game, from `.cue`/`.bin` and from `.chd` | a stand-in disc (`ps5/tests/make_test_cd.py`: a data track with a Sega CD header, an audio track) and a stand-in BIOS (a tiny 68000 program saved as `bios_CD_U.bin`): the BIOS runs, draws, and reads the pad |
+| The BIOS of the disc's region is the one used | a European disc with only `bios_CD_E.bin` |
+| CD audio (CD-DA) comes out right | an audio track of two tones (1000 Hz left, 1500 Hz right) played through MD+ from `.bin`, `.wav` and `.chd` (whose audio is big-endian): `ps5/tests/check_tone.py` measures what reaches the PS5's audio output -- the pitch (within 1%: a wrong rate would be 9% off), the channels, the level, and the noise (over 30 dB below the tone: a click, aliasing or byte-swapped samples would fail it) |
+| The RAM cart is saved, with a `.bak` | the stand-in BIOS writes to it, then erases it |
+
+**What is not tested yet:** a real BIOS and a real game -- the BIOS's own disc check, the CD's data reads under
+a game, its PCM sound chip, FMV. Those need the games, which the tests can't include. If you have them, this is
+the check that tells most, game by game:
+
+| Game | What it exercises | Check |
+|---|---|---|
+| **Sonic CD** | CD-DA music, PCM sound effects, backup RAM | the music in Palmtree Panic plays at the right speed; time-travel sounds; a save shows up after a restart |
+| **Final Fight CD** | CD-DA music, loading | the music doesn't stop or stutter between stages |
+| **Lunar: The Silver Star** | long play, animated scenes with voice, backup RAM | the intro's voice in sync; a save survives closing the app from the PS button |
+| **Snatcher** | voice, backup RAM, the RAM cart | voices; saving to the RAM cart (the BIOS's memory manager shows `cart.brm`) |
+| **Silpheed** | streamed FMV backgrounds + polygons | the background video runs smoothly; no slowdown |
+| **Night Trap** | full-motion video | the video and the sound stay together |
+
+For each: the game's **format** (`.chd`, or `.cue` with `.bin` / `.wav` / `.ogg` tracks), whether it **starts**,
+the **sound** (music, voices, effects), the **speed** (`boot.log`: the frames per second every minute) and the
+**saves**. Report with `boot.log`. Sega CD games are read from `.cue`, `.chd` and `.iso`, not from inside a
+`.zip` (the core reads the tracks from the disc's folder).
 
 ## Picture and sound
 
 - 1920x1080 output through `libSceVideoOut`, flipping on vsync. With little video memory it falls back to
   1280x720.
 - The core runs one frame per call on the frontend's thread, as Snes9x PS5 runs Snes9x; its RGB565 frames are
-  scaled and shown with the HUD.
-- Sound through `libSceAudioOut` at 48 kHz, on its own thread. The core's 44.1 kHz sound is resampled with a small
+  scaled and shown with the HUD. No 4K output (see [How heavy each shader is](#how-heavy-each-shader-is)).
+- Sound through `libSceAudioOut` at 48 kHz, on its own thread. The core's 44.1 kHz sound is resampled (4-point Hermite) with a small
   rate control (within 0.5%) that keeps about 60 ms queued, so 59.92 Hz games play without crackles on a 60 Hz
   TV. 60 Hz games are paced by the display, 50 Hz (PAL) games by the sound clock, so they run at their real 50
   frames a second.
@@ -509,7 +619,10 @@ covers, emu, menu), and the return addresses, which map into `ps5/build/app/genp
 - The PS and Create buttons are not reported by `scePadReadState`, so Mode is on the touchpad by default (and the button layout can't use them).
 - No light guns (Menacer, Justifier, Light Phaser), mice or Sega Pico pen, although the core supports them; no
   Master System multitap.
-- No 32X (Genesis Plus GX doesn't emulate it), no cheats or MegaSD/MSU-MD menus in the frontend yet.
+- No 32X: Genesis Plus GX doesn't emulate it (it would take another emulator, such as PicoDrive).
+- No cheats or MegaSD/MSU-MD menus in the frontend yet.
+- The picture is drawn by the CPU: no 4K, no multi-pass shaders (see [How heavy each shader is](#how-heavy-each-shader-is)).
+- Real Sega CD, MD+ and MSU-MD games have not been tried on a PS5 yet (see [Sega CD](#sega-cd-what-is-tested-and-how-to-check-a-game)).
 - `.7z` archives are not read (`.zip` is); Sega CD, MD+ and MSU-MD games are not read from inside a zip.
 
 ## Building
@@ -524,7 +637,8 @@ make ps5 -j$(nproc)              # build/ps5/GenesisPlusGXPS5.elf (installer + h
 make send PS5_HOST=192.168.0.10  # sends it to elfldr (port 9021)
 make dist                        # build/dist/GenesisPlusGXPS5-v<version>.elf, the release zip, the source zip
 make app                         # only build/app/PPSA99921/, to copy by hand
-make test                        # Linux builds (app, installer, helper) + 275 host tests (ASan/UBSan)
+make test                        # Linux builds (app, installer, helper) + 314 host tests (ASan/UBSan)
+make shader-bench                # the CRT shaders' time per frame on this computer
 ```
 
 The build has three stages:
@@ -551,7 +665,8 @@ The build has three stages:
 - **`ps5/coreorbis/orbis-shims/`**: the PS5 layer.
   - `ProsperoVideo.cpp`: `libSceVideoOut`, direct memory, two scan-out buffers, AVX2 tiling, the scaler (fit /
     integer / stretch, smoothing, scanlines) and the HUD overlay;
-  - `ProsperoCrt.cpp`: the CRT shaders on the CPU, and their thread pool;
+  - `ProsperoCrt.cpp`: the CRT shaders on the CPU, and their thread pool (`ps5/tools/shader_bench.cpp` times them:
+    `make shader-bench`);
   - `ProsperoAudio.cpp`: `libSceAudioOut`, lock-free ring buffer, output thread;
   - `ProsperoInput.cpp`: `libScePad` + `libSceUserService`, several players, read from any thread;
   - `ProsperoJailbreak.cpp` / `ProsperoHelper.cpp`: both sides of the sandbox request and the covers list;
@@ -583,7 +698,10 @@ The build has three stages:
 - **`ps5/app/sce_sys/`**: param.json, icon and backgrounds.
 - **`ps5/host/sce_host.cpp`** and **`ps5/tests/`**: the PS5 functions implemented on Linux, test programs for
   Mega Drive (NTSC and PAL), Master System and Game Gear (`make_test_rom.py`, tiny hand-assembled 68000 and Z80
-  programs), and the 275 tests: picture and input on each system, the Sega CD BIOS message and `.cue` tracks,
+  programs; `mdplus` asks an MD+ for a CD track, `cdbios` is a stand-in Sega CD BIOS), stand-in discs
+  (`make_test_cd.py`: `.cue`/`.bin`, `.wav`, `.chd`), the sound check (`check_tone.py`), and the 314 tests:
+  picture and input on each system, the Sega CD BIOS message and `.cue` tracks, Sega CD discs booting (cue, chd,
+  the region's BIOS), MD+ CD music (bin, wav, chd), the safety copies of saves and states, settings for one game,
   save states, PAL timing, zip, sound latency, integer scale and scanlines, the shelf's tabs, the system
   folders, the controls (pad type, 4-player adapter, button layout), the CRT shaders (the default, each one
   drawing under ASan/UBSan, the menu), settings, fast forward and rewind, covers per system, install, helper and

@@ -294,6 +294,13 @@ int32_t sceAudioOutOutput(int32_t, const void* p)
 	}
 	clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, nullptr);
 	const int16_t* s = static_cast<const int16_t*>(p);
+	// GENPLUS_HOST_AUDIO_DUMP=<file>: everything played, as raw 48 kHz stereo s16 (the tests check its tones)
+	static FILE* dump = getenv("GENPLUS_HOST_AUDIO_DUMP") ? fopen(getenv("GENPLUS_HOST_AUDIO_DUMP"), "wb") : nullptr;
+	if (dump)
+	{
+		fwrite(s, sizeof(int16_t), 512, dump);
+		fflush(dump);
+	}
 	static uint64_t nonzero = 0;
 	for (int i = 0; i < 512; i++)
 		nonzero += s[i] != 0;

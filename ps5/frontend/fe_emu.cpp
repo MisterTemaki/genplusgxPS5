@@ -21,6 +21,7 @@
 #include "OrbisPaths.h"
 #include "ProsperoAudio.h"
 #include "ProsperoCrash.h"
+#include "ProsperoCrt.h"
 #include "ProsperoInput.h"
 #include "ProsperoSce.h"
 #include "ProsperoVideo.h"
@@ -83,6 +84,14 @@ const Choice kRegions[] = {
 	{"Japan (NTSC)", "ntsc-j"},
 };
 const int kRegionCount = int(sizeof(kRegions) / sizeof(kRegions[0]));
+
+const Choice kAddOns[] = {
+	{"Auto", "auto"},
+	{"MegaSD (MD+)", "megasd"},
+	{"Sega CD (MSU-MD)", "sega/mega cd"},
+	{"None", "none"},
+};
+const int kAddOnCount = int(sizeof(kAddOns) / sizeof(kAddOns[0]));
 
 const Choice kPadTypes[] = {
 	{"Auto (the game's)", ""},
@@ -228,7 +237,11 @@ struct State
 	std::vector<int16_t> in;
 	bool mute = false; // fast forward, rewind: drop the sound
 	double frac = 0;
-	int16_t prev_l = 0, prev_r = 0;
+	int16_t hist[3][2] = {}; // the three frames before this call's first one (the cubic filter reads 4)
+	// the rate control and the ring, measured between two log lines
+	double adj_sum = 0, adj_min = 2, adj_max = 0;
+	uint64_t adj_n = 0;
+	int queued_min = 1 << 30, queued_max = 0;
 	std::vector<int16_t> out;
 	std::vector<int16_t> silence; // the zeros that refill a dry ring
 	int pads_applied = -1; // the pad type / adapter last given to the core
@@ -258,6 +271,13 @@ struct State
 	uint64_t frames = 0;
 	double next_stats = 0;
 	int stats_reports = 0;
+	// the shader's cost, measured every 2 s; a warning once per game when it can't keep up
+	double next_shader_check = 0;
+	double shader_ms_sum = 0;
+	int shader_ms_n = 0;
+	bool shader_warned = false;
+	// saves: the backup copy of the battery save is made once per game, before its first write
+	bool sram_backed_up = false;
 };
 State g;
 
@@ -512,26 +532,43 @@ void FlushAudio()
 	double adj = double(kTargetQueued - queued) / kTargetQueued;
 	adj = 1.0 + std::max(-1.0, std::min(1.0, adj)) * 0.005;
 	const double step = g.sample_rate / (ps5audio::kRate * adj); // input frames per output frame
-	const int vol = cfg.volume * 256 / 100;
+	g.adj_sum += adj;
+	g.adj_n++;
+	g.adj_min = std::min(g.adj_min, adj);
+	g.adj_max = std::max(g.adj_max, adj);
+	g.queued_min = std::min(g.queued_min, queued);
+	g.queued_max = std::max(g.queued_max, queued);
+	const double vol = cfg.volume / 100.0;
 	g.out.clear();
-	double pos = g.frac; // position in [prev, in...]: 0 = prev, 1 = in[0]
+	// 4-point, 3rd-order Hermite interpolation (Catmull-Rom) between the frames around each output frame: flat to
+	// well above 10 kHz and with little aliasing, where linear interpolation dulled the treble and an 8-bit
+	// fraction added noise. The frames before this call's first one are kept in g.hist.
+	auto at = [&](long k, int c) -> float {
+		return k < 0 ? float(g.hist[3 + k][c]) : float(g.in[size_t(k) * 2 + c]);
+	};
+	double pos = g.frac; // the output frame lies between input frames (pos - 2) and (pos - 1): see below
 	while (pos < double(frames))
 	{
-		const int i = int(pos);
-		const int t = int((pos - i) * 256);
-		const int16_t l0 = i == 0 ? g.prev_l : g.in[size_t(i - 1) * 2];
-		const int16_t r0 = i == 0 ? g.prev_r : g.in[size_t(i - 1) * 2 + 1];
-		const int16_t l1 = g.in[size_t(i) * 2];
-		const int16_t r1 = g.in[size_t(i) * 2 + 1];
-		const int l = (l0 * (256 - t) + l1 * t) >> 8;
-		const int r = (r0 * (256 - t) + r1 * t) >> 8;
-		g.out.push_back(int16_t(std::max(-32768, std::min(32767, l * vol >> 8))));
-		g.out.push_back(int16_t(std::max(-32768, std::min(32767, r * vol >> 8))));
+		const long i = long(pos); // between frames i - 2 and i - 1 (both already here), with i, i - 3 around
+		const float t = float(pos - double(i));
+		for (int c = 0; c < 2; c++)
+		{
+			const float y0 = at(i - 3, c), y1 = at(i - 2, c), y2 = at(i - 1, c), y3 = at(i, c);
+			const float c1 = 0.5f * (y2 - y0);
+			const float c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
+			const float c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
+			const float v = float((((c3 * t + c2) * t + c1) * t + y1) * vol);
+			g.out.push_back(int16_t(std::max(-32768.0f, std::min(32767.0f, std::nearbyint(v)))));
+		}
 		pos += step;
 	}
 	g.frac = pos - double(frames);
-	g.prev_l = g.in[(frames - 1) * 2];
-	g.prev_r = g.in[(frames - 1) * 2 + 1];
+	// the last three frames, for the next call (read before g.hist is written: a short call reads g.hist too)
+	int16_t last[3][2];
+	for (int k = 0; k < 3; k++)
+		for (int c = 0; c < 2; c++)
+			last[k][c] = int16_t(at(long(frames) - 3 + k, c));
+	memcpy(g.hist, last, sizeof(last));
 	g.in.clear();
 	ps5audio::Push(g.out.data(), int(g.out.size() / 2));
 }
@@ -548,6 +585,12 @@ std::string SaveDir(const char* kind)
 std::string SramPath()
 {
 	return SaveDir("saves") + "/" + g.name + ".srm";
+}
+
+// The game's own settings, when it has them: games/<system>/<game>.ini
+std::string GameIniPath()
+{
+	return OrbisDir("games") + "/" + fe::Info(g.system).folder + "/" + g.name + ".ini";
 }
 
 std::string StatePath(int slot)
@@ -592,6 +635,27 @@ void LoadSram()
 	}
 }
 
+// Before a save file is written for the first time while a game runs, the file as it was when the game started is
+// kept beside it as <file>.bak (replacing the last one): a game that wrecks its own save, or a bad write, can be
+// undone from there.
+bool CopyFile(const std::string& from, const std::string& to)
+{
+	std::vector<uint8_t> data;
+	return ReadFile(from, data) && WriteFileAtomic(to, data.data(), data.size());
+}
+
+void BackupOnce(const std::string& path, bool* done)
+{
+	if (*done)
+		return;
+	*done = true;
+	if (FileExists(path))
+	{
+		const bool ok = CopyFile(path, path + ".bak");
+		OrbisLog("[emu] kept the save as it was: %s.bak (%s)", path.c_str(), ok ? "ok" : "failed");
+	}
+}
+
 // Writes the battery save when it changed (or when `force`).
 void SaveSram(bool force)
 {
@@ -611,6 +675,7 @@ void SaveSram(bool force)
 		if (blank)
 			return;
 	}
+	BackupOnce(SramPath(), &g.sram_backed_up);
 	const bool ok = WriteFileAtomic(SramPath(), mem, size);
 	if (ok)
 		g.sram_hash = h; // a failed write is tried again 3 s later and when the game closes
@@ -786,6 +851,7 @@ void ApplySettings()
 		}
 	};
 	set("genesis_plus_gx_region_detect", kRegions[s.region % kRegionCount].value);
+	set("genesis_plus_gx_add_on", kAddOns[s.add_on % kAddOnCount].value);
 	set("genesis_plus_gx_ym2612", kFmChips[s.fm_chip % kFmChipCount].value);
 	set("genesis_plus_gx_blargg_ntsc_filter", kNtscFilters[s.ntsc % kNtscFilterCount].value);
 	set("genesis_plus_gx_overscan", kBorders[s.borders % kBorderCount].value);
@@ -870,6 +936,7 @@ bool LoadGame(const std::string& path, std::string* error)
 	gi.size = g.rom.size();
 
 	OrbisLog("[emu] loading %s%s%s", path.c_str(), inner.empty() ? "" : " -> ", inner.c_str());
+	fe::BeginGame(GameIniPath());
 	ApplySettings();
 	g.opts_changed = true;
 	g.frame.clear();
@@ -890,6 +957,8 @@ bool LoadGame(const std::string& path, std::string* error)
 		}
 		g.path.clear();
 		g.rom.clear();
+		fe::EndGame();
+		ApplySettings();
 		return false;
 	}
 	g.pads_applied = -1;
@@ -904,7 +973,18 @@ bool LoadGame(const std::string& path, std::string* error)
 	g.prev_p1 = 0;
 	g.turbo = g.rewinding = false;
 	g.frac = 0;
-	g.prev_l = g.prev_r = 0;
+	memset(g.hist, 0, sizeof(g.hist));
+	g.adj_sum = 0;
+	g.adj_n = 0;
+	g.adj_min = 2;
+	g.adj_max = 0;
+	g.queued_min = 1 << 30;
+	g.queued_max = 0;
+	g.next_shader_check = Now() + 2.0;
+	g.shader_ms_sum = 0;
+	g.shader_ms_n = 0;
+	g.shader_warned = false;
+	g.sram_backed_up = false;
 	g.frames = 0;
 	g.fps_frames = 0;
 	g.fps_since = Now();
@@ -935,6 +1015,8 @@ void CloseGame()
 	g.frame.clear();
 	g.rom.clear();
 	RewindClear();
+	fe::EndGame();
+	ApplySettings();
 	OrbisLog("[emu] game closed");
 }
 
@@ -969,13 +1051,55 @@ void Osd(const std::string& text)
 	g.osd_until = Now() + 2.5;
 }
 
+// A state written over another one keeps the other as <state>.prev: the new state is written in full first
+// (<state>.part, flushed), then the old one becomes .prev and the new one takes its name.
+bool WriteState(const std::string& path, const std::vector<uint8_t>& data)
+{
+	const std::string part = path + ".part";
+	if (!WriteFileAtomic(part, data.data(), data.size()))
+		return false;
+	if (FileExists(path) && rename(path.c_str(), (path + ".prev").c_str()) != 0)
+		OrbisLog("[emu] could not keep the previous state of %s", path.c_str());
+	if (rename(part.c_str(), path.c_str()) != 0)
+	{
+		remove(part.c_str());
+		return false;
+	}
+	return true;
+}
+
+bool LoadStateFile(const std::string& path, const char* what, int slot)
+{
+	std::vector<uint8_t> data;
+	if (!ReadFile(path, data) || data.empty())
+	{
+		Osd(std::string(what) + " of slot " + std::to_string(slot) + " is empty");
+		return false;
+	}
+	// a state of the wrong size is damaged, or from another core version: refused, the game goes on as it was
+	const size_t want = retro_serialize_size();
+	if (data.size() != want)
+	{
+		OrbisLog("[emu] load state %d (%s): %zu bytes, the core's states are %zu: refused", slot, path.c_str(),
+			data.size(), want);
+		Osd("This state is damaged or from another version: not loaded");
+		return false;
+	}
+	const bool ok = retro_unserialize(data.data(), data.size());
+	OrbisLog("[emu] load state %d%s: %s", slot, strstr(path.c_str(), ".prev") ? " (previous)" : "", ok ? "ok" : "failed");
+	Osd(ok ? std::string(what) + " of slot " + std::to_string(slot) + " loaded" : "Could not load the state");
+	if (ok)
+		RewindClear();
+	return ok;
+}
+
 bool SaveState(int slot)
 {
 	if (!g.loaded)
 		return false;
 	const size_t size = retro_serialize_size();
 	std::vector<uint8_t> data(size);
-	bool ok = size > 0 && retro_serialize(data.data(), size) && WriteFileAtomic(StatePath(slot), data.data(), size);
+	bool ok = size > 0 && retro_serialize(data.data(), size) && WriteState(StatePath(slot), data);
 	OrbisLog("[emu] save state %d: %s (%zu bytes)", slot, ok ? "ok" : "failed", size);
 	Osd(ok ? "State saved to slot " + std::to_string(slot) : "Could not save the state");
 	return ok;
@@ -983,25 +1107,22 @@ bool SaveState(int slot)
 
 bool LoadState(int slot)
 {
-	if (!g.loaded)
-		return false;
-	std::vector<uint8_t> data;
-	if (!ReadFile(StatePath(slot), data) || data.empty())
-	{
-		Osd("Slot " + std::to_string(slot) + " is empty");
-		return false;
-	}
-	const bool ok = retro_unserialize(data.data(), data.size());
-	OrbisLog("[emu] load state %d: %s", slot, ok ? "ok" : "failed");
-	Osd(ok ? "State loaded from slot " + std::to_string(slot) : "Could not load the state");
-	if (ok)
-		RewindClear();
-	return ok;
+	return g.loaded && LoadStateFile(StatePath(slot), "The state", slot);
+}
+
+bool LoadPreviousState(int slot)
+{
+	return g.loaded && LoadStateFile(StatePath(slot) + ".prev", "The previous state", slot);
 }
 
 bool StateExists(int slot)
 {
 	return g.loaded && FileExists(StatePath(slot));
+}
+
+bool PreviousStateExists(int slot)
+{
+	return g.loaded && FileExists(StatePath(slot) + ".prev");
 }
 
 void Reset()
@@ -1164,14 +1285,46 @@ FrameResult RunFrame()
 		SaveSram(false);
 		SaveBram();
 	}
+	if (now >= g.next_shader_check)
+	{
+		// the shader's time per frame, every 2 s; when the game also runs slow, say once which setting helps
+		g.next_shader_check = now + 2.0;
+		const double ms = ps5video::TakeShaderMs();
+		if (ms > 0)
+		{
+			g.shader_ms_sum += ms;
+			g.shader_ms_n++;
+		}
+		const double budget = 1000.0 / std::max(50.0, g.fps);
+		if (!g.shader_warned && !g.turbo && !g.rewinding && cfg.shader != 0 && ms > budget * 0.6 &&
+			g.fps_shown > 0 && g.fps_shown < g.fps * 0.95)
+		{
+			g.shader_warned = true;
+			OrbisLog("[emu] the shader %s takes %.1f ms a frame and the game runs at %.1f fps: suggested a lighter one",
+				ps5crt::Name(ps5crt::Shader(cfg.shader)), ms, g.fps_shown);
+			Osd(std::string(ps5crt::Name(ps5crt::Shader(cfg.shader))) +
+				" is too heavy here: choose a lighter shader (Settings, Shader)");
+		}
+	}
 	if (now >= g.next_stats)
 	{
 		g.stats_reports++;
 		g.next_stats = now + (g.stats_reports < 3 ? 5.0 : 60.0);
-		const double shader_ms = ps5video::TakeShaderMs();
-		OrbisLog("[emu] frame %llu, %.1f fps, audio queued %d (%.0f ms), underruns %llu, shader %.1f ms",
+		const double shader_ms = g.shader_ms_n ? g.shader_ms_sum / g.shader_ms_n : 0.0;
+		g.shader_ms_sum = 0;
+		g.shader_ms_n = 0;
+		const double rate = g.adj_n ? g.adj_sum / double(g.adj_n) : 1.0;
+		OrbisLog("[emu] frame %llu, %.1f fps, audio queued %d (%.0f ms; %.0f-%.0f ms), rate x%.4f (%.4f-%.4f), "
+				 "underruns %llu, shader %.1f ms",
 			(unsigned long long)g.frames, g.fps_shown, ps5audio::Queued(), ps5audio::Queued() * 1000.0 / ps5audio::kRate,
-			(unsigned long long)ps5audio::Underruns(), shader_ms);
+			g.adj_n ? g.queued_min * 1000.0 / ps5audio::kRate : 0.0, g.adj_n ? g.queued_max * 1000.0 / ps5audio::kRate : 0.0,
+			rate, g.adj_n ? g.adj_min : 1.0, g.adj_n ? g.adj_max : 1.0, (unsigned long long)ps5audio::Underruns(), shader_ms);
+		g.adj_sum = 0;
+		g.adj_n = 0;
+		g.adj_min = 2;
+		g.adj_max = 0;
+		g.queued_min = 1 << 30;
+		g.queued_max = 0;
 	}
 	return FrameResult::Continue;
 }
