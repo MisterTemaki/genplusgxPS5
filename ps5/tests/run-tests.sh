@@ -1380,6 +1380,7 @@ PY
 rc=$(GENPLUS_HOST_REALTIME=1 GENPLUS_HOST_GPU=1 run "$T" "0:0;$(SHELFQUIT_AT 160)" "150")
 mv $T/dump/flip00150.ppm $T/gpu.ppm 2>/dev/null
 expect "[ $rc = 0 ] && grep -q 'shelf\] drawn by the GPU' $T/root/logs/boot.log" "the shelf: drawn by the GPU when the GPU renders"
+expect "grep -q 'shelf self-test (format [0-9]*): flat quad [0-9]*,[0-9]*,2[0-9][0-9] (want blue), perspective quad 2[0-9][0-9],' $T/root/logs/boot.log && grep -q 'gpu\] shelf scene: [0-9]* quad(s) drawn' $T/root/logs/boot.log" "the shelf's self-test at start: the quads come out (flat and in perspective), and the log says what is drawn"
 rc=$(GENPLUS_HOST_REALTIME=1 run "$T" "0:0;$(SHELFQUIT_AT 160)" "150")
 expect "python3 - $T/gpu.ppm $T/dump/flip00150.ppm <<'PY'
 import sys

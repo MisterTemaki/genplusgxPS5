@@ -270,6 +270,7 @@ struct State
 	};
 	std::map<uint64_t, SceneTex> scene_tex;
 	std::vector<SceneQuad> scene;
+	Buffer scene_vb; // the quads' vertices (written each frame, after the last one's fence)
 	bool scene_on = false;
 	uint64_t presents = 0;
 	// the next frame's game picture
@@ -1192,60 +1193,70 @@ void StartBuild(int preset)
 }
 
 // ---- the shelf's scene: textured quads in perspective, under the surface -------------------------------------
+// The quads' shaders read everything from a vertex buffer, as the slang passes do. (2.0 read them from push
+// constants with dynamic indexing, q.x[i]: the host's driver drew it, RADV on the PS5 drew nothing at all.)
 const char* const kSceneVs = R"(#version 450
-layout(push_constant) uniform Q
-{
-	vec4 x, y, w, uv, p, rect, col, size; // p: bright, alpha, mode; size: surface w, h, output w, h
-} q;
+layout(location = 0) in vec4 Pos;    // clip space, w the corner's distance (perspective)
+layout(location = 1) in vec2 Uv;
+layout(location = 2) in float K;     // 0 at the top edge, 1 at the bottom (the reflection's fade)
+layout(location = 3) in vec4 P;      // bright, alpha, mode
+layout(location = 4) in vec4 Rect;   // glow: the rectangle, in target pixels
+layout(location = 5) in vec4 Col;    // glow: colour, radius in target pixels
+layout(location = 6) in vec4 UvRect; // the quad's texture rectangle (its edges are smoothed)
 layout(location = 0) out vec2 vUv;
 layout(location = 1) noperspective out float vK;
+layout(location = 2) flat out vec4 vP;
+layout(location = 3) flat out vec4 vRect;
+layout(location = 4) flat out vec4 vCol;
+layout(location = 5) flat out vec4 vUvRect;
 void main()
 {
-	int i = gl_VertexIndex;
-	float w = q.w[i];
-	vec2 ndc = vec2(q.x[i] / q.size.x, q.y[i] / q.size.y) * 2.0 - 1.0;
-	gl_Position = vec4(ndc * w, 0.0, w);
-	vUv = vec2((i & 1) != 0 ? q.uv.z : q.uv.x, (i & 2) != 0 ? q.uv.w : q.uv.y);
-	vK = (i & 2) != 0 ? 1.0 : 0.0;
+	gl_Position = Pos;
+	vUv = Uv;
+	vK = K;
+	vP = P;
+	vRect = Rect;
+	vCol = Col;
+	vUvRect = UvRect;
 }
 )";
 const char* const kSceneFs = R"(#version 450
-layout(push_constant) uniform Q
-{
-	vec4 x, y, w, uv, p, rect, col, size;
-} q;
 layout(set = 0, binding = 0) uniform sampler2D T;
 layout(location = 0) in vec2 vUv;
 layout(location = 1) noperspective in float vK;
+layout(location = 2) flat in vec4 vP;
+layout(location = 3) flat in vec4 vRect;
+layout(location = 4) flat in vec4 vCol;
+layout(location = 5) flat in vec4 vUvRect;
 layout(location = 0) out vec4 FragColor;
 void main()
 {
-	int mode = int(q.p.z + 0.5);
-	if (mode == 2)
+	if (vP.z > 1.5)
 	{
-		// the glow: by the distance to the rectangle, in surface pixels; added (alpha 0)
-		vec2 f = gl_FragCoord.xy * q.size.xy / q.size.zw;
-		float dx = max(max(q.rect.x - f.x, 0.0), f.x - q.rect.z);
-		float dy = max(max(q.rect.y - f.y, 0.0), f.y - q.rect.w);
+		// the glow: by the distance to the rectangle; added (alpha 0)
+		vec2 f = gl_FragCoord.xy;
+		float dx = max(max(vRect.x - f.x, 0.0), f.x - vRect.z);
+		float dy = max(max(vRect.y - f.y, 0.0), f.y - vRect.w);
 		float d = length(vec2(dx, dy));
-		if (d >= q.col.w || d <= 0.0)
+		if (d >= vCol.w || d <= 0.0)
 			discard;
-		float k = 1.0 - d / q.col.w;
-		float a = k * k * q.p.y * 0.85;
-		FragColor = vec4(q.col.rgb * a, 0.0);
+		float k = 1.0 - d / vCol.w;
+		float a = k * k * vP.y * 0.85;
+		FragColor = vec4(vCol.rgb * a, 0.0);
 		return;
 	}
 	vec4 c = texture(T, vUv);
-	float a = q.p.y;
+	float a = vP.y;
 	// the quad's own edges, smoothed over a pixel (no multisampling)
-	vec2 lo = min(vUv - min(q.uv.xy, q.uv.zw), max(q.uv.xy, q.uv.zw) - vUv);
+	vec2 lo = min(vUv - min(vUvRect.xy, vUvRect.zw), max(vUvRect.xy, vUvRect.zw) - vUv);
 	vec2 fw = max(fwidth(vUv), vec2(1e-6));
 	a *= clamp(min(lo.x / fw.x, lo.y / fw.y) + 0.5, 0.0, 1.0);
-	if (mode == 1)
+	if (vP.z > 0.5)
 		a *= 0.30 * (1.0 - vK) * (1.0 - vK);
-	FragColor = vec4(c.rgb * q.p.x * a, a);
+	FragColor = vec4(c.rgb * vP.x * a, a);
 }
 )";
+constexpr int kSceneVertexFloats = 28; // pos 4, uv 2, k 1, pad 1, p 4, rect 4, col 4, uvrect 4, pad 4
 
 bool AllocSceneSet(VkDescriptorSet& set, VkImageView view)
 {
@@ -1293,12 +1304,9 @@ bool InitScene()
 	li.pBindings = &b;
 	if (!Check(vkCreateDescriptorSetLayout(g.device, &li, nullptr, &g.scene_set_layout), "vkCreateDescriptorSetLayout"))
 		return false;
-	VkPushConstantRange pc = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128};
 	VkPipelineLayoutCreateInfo pli = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
 	pli.setLayoutCount = 1;
 	pli.pSetLayouts = &g.scene_set_layout;
-	pli.pushConstantRangeCount = 1;
-	pli.pPushConstantRanges = &pc;
 	if (!Check(vkCreatePipelineLayout(g.device, &pli, nullptr, &g.scene_layout), "vkCreatePipelineLayout"))
 		return false;
 	VkShaderModule vm = Module(vs.data(), unsigned(vs.size() * 4)), fm = Module(fs.data(), unsigned(fs.size() * 4));
@@ -1313,6 +1321,15 @@ bool InitScene()
 	st[1].module = fm;
 	st[1].pName = "main";
 	VkPipelineVertexInputStateCreateInfo vi = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+	VkVertexInputBindingDescription vb = {0, kSceneVertexFloats * sizeof(float), VK_VERTEX_INPUT_RATE_VERTEX};
+	const VkVertexInputAttributeDescription va[7] = {{0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0},
+		{1, 0, VK_FORMAT_R32G32_SFLOAT, 4 * sizeof(float)}, {2, 0, VK_FORMAT_R32_SFLOAT, 6 * sizeof(float)},
+		{3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 8 * sizeof(float)}, {4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 12 * sizeof(float)},
+		{5, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 16 * sizeof(float)}, {6, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 20 * sizeof(float)}};
+	vi.vertexBindingDescriptionCount = 1;
+	vi.pVertexBindingDescriptions = &vb;
+	vi.vertexAttributeDescriptionCount = 7;
+	vi.pVertexAttributeDescriptions = va;
 	VkPipelineInputAssemblyStateCreateInfo ia = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
 	ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
 	VkPipelineViewportStateCreateInfo vp = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
@@ -1391,6 +1408,7 @@ void FreeScene()
 	g.scene_tex.clear();
 	g.scene.clear();
 	g.scene_on = false;
+	FreeBuffer(g.scene_vb);
 	if (g.scene_dummy_set)
 	{
 		std::lock_guard<std::mutex> lock(g.dpool_mx);
@@ -1526,15 +1544,47 @@ bool MakeSceneTex(State::SceneTex& t, const uint32_t* px, int w, int h, bool col
 	return ok && AllocSceneSet(t.set, t.view);
 }
 
-void RecordScene(VkCommandBuffer cmd)
+// the quads' vertices into vb (grown when needed: the caller has waited for the frame that used it)
+bool FillQuads(Buffer& vb, const std::vector<SceneQuad>& quads, int sw, int sh, int ow, int oh)
 {
-	const VkViewport view = {0, 0, float(g.out_w), float(g.out_h), 0, 1};
-	const VkRect2D sc = {{0, 0}, {uint32_t(g.out_w), uint32_t(g.out_h)}};
+	const VkDeviceSize need = VkDeviceSize(std::max<size_t>(quads.size(), 1)) * 4 * kSceneVertexFloats * sizeof(float);
+	if (vb.size < need)
+	{
+		FreeBuffer(vb);
+		if (!MakeBuffer(vb, std::max<VkDeviceSize>(need * 2, 64 * 1024), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT))
+			return false;
+	}
+	float* v = static_cast<float*>(vb.map);
+	const float kx = float(ow) / float(sw), ky = float(oh) / float(sh);
+	for (const SceneQuad& q : quads)
+		for (int i = 0; i < 4; i++, v += kSceneVertexFloats)
+		{
+			const float w = q.w[i] > 1e-3f ? q.w[i] : 1e-3f;
+			const float nx = q.x[i] / float(sw) * 2.0f - 1.0f, ny = q.y[i] / float(sh) * 2.0f - 1.0f;
+			const float vert[kSceneVertexFloats] = {nx * w, ny * w, 0.0f, w, (i & 1) ? q.u1 : q.u0, (i & 2) ? q.v1 : q.v0,
+				(i & 2) ? 1.0f : 0.0f, 0.0f, q.bright, q.alpha, float(q.mode), 0.0f, q.rect[0] * kx, q.rect[1] * ky,
+				q.rect[2] * kx, q.rect[3] * ky, q.color[0], q.color[1], q.color[2], q.glow_r * kx, q.u0, q.v0, q.u1, q.v1,
+				0.0f, 0.0f, 0.0f, 0.0f};
+			memcpy(v, vert, sizeof(vert));
+		}
+	return true;
+}
+
+// the quads, in a render pass already begun: sw x sh the coordinates' space (the surface's), ow x oh the target's
+void RecordQuads(VkCommandBuffer cmd, const std::vector<SceneQuad>& quads, int sw, int sh, int ow, int oh, Buffer& vb)
+{
+	if (quads.empty() || !FillQuads(vb, quads, sw, sh, ow, oh))
+		return;
+	const VkViewport view = {0, 0, float(ow), float(oh), 0, 1};
+	const VkRect2D sc = {{0, 0}, {uint32_t(ow), uint32_t(oh)}};
 	vkCmdSetViewport(cmd, 0, 1, &view);
 	vkCmdSetScissor(cmd, 0, 1, &sc);
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g.scene_pipe);
-	for (const SceneQuad& q : g.scene)
+	const VkDeviceSize zero = 0;
+	vkCmdBindVertexBuffers(cmd, 0, 1, &vb.buf, &zero);
+	for (size_t n = 0; n < quads.size(); n++)
 	{
+		const SceneQuad& q = quads[n];
 		VkDescriptorSet set = g.scene_dummy_set;
 		if (q.mode != kQuadGlow)
 		{
@@ -1544,21 +1594,174 @@ void RecordScene(VkCommandBuffer cmd)
 			it->second.used = g.presents;
 			set = it->second.set;
 		}
-		float pc[32];
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g.scene_layout, 0, 1, &set, 0, nullptr);
+		vkCmdDraw(cmd, 4, 1, uint32_t(n * 4), 0);
+	}
+}
+
+void RecordScene(VkCommandBuffer cmd)
+{
+	static int logs = 0;
+	if (logs < 3 && !g.scene.empty())
+	{
+		logs++;
+		size_t found = 0;
+		for (const SceneQuad& q : g.scene)
+			found += q.mode == kQuadGlow || g.scene_tex.count(q.tex);
+		OrbisLog("[gpu] shelf scene: %zu quad(s) drawn (%zu with their texture), %zu texture(s) kept, %dx%d output",
+			g.scene.size(), found, g.scene_tex.size(), g.out_w, g.out_h);
+	}
+	RecordQuads(cmd, g.scene, g.ui_w, g.ui_h, g.out_w, g.out_h, g.scene_vb);
+}
+
+// The scene's self-test, at start: two quads drawn into a small image of the target's format with the target's
+// render pass -- one flat (w 1, a blue texture), one in perspective as a cover is (w about 1000, a red texture,
+// column-major as the covers are) -- and the pixels read back. The 2.0 shelf drew nothing on a PS5 while the
+// host's driver drew it right: this says what the console's driver makes of it, and keeps the shelf on the CPU
+// when the picture is not what it should be.
+bool SceneSelfTest()
+{
+	constexpr int S = 64, SW = 96; // three 32-pixel columns: flat, perspective, glow
+	const uint64_t kBlue = 0xfff0000000000001ull, kRed = 0xfff0000000000002ull;
+	uint32_t blue[16], red[16];
+	for (int i = 0; i < 16; i++)
+	{
+		blue[i] = 0xffff0000u; // R8G8B8A8 in memory: R G B A -> as a uint32, A B G R
+		red[i] = 0xff0000ffu;
+	}
+	if (!SceneTexture(kBlue, blue, 4, 4, false) || !SceneTexture(kRed, red, 4, 4, true))
+	{
+		OrbisLog("[gpu] shelf self-test: the test textures could not be made");
+		return false;
+	}
+	Image im;
+	bool ok = MakeImage(im, SW, S, g.target_format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+	if (ok)
+		im.fb = MakeFramebuffer(g.final_pass, im.view, SW, S);
+	Buffer rb, test_vb;
+	ok = ok && im.fb && MakeBuffer(rb, VkDeviceSize(SW) * S * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+	std::vector<SceneQuad> quads(3);
+	if (ok)
+	{
+		// left half: flat, blue
+		SceneQuad& a = quads[0];
+		a.tex = kBlue;
+		const float ax[4] = {2, 30, 2, 30}, ay[4] = {2, 2, 62, 62};
 		for (int i = 0; i < 4; i++)
 		{
-			pc[i] = q.x[i];
-			pc[4 + i] = q.y[i];
-			pc[8 + i] = q.w[i] > 1e-3f ? q.w[i] : 1e-3f;
+			a.x[i] = ax[i];
+			a.y[i] = ay[i];
 		}
-		const float rest[20] = {q.u0, q.v0, q.u1, q.v1, q.bright, q.alpha, float(q.mode), 0, q.rect[0], q.rect[1],
-			q.rect[2], q.rect[3], q.color[0], q.color[1], q.color[2], q.glow_r, float(g.ui_w), float(g.ui_h),
-			float(g.out_w), float(g.out_h)};
-		memcpy(pc + 12, rest, sizeof(rest));
-		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g.scene_layout, 0, 1, &set, 0, nullptr);
-		vkCmdPushConstants(cmd, g.scene_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128, pc);
-		vkCmdDraw(cmd, 4, 1, 0, 0);
+		// right half: in perspective (its two ends at different distances, as a side cover), red
+		SceneQuad& b = quads[1];
+		b.tex = kRed;
+		const float bx[4] = {34, 62, 34, 62}, by[4] = {2, 10, 62, 54}, bw[4] = {1000, 1300, 1000, 1300};
+		for (int i = 0; i < 4; i++)
+		{
+			b.x[i] = bx[i];
+			b.y[i] = by[i];
+			b.w[i] = bw[i];
+		}
+		// third column: a green glow (no texture) around a point at (80, 32), 40 pixels out
+		SceneQuad& c = quads[2];
+		c.mode = kQuadGlow;
+		const float cx[4] = {64, 96, 64, 96}, cy[4] = {0, 0, 64, 64};
+		for (int i = 0; i < 4; i++)
+		{
+			c.x[i] = cx[i];
+			c.y[i] = cy[i];
+		}
+		c.rect[0] = c.rect[2] = 80;
+		c.rect[1] = c.rect[3] = 32;
+		c.glow_r = 40;
+		c.color[1] = 1;
 	}
+	VkCommandBuffer c = VK_NULL_HANDLE;
+	if (ok)
+	{
+		std::lock_guard<std::mutex> upload_lock(g.upload_mx);
+		VkCommandBufferAllocateInfo cai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+		cai.commandPool = g.upload_pool;
+		cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+		cai.commandBufferCount = 1;
+		ok = Check(vkAllocateCommandBuffers(g.device, &cai, &c), "vkAllocateCommandBuffers (self-test)");
+		if (ok)
+		{
+			VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+			bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+			vkBeginCommandBuffer(c, &bi);
+			VkClearValue cv = {};
+			cv.color.float32[3] = 1.0f; // black, as the frame's
+			VkRenderPassBeginInfo rb2 = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+			rb2.renderPass = g.final_pass;
+			rb2.framebuffer = im.fb;
+			rb2.renderArea = {{0, 0}, {uint32_t(SW), uint32_t(S)}};
+			rb2.clearValueCount = 1;
+			rb2.pClearValues = &cv;
+			vkCmdBeginRenderPass(c, &rb2, VK_SUBPASS_CONTENTS_INLINE);
+			RecordQuads(c, quads, SW, S, SW, S, test_vb);
+			vkCmdEndRenderPass(c);
+			// the render pass leaves it in the target's final layout (present, or transfer source off screen)
+			im.layout = g.offscreen ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+			Barrier(c, im, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+			VkBufferImageCopy r = {};
+			r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+			r.imageExtent = {uint32_t(SW), uint32_t(S), 1};
+			vkCmdCopyImageToBuffer(c, im.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rb.buf, 1, &r);
+			vkEndCommandBuffer(c);
+			VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+			si.commandBufferCount = 1;
+			si.pCommandBuffers = &c;
+			VkFenceCreateInfo fi = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+			VkFence done = VK_NULL_HANDLE;
+			vkCreateFence(g.device, &fi, nullptr, &done);
+			{
+				std::lock_guard<std::mutex> q(g.queue_mx);
+				ok = Check(vkQueueSubmit(g.queue, 1, &si, done), "vkQueueSubmit (self-test)");
+			}
+			if (ok)
+				ok = vkWaitForFences(g.device, 1, &done, VK_TRUE, 5000000000ull) == VK_SUCCESS;
+			vkDestroyFence(g.device, done, nullptr);
+			vkFreeCommandBuffers(g.device, g.upload_pool, 1, &c);
+		}
+	}
+	bool good = false;
+	if (ok)
+	{
+		// the target is B8G8R8A8 (or R8G8B8A8): find each pixel's red and blue whatever the order
+		const bool bgra = g.target_format == VK_FORMAT_B8G8R8A8_UNORM || g.target_format == VK_FORMAT_B8G8R8A8_SRGB;
+		auto px = [&](int x, int y, int& r, int& gg, int& b) {
+			const uint8_t* p = static_cast<const uint8_t*>(rb.map) + (size_t(y) * SW + x) * 4;
+			r = bgra ? p[2] : p[0];
+			gg = p[1];
+			b = bgra ? p[0] : p[2];
+		};
+		int r1, g1, b1, r2, g2, b2, r0, g0, b0, r3, g3, b3;
+		px(16, 32, r1, g1, b1); // flat quad: blue
+		px(48, 32, r2, g2, b2); // perspective quad: red
+		px(32, 1, r0, g0, b0);  // between: the black clear
+		px(84, 32, r3, g3, b3); // the glow, 4 pixels from its point: green
+		OrbisLog("[gpu] shelf self-test (format %d): flat quad %d,%d,%d (want blue), perspective quad %d,%d,%d (want red), "
+				 "glow %d,%d,%d (want green), background %d,%d,%d (want black)",
+			int(g.target_format), r1, g1, b1, r2, g2, b2, r3, g3, b3, r0, g0, b0);
+		good = b1 > 200 && r1 < 60 && r2 > 200 && b2 < 60 && g3 > 100 && r3 < 60 && r0 < 30 && b0 < 30;
+	}
+	else
+		OrbisLog("[gpu] shelf self-test: could not run");
+	FreeBuffer(rb);
+	FreeBuffer(test_vb);
+	FreeImage(im);
+	// the test textures go
+	for (uint64_t k : {kBlue, kRed})
+	{
+		auto it = g.scene_tex.find(k);
+		if (it != g.scene_tex.end())
+		{
+			FreeSceneTex(it->second);
+			g.scene_tex.erase(it);
+		}
+	}
+	return good;
 }
 } // namespace
 
@@ -1953,6 +2156,11 @@ bool Init(int ui_w, int ui_h, bool offscreen, int out_w, int out_h)
 	g.ok = true;
 	if (ok && !InitScene())
 		FreeScene(); // the shelf stays on the CPU
+	else if (ok && !SceneSelfTest())
+	{
+		OrbisLog("[gpu] the shelf's quads did not come out right on this driver: the CPU draws the shelf");
+		FreeScene();
+	}
 	ps5slang::ScanExternal();
 #ifndef __PROSPERO__
 	ps5slang::CheckAllExternal();
@@ -2161,6 +2369,9 @@ bool SceneTexture(uint64_t key, const uint32_t* px, int w, int h, bool column_ma
 	if (!MakeSceneTex(t, px, w, h, column_major))
 	{
 		FreeSceneTex(t);
+		static int failures = 0;
+		if (failures++ < 5)
+			OrbisLog("[gpu] a %dx%d texture for the shelf could not be made", w, h);
 		return false;
 	}
 	t.used = g.presents;
@@ -2384,6 +2595,12 @@ bool Present(const uint32_t* ui, Rect dirty, bool wait_vsync)
 	// the shelf's scene, under the surface (no game then)
 	if (g.scene_on && !draw_game && g.scene_pipe)
 		RecordScene(cmd);
+	else if (g.scene_on)
+	{
+		static int skipped = 0;
+		if (skipped++ == 0)
+			OrbisLog("[gpu] shelf scene not drawn: game %d, pipeline %d", int(draw_game), int(g.scene_pipe != VK_NULL_HANDLE));
+	}
 	g.presents++;
 	// the surface over everything
 	{

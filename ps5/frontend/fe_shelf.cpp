@@ -959,6 +959,19 @@ std::string Shelf()
 			for (const Placed& p : placed)
 				CoverQuads(p, quads);
 			ps5gpu::SetScene(quads);
+			// what the GPU is given, once a session (the 2.0 shelf drew nothing on a PS5: this says what it had)
+			static int scene_logs = 0;
+			if (scene_logs < 2 && !placed.empty() && (scene_logs == 0 || now - sel_since > 1.0))
+			{
+				scene_logs++;
+				const ps5gpu::SceneQuad* c = nullptr;
+				for (const ps5gpu::SceneQuad& q : quads)
+					if (q.mode == ps5gpu::kQuadImage && q.w[0] > 1.5f)
+						c = &q;
+				OrbisLog("[shelf] GPU scene: %zu quad(s) for %zu cover(s); a cover at x %.0f..%.0f, y %.0f..%.0f, w %.0f..%.0f",
+					quads.size(), placed.size(), c ? c->x[0] : 0.f, c ? c->x[1] : 0.f, c ? c->y[0] : 0.f, c ? c->y[2] : 0.f,
+					c ? c->w[0] : 0.f, c ? c->w[1] : 0.f);
+			}
 			// the surface: only the text over the scene
 			pool.Run([&](int x0, int x1) {
 				for (int y = 0; y < H; y++)
