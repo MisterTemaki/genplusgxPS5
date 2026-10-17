@@ -33,15 +33,17 @@ compiled as they are: all 100 of their C files build for the PS5 without a singl
 core through its libretro interface -- the most complete of its ports -- and plays the part RetroArch plays on a
 PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
 
-> **Status (1.9):** builds with the ps5-payload-dev SDK into a signed native app -- now in two builds: **GPU**
-> (RADV, Mesa's Vulkan driver for AMD GPUs, ported to the PS5 by [PS5_Vulkan](https://github.com/mihawk-99/PS5_Vulkan),
-> linked into the app) and **CPU-only** (as 1.8). It passes 397 host tests, which run the same code (the core,
-> the frontend, the GPU renderer and every built-in slang shader) on Linux with the PS5 calls simulated and the GPU
-> renderer on a software Vulkan driver (lavapipe). **No version of this port has been run on a real PS5 yet, and
-> the GPU renderer in particular is untested on the console**: if it fails to start, the app draws with the CPU
-> (see [The GPU renderer](#the-gpu-renderer)). No real Sega CD game, BIOS or MD+ / MSU-MD game has been run with
-> it either: see [Sega CD: what is tested, and how to check a game](#sega-cd-what-is-tested-and-how-to-check-a-game).
-> If something fails, the logs in `/data/genplus/logs/` say where.
+> **Status (2.0):** builds with the ps5-payload-dev SDK into a signed native app, in two builds: **GPU** (RADV,
+> Mesa's Vulkan driver for AMD GPUs, ported to the PS5 by [PS5_Vulkan](https://github.com/mihawk-99/PS5_Vulkan),
+> linked into the app) and **CPU-only**. It passes 420 host tests, which run the same code (the core, the
+> frontend, the GPU renderer, every built-in slang shader, the shelf on the GPU) on Linux with the PS5 calls
+> simulated and the GPU renderer on a software Vulkan driver (lavapipe). **1.9 has run on a PS5** (a user's
+> console, 4K at 59.94 Hz): the GPU renderer started, the 26 built-in shaders loaded, crt-easymode took 0.6 ms of
+> the GPU a frame and the Mega Bezel Standard 2-3 ms, and a Sega CD game from a `.chd` (Earnest Evans) played at
+> 60 fps with its CD music and no sound/picture drift. **What 2.0 adds has only run in the host tests so far**:
+> the shader cache, the shader parameters, your own `.slangp` presets and the shelf drawn by the GPU. If the GPU
+> fails to start, the app draws with the CPU (see [The GPU renderer](#the-gpu-renderer)). If something fails, turn
+> on Settings, SYSTEM, Debug logs, and send the logs in `/data/genplus/logs/`.
 
 ## How it works
 
@@ -70,10 +72,38 @@ Genesis Plus GX PS5 only uses `/data/genplus/`, `/data/homebrew/PPSA99921/` and 
 
 ## Versions
 
-Every release carries its version in the file name: `GenesisPlusGXPS5-v1.9.elf` (GPU build),
-`GenesisPlusGXPS5-v1.9-cpu.elf` (CPU-only build) and `genplus-ps5-v1.9-src.zip`
+Every release carries its version in the file name: `GenesisPlusGXPS5-v2.0.elf` (GPU build),
+`GenesisPlusGXPS5-v2.0-cpu.elf` (CPU-only build) and `genplus-ps5-v2.0-src.zip`
 (`make dist`). When updating, replace the old ELF with the new one in your autoload or Payload Manager. In this
 README, "`GenesisPlusGXPS5.elf`" always means the current release's ELF.
+
+**2.0:** the GPU does more, and the pauses and spikes 1.9 showed on a PS5 are dealt with (checked in the host
+tests; not yet on a console).
+- **Picking a shader no longer freezes the game:** a shader is now built on a thread of its own -- the game goes on with
+  the plain picture and "Preparing the shader..." on the screen meanwhile -- and the built shader is kept in
+  `/data/genplus/cache/gpu-pipelines.bin`, so the next time it loads at once (on 1.9's PS5: about 1 s for
+  crt-royale, 6 s for the Mega Bezel Standard, the picture frozen).
+- **Shader parameters** (Settings, VIDEO, the GPU build): each of the shader's own settings (a CRT's mask,
+  scanlines, curvature, glow...), changed with Left/Right while you see the game behind; Cross puts one back to the
+  shader's value. Kept in `/data/genplus/shader-params.ini`. See [Shader parameters](#shader-parameters).
+- **Your own shader presets:** RetroArch `.slangp` (or `.slang`) files put under `/data/genplus/shaders/` are listed
+  after the built-in shaders, and compiled on the console the first time they are picked. See
+  [Your own presets](#your-own-presets).
+- **The shelf drawn by the GPU:** the backdrop, the covers in perspective, their reflections and the glow are drawn
+  by the GPU at the TV's resolution (4K on a 4K TV), with mip-mapped covers; the text stays as it was.
+- **CD music off the emulation thread:** a `.chd` is now decompressed ahead, on a thread of its own (1.9's PS5 log: the core's
+  frame time jumped from 1.5 ms to 10-12 ms each time CD music crossed a block of the file). In the host tests, 139
+  of 144 blocks were ready before the game asked for them.
+- **The underrun count** in `boot.log` no longer counts the time on the shelf and in the menus, when no game
+  sound is fed.
+- **Saves:** when the new state can't take its name and even the old one can't be put back, the old one is still
+  whole as `.prev`; the log and the screen now say so ("load it from the pause menu"), and the tests check every
+  step of it with a storage made to fail.
+- **Debug logs and the performance log are off by default** (Settings, SYSTEM). Turn the debug logs on to report a
+  problem; a settings file of 1.9 keeps the value it had.
+- **Tests:** 420, the new ones for all of the above (storage faults while a state is replaced, the underrun
+  count, the CHD read-ahead, the shader cache, the parameters, your own presets, a broken preset, the GPU shelf
+  against the CPU's).
 
 **1.9:** the GPU, the saves made safer, five languages.
 - **The GPU draws the picture** (the GPU build): RetroArch's slang shaders run as they are, single- and
@@ -205,10 +235,10 @@ Drive's button names, and the shaders' names are not translated.
 
 1. **Send `GenesisPlusGXPS5.elf`** with PS5 Payload Manager, or from a PC on the same network:
    ```sh
-   nc -q0 PS5_IP 9021 < GenesisPlusGXPS5-v1.7.elf
+   nc -q0 PS5_IP 9021 < GenesisPlusGXPS5-v2.0.elf
    ```
    It installs the app in `/data/homebrew/PPSA99921/` (`eboot.bin`, `sce_module/libc.prx`, `param.json`, the
-   icon and the backgrounds), shows **"Genesis Plus GX PS5 1.7 installed. Open it from the Genesis Plus GX PS5
+   icon and the backgrounds), shows **"Genesis Plus GX PS5 2.0 installed. Open it from the Genesis Plus GX PS5
    icon on the home screen."** and stays running as the helper.
 2. **Open the Genesis Plus GX PS5 icon.** The game shelf appears and the controller works.
 3. **Copy your games** to their system's folder, over FTP for example. The app makes the folders on its first
@@ -345,9 +375,10 @@ Notes:
 - A cover named after the ROM file (`covers/MegaDrive/Sonic.png` for `roms/MegaDrive/Sonic.md`) is used before
   any other, for games the app doesn't recognise or to use another picture.
 
-The shelf is drawn by the CPU in real 3D perspective (each cover a quad turned about the vertical axis, drawn
-column by column with bilinear filtering, mipmaps and anti-aliased edges, split across several cores), as in
-Snes9x PS5.
+The shelf is in real 3D perspective (each cover a quad turned about the vertical axis, with its reflection on
+the floor and a glow behind the selected one). With the GPU renderer (2.0) the GPU draws it at the TV's resolution
+with mip-mapped covers (see [The shelf on the GPU](#the-shelf-on-the-gpu)); otherwise the CPU draws it column by
+column with bilinear filtering, mipmaps and anti-aliased edges, split across several cores, as in Snes9x PS5.
 
 ## Controls
 
@@ -397,7 +428,8 @@ up to four: players 2 to 4 are the other signed-in users. The light bar shows th
 
 Triangle on the shelf, or "Settings" in the pause menu:
 
-- **Video:** **shader** (see [CRT shaders](#crt-shaders); CRT Easymode style by default), screen size (fit to
+- **Video:** **shader** (see [CRT shaders](#crt-shaders); CRT Easymode style by default), **shader parameters**
+  (the GPU build: see [Shader parameters](#shader-parameters)), screen size (fit to
   screen, integer scale, stretch to 16:9), aspect ratio (TV -- the core's own pixel aspect --, square pixels, 4:3,
   16:9), **NTSC filter** (Blargg's: composite, S-Video, RGB, monochrome), show the borders (overscan: off, top and
   bottom, left and right, all), smooth picture and scanlines (for the plain picture, with the shader Off), Game
@@ -423,7 +455,7 @@ Triangle on the shelf, or "Settings" in the pause menu:
 - **Library:** download covers.
 - **System:** **Language** (see [Language](#language)); **Renderer** -- GPU (the default in the GPU build) or CPU,
   applied at the next start (see [The GPU renderer](#the-gpu-renderer)); **Performance log** (Off by default, see
-  [Performance log](#performance-log)); **Debug logs** (On by default) -- see [Debugging](#debugging-logs-and-crashes);
+  [Performance log](#performance-log)); **Debug logs** (Off by default since 2.0) -- see [Debugging](#debugging-logs-and-crashes);
   **Updates** -- see [Updates](#updates).
 
 The settings go to the core as its libretro options (`genesis_plus_gx_*`), so they behave as in RetroArch.
@@ -544,7 +576,7 @@ screen columns, monoCRT has no beam jitter.
 
 ## The GPU renderer
 
-In the GPU build (`GenesisPlusGXPS5-v1.9.elf`), the game's picture is drawn by the PS5's GPU through Vulkan:
+In the GPU build (`GenesisPlusGXPS5-v2.0.elf`), the game's picture is drawn by the PS5's GPU through Vulkan:
 **RADV**, Mesa's driver for AMD GPUs, ported to the PS5 by [PS5_Vulkan](https://github.com/mihawk-99/PS5_Vulkan)
 and [PS5_Mesa](https://github.com/mihawk-99/PS5_Mesa) (mihawk-99), linked into the app; it already runs
 vkQuake, RetroArch's Vulkan cores and Dolphin on consoles. What changes:
@@ -566,13 +598,55 @@ vkQuake, RetroArch's Vulkan cores and Dolphin on consoles. What changes:
 - If the app dies while the GPU is being set up, the next start notices it (`logs/gpu-starting` is still there)
   and uses the CPU for that start.
 - Settings, SYSTEM, **Renderer: CPU** keeps the CPU for good (`renderer=0` in `genplus-ps5.ini`); or install the
-  **CPU-only build** (`GenesisPlusGXPS5-v1.9-cpu.elf`), which has no GPU driver inside at all.
-- The GPU driver was developed and checked by its author on his consoles (with etaHEN); this port has not been
-  run on a PS5. Please report `boot.log`, `[gpu]` lines included.
+  **CPU-only build** (`GenesisPlusGXPS5-v2.0-cpu.elf`), which has no GPU driver inside at all.
+- The GPU driver was developed and checked by its author on his consoles (with etaHEN); 1.9's GPU renderer ran
+  on a user's PS5 (RADV saw the GPU as NAVI21, 4K at 59.94 Hz, all 26 shaders loaded). Please report `boot.log`,
+  `[gpu]` lines included (Debug logs on).
 
-**Not done:** HDR, the GPU for the menus and the shelf (they stay on the CPU), shader parameters in the menus (the
-presets' defaults are used), loading your own `.slangp` from a folder.
+**Shaders load without a pause (2.0).** Picking a shader no longer freezes the picture: the shader is built on a
+thread of its own while the game goes on with the plain picture, "Preparing the shader..." on the screen, then
+switches to it. What the driver compiled is kept in `/data/genplus/cache/gpu-pipelines.bin` (`boot.log`:
+`[gpu] pipeline cache: N KiB from ...`), so a shader used before loads at once. Deleting the file is safe: it is
+built again.
 
+### Shader parameters
+
+Settings, VIDEO, **Shader parameters** (with a GPU shader picked) lists the shader's own settings -- its
+`#pragma parameter` lines, as RetroArch's Shader Parameters menu does: a CRT's mask strength, scanlines, curvature,
+glow, gamma... **Left/Right** changes the one selected, by the shader's own step, between its limits, and the game
+behind shows the change at once; **Cross** puts it back to the shader's value (a `*` marks a changed one); the last
+row puts them all back. The values are kept per shader in `/data/genplus/shader-params.ini` (one line per
+parameter: shader, parameter and value, tab-separated) and read at every start.
+
+### Your own presets
+
+Copy RetroArch slang presets to **`/data/genplus/shaders/`** -- a `.slangp` with the `.slang` files and textures
+it names, at the same relative places (the simplest is to copy whole folders of
+[slang-shaders](https://github.com/libretro/slang-shaders), `include/` and `stock.slang` too, keeping their layout).
+At the next start they are listed in Settings, Shader, after the built-in ones, by their path under `shaders/`
+(`crt/crt-royale`, `mine/my-preset`...); a lone `.slang` at the top of the folder is listed too. Up to 1024 are
+listed, five folders deep. The first time one is picked, the console compiles it (glslang, inside the app) on the
+shader thread, and `boot.log` says how it went: `your preset crt/crt-geom-deluxe: 5 pass(es), 24 parameter(s), 3
+texture(s), compiled`, or why it can't be used (a missing file, a compile error, with the line) -- the game then
+goes on with the plain picture. In the host tests, 236 of the 256 presets listed from slang-shaders' `crt/`,
+`blurs/`, `interpolation/` and `edge-smoothing/` folders compiled; the 20 others named files from folders that
+were not copied. Note: the shader setting is a position in the list, so adding presets in front of the one you use
+can change which one it points to.
+
+### The shelf on the GPU
+
+With the GPU renderer, the shelf's backdrop, covers, reflections and glow are drawn by the GPU, as quads in
+perspective, at the TV's resolution: on a 4K TV the covers are 4K, smoothed with mip levels, instead of 1080p
+doubled. The text, the menus and the pause screens are still drawn by the CPU on the 1920x1080 surface and doubled
+pixel for pixel. `boot.log` says `[shelf] drawn by the GPU` (or `by the CPU`, when the GPU can't).
+
+### HDR: not done, and why
+
+HDR needs the console's display output to be switched into an HDR mode and given 10-bit frames. RADV on the PS5
+presents through a VideoOut back-end (in PS5_Mesa) that offers only 8-bit sRGB formats; how VideoOut is asked for
+HDR (the output mode number, the 10-bit pixel format) is not known from any public source -- PS5_Vulkan found the
+120 Hz mode's number by trying them on a console. Doing it blind could leave a black screen with nothing to tell
+why. So 2.0 has no HDR; it can come once the driver's back-end supports it.
 ## Performance log
 
 Settings, SYSTEM, **Performance log: On**. While a game runs, `/data/genplus/logs/perf-<system>-<game>.csv` gets a
@@ -680,6 +754,7 @@ the **sound** (music, voices, effects), the **speed** (`boot.log`: the frames pe
 
 ## Debugging (logs and crashes)
 
+**The debug logs are off by default since 2.0** (a settings file of an earlier version keeps the value it had).
 **Turning the logs on or off:** Settings (Triangle on the shelf, or L3 + R3 -> Settings in a game) -> **SYSTEM**
 -> **Debug logs**. Off stops every log at once: the app writes nothing more to `boot.log` (its last line says the
 logs were turned off) or to the console output, and the next starts -- the app, the installer and the helper --
@@ -710,7 +785,7 @@ take from them:
 
 | Emulator | Licence | What it has that Genesis Plus GX doesn't | Here |
 |---|---|---|---|
-| [PicoDrive](https://github.com/notaz/picodrive) | its own, non-commercial (as Genesis Plus GX's) | **the 32X**, the Sega Pico; very fast | the way to 32X games: planned as a second core for `.32x` files (not in 1.9) |
+| [PicoDrive](https://github.com/notaz/picodrive) | its own, non-commercial (as Genesis Plus GX's) | **the 32X**, the Sega Pico; very fast | the way to 32X games: planned as a second core for `.32x` files (not in 2.0) |
 | [jgenesis](https://github.com/jsgroth/jgenesis) | MIT | 32X; very accurate Sega CD timing | written in Rust: a reference, no code taken |
 | [ares](https://github.com/ares-emulator/ares) | ISC | 32X; accuracy | a reference; its shaders are RetroArch's slang ones, which the GPU build now runs |
 | [BlastEm](https://www.retrodev.com/blastem/) | GPL-3.0 | cycle-accurate VDP timing | a reference for accuracy questions, no code taken |
@@ -724,7 +799,7 @@ take from them:
   Master System multitap.
 - No 32X: Genesis Plus GX doesn't emulate it (it would take another emulator, such as PicoDrive).
 - No cheats or MegaSD/MSU-MD menus in the frontend yet.
-- The GPU renderer has not been run on a PS5 yet; the CPU build has no 4K and no multi-pass shaders.
+- No HDR (see [HDR: not done, and why](#hdr-not-done-and-why)); the CPU build has no 4K and no multi-pass shaders.
 - Real Sega CD, MD+ and MSU-MD games have not been tried on a PS5 yet (see [Sega CD](#sega-cd-what-is-tested-and-how-to-check-a-game)).
 - `.7z` archives are not read (`.zip` is); Sega CD, MD+ and MSU-MD games are not read from inside a zip.
 
@@ -740,7 +815,7 @@ make ps5 -j$(nproc)              # build/ps5/GenesisPlusGXPS5.elf (installer + h
 make send PS5_HOST=192.168.0.10  # sends it to elfldr (port 9021)
 make dist                        # build/dist/GenesisPlusGXPS5-v<version>.elf, the release zip, the source zip
 make app                         # only build/app/PPSA99921/, to copy by hand
-make test                        # Linux builds (app, installer, helper) + 397 host tests (ASan/UBSan)
+make test                        # Linux builds (app, installer, helper) + 420 host tests (ASan/UBSan)
 make shader-bench                # the CRT shaders' time per frame on this computer
 ```
 
@@ -756,7 +831,8 @@ make clean && make ps5 PS5_VULKAN=/path/to/PS5_Vulkan PS5_PAYLOAD_SDK=/path/to/P
 
 The shaders (`shaders/presets.txt`, the presets in `shaders/slang/`) are compiled to SPIR-V by
 `tools/slang_compile.py`, which needs `glslangValidator` (`glslang-tools`); the host tests also need a Vulkan
-driver (`mesa-vulkan-drivers`: lavapipe) and `libvulkan-dev`. RADV's own build needs meson, ninja, LLVM/Clang 18
+driver (`mesa-vulkan-drivers`: lavapipe) and `libvulkan-dev`. glslang itself (`third_party/glslang`, built by the
+Makefile) is linked into the GPU build and the host build, for the presets compiled on the console. RADV's own build needs meson, ninja, LLVM/Clang 18
 (with libclc and the SPIR-V translator), Python's mako and `libclang-rt-18-dev`.
 
 The build has three stages:
@@ -787,8 +863,10 @@ The build has three stages:
     `make shader-bench`);
   - `ProsperoGpu.cpp`: the GPU renderer (Vulkan; RADV on the PS5, any driver on the host) and its slang runtime:
     passes, aliases, feedback, history, LUTs, the uniform semantics; `ProsperoSlang.h`: the tables
-    `tools/slang_compile.py` makes from `shaders/presets.txt` (SPIR-V, reflection, textures);
-    `tools/radv_link_args.sh`: PS5_Vulkan's link recipe;
+    `tools/slang_compile.py` makes from `shaders/presets.txt` (SPIR-V, reflection, textures); the shader thread,
+    the pipeline cache, the shader parameters and the shelf's quads (`SetScene`); `ProsperoSlangExt.cpp`: the
+    presets of your own, from `/data/genplus/shaders/`, compiled on the console with glslang (the same steps as
+    `slang_compile.py`); `tools/radv_link_args.sh`: PS5_Vulkan's link recipe;
   - `ProsperoAudio.cpp`: `libSceAudioOut`, lock-free ring buffer, output thread;
   - `ProsperoInput.cpp`: `libScePad` + `libSceUserService`, several players, read from any thread;
   - `ProsperoJailbreak.cpp` / `ProsperoHelper.cpp`: both sides of the sandbox request and the covers list;
@@ -813,8 +891,12 @@ The build has three stages:
     Mozilla's CA list);
   - `fe_menu.cpp`, `fe_settings.cpp`, `fe_text.cpp`: menus, settings, text with PS5SX2's fonts;
   - `fe_i18n.cpp`: the five languages (`tests/check_i18n.py` checks them);
+  - `fe_chdcache.cpp`: a `.chd`'s blocks decompressed ahead on a thread of their own (`chd_read` wrapped at link
+    time);
   - `third_party/`: minizip (unzip.c, ioapi.c), as in Snes9x; Mbed TLS 3.6.7 (`mbedtls/`, its `include/` and
     `library/` as released).
+- **`ps5/third_party/glslang/`**: glslang 15.1.0's compiler and SPIR-V back end (no HLSL, no SPIRV-Tools), with
+  its two generated headers.
 - **`ps5/proto/native/`**: ps5-native-app-boilerplate's tools (BlackBearReloaded, GPL-3.0), taken from PS5SX2
   and PS5_Vulkan (mihawk-99): `ps5-native-tool`, `app_crt.cpp`, `ps5-pie.ld`, `libc_builder.cpp` and its
   manifests.
@@ -822,7 +904,7 @@ The build has three stages:
 - **`ps5/host/sce_host.cpp`** and **`ps5/tests/`**: the PS5 functions implemented on Linux, test programs for
   Mega Drive (NTSC and PAL), Master System and Game Gear (`make_test_rom.py`, tiny hand-assembled 68000 and Z80
   programs; `mdplus` asks an MD+ for a CD track, `cdbios` is a stand-in Sega CD BIOS), stand-in discs
-  (`make_test_cd.py`: `.cue`/`.bin`, `.wav`, `.chd`), the sound check (`check_tone.py`), and the 314 tests:
+  (`make_test_cd.py`: `.cue`/`.bin`, `.wav`, `.chd`), the sound check (`check_tone.py`), and the 420 tests:
   picture and input on each system, the Sega CD BIOS message and `.cue` tracks, Sega CD discs booting (cue, chd,
   the region's BIOS), MD+ CD music (bin, wav, chd), the safety copies of saves and states, settings for one game,
   save states, PAL timing, zip, sound latency, integer scale and scanlines, the shelf's tabs, the system
@@ -856,6 +938,10 @@ The build has three stages:
   [slang-shaders](https://github.com/libretro/slang-shaders)) keep their licences, many of them GPL: see
   `ps5/THIRD_PARTY_SHADERS.md`. Genesis Plus GX's non-commercial licence and the GPL don't combine cleanly in one
   binary; the maintainer chose to publish the GPU build anyway. The CPU-only build carries none of this code.
+- **glslang** 15.1.0 ([github.com/KhronosGroup/glslang](https://github.com/KhronosGroup/glslang), the Khronos Group
+  and contributors): in `ps5/third_party/glslang/` (without HLSL and SPIRV-Tools), compiled into the GPU build to
+  compile your own `.slangp` presets and the shelf's quad shader on the console; BSD-3-Clause and the other
+  permissive licences in its `LICENSE.txt`.
 - **ps5-native-app-boilerplate** (BlackBearReloaded, GPL-3.0-or-later): `ps5-native-tool`, `app_crt.cpp`,
   `app_cpp_runtime.cpp`, `ps5-pie.ld` and the `libc.prx` generator, via PS5SX2 and PS5_Vulkan (mihawk-99).
 - The VideoOut tiling and setup follow the SDK's SDL2 port (zlib license).

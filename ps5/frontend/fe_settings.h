@@ -44,7 +44,7 @@ struct Settings
 	int language = 0;            // fe::Language: 0 English (the default), 1 Spanish, 2 Portuguese (Brazil), 3 French, 4 German
 	int renderer = 1;            // 1 GPU (the default when the build has one), 0 CPU; read by ProsperoVideo at start
 	bool perf_log = false;       // logs/perf-<system>-<game>.csv, a row a second in a game (fe_emu.cpp, Perf)
-	bool debug_logs = true;      // boot.log and the others in /data/genplus/logs (OrbisLogSetEnabled)
+	bool debug_logs = false;     // boot.log and the others in /data/genplus/logs (OrbisLogSetEnabled)
 	int shelf_family = 0; // fe::Family the shelf shows
 	std::string last_rom; // the shelf puts the selection on this game
 

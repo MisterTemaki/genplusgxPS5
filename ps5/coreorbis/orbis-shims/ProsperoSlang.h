@@ -4,6 +4,8 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace ps5slang
 {
@@ -76,6 +78,22 @@ struct Preset
 	bool fullscreen; // draws on the whole screen (a bezel around the game): the viewport is the screen, not the game
 };
 
-extern const Preset kPresets[];
-extern const int kPresetCount;
+// the presets compiled at build time (tools/slang_compile.py): [0] the plain picture, [1] the menus' surface
+extern const Preset kBuiltinPresets[];
+extern const int kBuiltinPresetCount;
+
+// All the presets: the built-in ones, then the user's own from <root>/shaders (ProsperoSlangExt.cpp), which are
+// compiled on the console the first time they are used (EnsureCompiled: on the GPU renderer's build thread). Until
+// then a user preset is its name only (no passes, no parameters).
+void ScanExternal();
+// GLSL (Vulkan) to SPIR-V with the same compiler: the GPU renderer's own small shaders (the shelf's quads)
+bool CompileGlsl(const std::string& src, bool vertex, std::vector<uint32_t>& spv, std::string& err);
+std::string ExternalDir();
+int PresetCount();
+const Preset& PresetAt(int i);
+bool IsExternal(int i);
+bool EnsureCompiled(int i, std::string* err);
+#ifndef __PROSPERO__
+void CheckAllExternal(); // host tests only
+#endif
 } // namespace ps5slang

@@ -10,6 +10,8 @@ INSTALLER=$PWD/build/host/genplus-ps5-installer
 HELPER=$PWD/build/host/genplus-ps5-helper
 # ports nobody listens on, so the app's ordinary runs find no helper and no ELF loader
 export GENPLUS_HELPER_PORT=$((20000 + RANDOM % 10000)) GENPLUS_ELFLDR_PORT=$((30000 + RANDOM % 10000)) GENPLUS_JB_NO_OTHERS=1
+# the debug logs are off by default (2.0): the tests read boot.log, so here a settings file without the key means on
+export GENPLUS_LOGS_DEFAULT=1
 CHECK="python3 $PWD/tests/check_ppm.py"
 RECT="python3 $PWD/tests/check_rect.py"
 ROM="python3 $PWD/tests/make_test_rom.py"
@@ -22,6 +24,8 @@ FAIL=0
 CROSS=4000; CIRCLE=2000; TRIANGLE=1000; UP=10; DOWN=40; RIGHT=20; L2=100; R2=200; L3R3=6; OPTIONS=8
 L2UP=$(printf %x $((0x$L2 | 0x$UP))); L2DOWN=$(printf %x $((0x$L2 | 0x$DOWN))); L2R2=$(printf %x $((0x$L2 | 0x$R2)))
 # pause menu: L3+R3, then Up from "Resume" wraps to "Quit Genesis Plus GX PS5"
+# the shelf: Options, then Cross on "Quit"
+SHELFQUIT_AT() { echo "$1:$OPTIONS;$(($1 + 2)):0;$(($1 + 10)):$CROSS;$(($1 + 12)):0"; }
 QUITAT() { echo "$1:$L3R3;$(($1 + 2)):0;$(($1 + 10)):$UP;$(($1 + 12)):0;$(($1 + 20)):$CROSS;$(($1 + 22)):0"; }
 
 ok() { echo "  ok: $*"; PASS=$((PASS + 1)); }
@@ -753,7 +757,6 @@ fi
 
 if want 25; then
 echo "== 25. debug logs off: nothing written (app and helper), earlier logs kept; the setting switches them at once"
-SHELFQUIT_AT() { echo "$1:$OPTIONS;$(($1 + 2)):0;$(($1 + 10)):$CROSS;$(($1 + 12)):0"; }
 # off in the ini: the game runs, no line anywhere, the previous run's boot.log untouched
 T=$(newroot t25)
 $ROM "$T/root/roms/test.md" ntsc >/dev/null
@@ -765,6 +768,13 @@ expect "$CHECK $T/dump/flip00090.ppm 960 540 red >/dev/null" "the game runs"
 expect "[ \"\$(cat $T/root/logs/boot.log)\" = 'OLD RUN' ] && [ ! -e $T/root/logs/boot.prev.log ]" "the earlier boot.log is kept as it was, nothing new written"
 expect "! grep -q '^\[genplus-ps5' $T/out.txt" "nothing on stdout either"
 expect "grep -q '^debug_logs=0' $T/root/genplus-ps5.ini" "the setting stays off"
+nosan "$T"
+# the default (2.0): no debug_logs key and no test override -> nothing written, and the settings file says 0
+T=$(newroot t25z)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+rc=$(GENPLUS_LOGS_DEFAULT= run "$T" "0:0;$(QUITAT 100)" "90" "$T/root/roms/test.md")
+expect "[ $rc = 0 ] && [ ! -e $T/root/logs/boot.log ] && ! grep -q '^\[genplus-ps5' $T/out.txt" "debug logs off by default: no boot.log"
+expect "grep -q '^debug_logs=0' $T/root/genplus-ps5.ini && grep -q '^perf_log=0' $T/root/genplus-ps5.ini" "the default settings file has debug_logs=0 and perf_log=0"
 nosan "$T"
 # Settings (Triangle) -> Debug logs (Up three times from Shader: Back, Updates, then Debug logs) -> Off: that line is the last one
 T=$(newroot t25b)
@@ -1249,7 +1259,8 @@ for s in $(seq 1 26); do
 	$ROM "$T/root/roms/test.md" ntsc >/dev/null
 	# (the Mega Bezel's 30 passes run at about 1 frame a second on lavapipe, a CPU: its run stops at frame 40)
 	if [ $s -ge 25 ]; then mf=40; at=35; quit=""; else mf=400; at=90; quit=";$(QUITAT 100)"; fi
-	rc=$(GENPLUS_HOST_GPU=1 MAXFLIPS=$mf run "$T" "0:0$quit" "$at" "$T/root/roms/test.md")
+	# (the shader built before the next frame, as 1.9 did: here the picture is checked at a set frame)
+	rc=$(GENPLUS_HOST_GPU_SYNC_BUILD=1 GENPLUS_HOST_GPU=1 MAXFLIPS=$mf run "$T" "0:0$quit" "$at" "$T/root/roms/test.md")
 	name=$(grep -o 'shader [^:]*: [0-9]* pass' $T/root/logs/boot.log | head -1)
 	expect "{ [ $rc = 0 ] || [ $mf = 40 ]; } && [ -n \"$name\" ] && python3 -c \"import sys; d=open('$T/dump/flip000$at.ppm','rb').read().split(b'\\n',3); w=int(d[1].split()[0]); p=d[3]; sys.exit(0 if max(p[(y*w+960)*3] for y in range(440,640)) > 60 else 1)\"" "GPU $name: draws the game"
 	expect "! grep -q 'runtime error\|AddressSanitizer' $T/out.txt" "GPU shader $s: no sanitizer reports"
@@ -1273,6 +1284,111 @@ drift = [float(r['av_drift_ms']) for r in rows]
 sys.exit(0 if min(cd) > 90 and max(drift) - min(drift) < 5 else 1)
 PY" "CD audio seen playing; the sound/picture drift stays within 5 ms over the run"
 expect "grep -q '\[perf\] [0-9]* s, [0-9]* frames: core' $T/root/logs/boot.log" "a summary in boot.log when the game closes"
+nosan "$T"
+fi
+
+if want 38; then
+echo "== 38. 2.0: storage faults while a state is replaced; underruns; CHD read-ahead; GPU shader cache, parameters, your own presets, the shelf"
+# the new state can't take its name: the old one is put back, untouched
+T=$(newroot t38)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+rc=$(run "$T" "0:0;100:$L2UP;105:0;$(QUITAT 150)" "" "$T/root/roms/test.md")
+ST=$T/root/states/MegaDrive/test.state1
+before=$(md5sum < $ST)
+rc=$(GENPLUS_HOST_FAIL_RENAME=from=state1.part run "$T" "0:0;100:$L2UP;105:0;$(QUITAT 150)" "" "$T/root/roms/test.md")
+expect "[ $rc = 0 ] && [ \"\$(md5sum < $ST)\" = '$before' ] && [ ! -e $ST.part ] && grep -q 'the old one is back, the slot is left as it was' $T/root/logs/boot.log" "fault: the new state can't take its name -> the old one is put back, unchanged"
+# ... and the old one can't be put back either: it stays whole as .prev, the screen says so, the pause menu loads it
+rc=$(GENPLUS_HOST_FAIL_RENAME=from=state1.part,from=state1.prev run "$T" "0:0;100:$L2UP;105:0;$(QUITAT 150)" "" "$T/root/roms/test.md")
+expect "[ ! -e $ST ] && [ \"\$(md5sum < $ST.prev)\" = '$before' ] && grep -q 'nor the old one back.*whole in .*test.state1.prev' $T/root/logs/boot.log" "fault: nor the old one back -> it is whole in .prev, and the log says where"
+rc=$(run "$T" "0:0;100:$L3R3;102:0;110:$DOWN;112:0;116:$DOWN;118:0;122:$DOWN;124:0;130:$CROSS;132:0;$(QUITAT 200)" "" "$T/root/roms/test.md")
+expect "[ $rc = 0 ] && grep -q 'load state 1 (previous): ok' $T/root/logs/boot.log" "the pause menu's Load the previous state brings it back"
+# an empty slot whose new state can't take its name: stays empty, nothing left behind
+T=$(newroot t38b)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+rc=$(GENPLUS_HOST_FAIL_RENAME=from=state1.part run "$T" "0:0;100:$L2UP;105:0;$(QUITAT 150)" "" "$T/root/roms/test.md")
+ST=$T/root/states/MegaDrive/test.state1
+expect "[ ! -e $ST ] && [ ! -e $ST.part ] && [ ! -e $ST.prev ] && grep -q 'the slot stays empty' $T/root/logs/boot.log" "fault on an empty slot: it stays empty, no stray file"
+nosan "$T"
+# underruns: time on the shelf (no game, no sound fed) is not counted
+T=$(newroot t38c)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+rc=$(GENPLUS_HOST_REALTIME=1 run "$T" "0:0;$(SHELFQUIT_AT 200)" "")
+expect "[ $rc = 0 ] && grep -q '\[audio\] closed, 0 underruns' $T/root/logs/boot.log" "3 s on the shelf: 0 underruns counted ($(grep -o 'closed, [0-9]* underruns' $T/root/logs/boot.log))"
+# CHD: hunks decompressed ahead on their own thread
+T=$(newroot t38d)
+printf 'add_on=1\nperf_log=1\n' >>"$T/root/genplus-ps5.ini"
+$ROM "$T/root/roms/mdp.md" mdplus >/dev/null
+$CD "$T/root/roms/mdp.chd" --loop >/dev/null
+rc=$(run "$T" "0:0;$(QUITAT 900)" "" "$T/root/roms/mdp.md")
+expect "[ $rc = 0 ] && python3 - $T/root/logs/boot.log <<'PY'
+import re, sys
+m = re.search(r'\[perf\] CHD: (\d+) hunk\(s\) read, (\d+) decompressed ahead', open(sys.argv[1]).read())
+sys.exit(0 if m and int(m.group(1)) >= 10 and int(m.group(2)) >= int(m.group(1)) * 3 // 4 else 1)
+PY" "CHD: most hunks decompressed ahead ($(grep -o 'CHD: [0-9]* hunk.*' $T/root/logs/boot.log | head -1))"
+nosan "$T"
+# GPU: a shader built in the background (the plain picture and a message meanwhile), the pipeline cache saved
+T=$(newroot t38e)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+sed -i 's/^shader=.*/shader=1/' $T/root/genplus-ps5.ini
+rc=$(GENPLUS_HOST_GPU=1 run "$T" "0:0;$(QUITAT 100)" "" "$T/root/roms/test.md")
+expect "[ $rc = 0 ] && grep -q 'built in the background' $T/root/logs/boot.log && [ -s $T/root/cache/gpu-pipelines.bin ]" "GPU: the shader built in the background, the pipeline cache saved (cache/gpu-pipelines.bin)"
+rc=$(GENPLUS_HOST_GPU=1 run "$T" "0:0;$(QUITAT 100)" "" "$T/root/roms/test.md")
+expect "[ $rc = 0 ] && grep -q 'pipeline cache: [0-9]* KiB from' $T/root/logs/boot.log" "GPU: the next start reads the cache back"
+# Settings -> Shader parameters: Right three times on the first one, kept in shader-params.ini, read at the next start
+P="0:0;60:$L3R3;62:0"; f=70
+for i in 1 2 3 4 5; do P="$P;$f:$DOWN;$((f + 2)):0"; f=$((f + 6)); done
+P="$P;$f:$CROSS;$((f + 2)):0"; f=$((f + 10)); P="$P;$f:$DOWN;$((f + 2)):0"; f=$((f + 6)); P="$P;$f:$CROSS;$((f + 2)):0"; f=$((f + 10))
+for i in 1 2 3; do P="$P;$f:$RIGHT;$((f + 2)):0"; f=$((f + 6)); done
+SHOT=$f; f=$((f + 4)); P="$P;$f:$CIRCLE;$((f + 2)):0"; f=$((f + 10)); P="$P;$f:$CIRCLE;$((f + 2)):0"; f=$((f + 10)); P="$P;$f:$CIRCLE;$((f + 2)):0"
+rc=$(GENPLUS_HOST_GPU=1 run "$T" "$P;$(QUITAT $((f + 30)))" "$SHOT" "$T/root/roms/test.md")
+expect "[ $rc = 0 ] && grep -q '^crt-easymode	SHARPNESS_H	0.65$' $T/root/shader-params.ini" "Shader parameters: Sharpness Horizontal 0.50 -> 0.65 (three steps), saved"
+rc=$(GENPLUS_HOST_GPU=1 run "$T" "0:0;$(QUITAT 100)" "" "$T/root/roms/test.md")
+expect "grep -q '1 shader parameter(s) set in the menu' $T/root/logs/boot.log" "... and read back at the next start"
+nosan "$T"
+# your own presets: <root>/shaders/*.slangp compiled on the console when picked; a broken one says why, the game goes on
+T=$(newroot t38f)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+mkdir -p $T/root/shaders/mine
+cp -r shaders/slang/crt/crt-easymode.slangp shaders/slang/crt/shaders $T/root/shaders/mine/ 2>/dev/null
+mkdir -p $T/root/shaders/mine/shaders && cp shaders/slang/crt/shaders/crt-easymode.slang $T/root/shaders/mine/shaders/
+printf 'shaders = 1\nshader0 = broken.slang\n' >$T/root/shaders/broken.slangp
+printf '#version 450\n#pragma stage vertex\nvoid main() { gl_Position = vec4(0); this does not compile }\n#pragma stage fragment\nlayout(location = 0) out vec4 F;\nvoid main() { F = vec4(1); }\n' >$T/root/shaders/broken.slang
+n=$(grep -c '^[^#_].* = ' shaders/presets.txt)
+# the shader list: the built-in ones, then broken (a lone .slang: listed too), broken.slangp, mine/crt-easymode
+sed -i "s/^shader=.*/shader=$((n + 3))/" $T/root/genplus-ps5.ini
+rc=$(GENPLUS_HOST_GPU=1 run "$T" "0:0;$(QUITAT 120)" "100" "$T/root/roms/test.md")
+expect "[ $rc = 0 ] && grep -q 'your preset mine/crt-easymode: 1 pass(es)' $T/root/logs/boot.log && grep -q 'shader mine/crt-easymode: 1 pass(es)' $T/root/logs/boot.log" "your own preset (shaders/mine/crt-easymode.slangp): compiled on the console, used"
+expect "python3 -c \"import sys; d=open('$T/dump/flip00100.ppm','rb').read().split(b'\\n',3); w=int(d[1].split()[0]); p=d[3]; sys.exit(0 if max(p[(y*w+960)*3] for y in range(440,640)) > 60 else 1)\"" "... and it draws the game"
+sed -i "s/^shader=.*/shader=$((n + 2))/" $T/root/genplus-ps5.ini
+rc=$(GENPLUS_HOST_GPU=1 run "$T" "0:0;$(QUITAT 120)" "100" "$T/root/roms/test.md")
+expect "[ $rc = 0 ] && grep -q 'your preset broken (.*) could not be used: pass 0' $T/root/logs/boot.log && grep -q 'could not be set up: the plain picture' $T/root/logs/boot.log && $CHECK $T/dump/flip00100.ppm 960 540 red >/dev/null" "a broken preset of your own: the log says why, the plain picture, the game goes on"
+nosan "$T"
+# the shelf drawn by the GPU: the same picture as the CPU's
+T=$(newroot t38g)
+mkdir -p $T/root/roms/MegaDrive $T/root/covers
+for g in Alpha Bravo Charlie; do $ROM "$T/root/roms/MegaDrive/$g.md" ntsc >/dev/null; done
+python3 - $T/root/covers <<'PY'
+import sys, zlib, struct
+def png(path, w, h, f):
+    raw = b''.join(b'\0' + bytes(c for x in range(w) for c in f(x, y)) for y in range(h))
+    ch = lambda t, d: struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+    open(path, 'wb').write(b'\x89PNG\r\n\x1a\n' + ch(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) + ch(b'IDAT', zlib.compress(raw)) + ch(b'IEND', b''))
+for i, n in enumerate(['Alpha', 'Bravo', 'Charlie']):
+    png('%s/%s.png' % (sys.argv[1], n), 180, 256, lambda x, y, i=i: ((x * 255 // 180) if i != 1 else 40, y, 200 if (x // 20 + y // 20) % 2 else 60))
+PY
+# (in real time: the backdrop follows the selection after a moment, and fades in)
+rc=$(GENPLUS_HOST_REALTIME=1 GENPLUS_HOST_GPU=1 run "$T" "0:0;$(SHELFQUIT_AT 160)" "150")
+mv $T/dump/flip00150.ppm $T/gpu.ppm 2>/dev/null
+expect "[ $rc = 0 ] && grep -q 'shelf\] drawn by the GPU' $T/root/logs/boot.log" "the shelf: drawn by the GPU when the GPU renders"
+rc=$(GENPLUS_HOST_REALTIME=1 run "$T" "0:0;$(SHELFQUIT_AT 160)" "150")
+expect "python3 - $T/gpu.ppm $T/dump/flip00150.ppm <<'PY'
+import sys
+def load(p):
+    d = open(p, 'rb').read().split(b'\n', 3); return d[3]
+a, b = load(sys.argv[1]), load(sys.argv[2])
+diff = sum(1 for i in range(0, len(a), 3 * 7) if abs(a[i] - b[i]) + abs(a[i + 1] - b[i + 1]) + abs(a[i + 2] - b[i + 2]) > 60)
+sys.exit(0 if diff * 7 * 3 < len(a) * 0.01 else 1)
+PY" "... the same picture as the CPU's (under 1% of pixels differ)"
 nosan "$T"
 fi
 

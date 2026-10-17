@@ -25,7 +25,7 @@
 PS5_PAYLOAD_SDK ?= /opt/ps5-payload-sdk
 PS5_HOST ?= ps5
 PS5_PORT ?= 9021
-VERSION ?= 1.9
+VERSION ?= 2.0
 CORE_VERSION := 1.7.4
 # the GPU's shader tables, generated from shaders/presets.txt (see "shaders:" below)
 SLANG_CPP := build/gen/slang_presets.cpp
@@ -65,8 +65,8 @@ EMU_SRC := coreorbis/main-boot.cpp \
 	coreorbis/orbis-shims/ProsperoVideo.cpp coreorbis/orbis-shims/ProsperoAudio.cpp \
 	coreorbis/orbis-shims/ProsperoInput.cpp coreorbis/orbis-shims/ProsperoJailbreak.cpp \
 	coreorbis/orbis-shims/ProsperoCrash.cpp coreorbis/orbis-shims/ProsperoCrt.cpp coreorbis/orbis-shims/ProsperoGpu.cpp \
-	coreorbis/orbis-shims/ProsperoUpdate.cpp \
-	frontend/fe_emu.cpp frontend/fe_menu.cpp frontend/fe_settings.cpp frontend/fe_i18n.cpp frontend/fe_text.cpp \
+	coreorbis/orbis-shims/ProsperoUpdate.cpp coreorbis/orbis-shims/ProsperoSlangExt.cpp \
+	frontend/fe_emu.cpp frontend/fe_menu.cpp frontend/fe_settings.cpp frontend/fe_i18n.cpp frontend/fe_chdcache.cpp frontend/fe_text.cpp \
 	frontend/fe_games.cpp frontend/fe_http.cpp frontend/fe_covers.cpp frontend/fe_shelf.cpp \
 	frontend/fe_prefetch.cpp frontend/fe_coverfetch.cpp frontend/fe_coverworker.cpp
 # minizip (zlib licence) for games inside a .zip, built as C with the core's zlib
@@ -107,8 +107,21 @@ GAMEDB_DEFS := -DGAMEDB_TSV='"$(abspath frontend/data/nointro.tsv)"'
 # the helper's HTTPS client: Mbed TLS's headers, and Mozilla's CA list built in
 %/port/frontend/fe_tlshttp.o: EXTRA_FLAGS = $(MBEDTLS_FLAGS) -DCACERT_PEM='"$(abspath frontend/data/cacert.pem)"'
 %/port/frontend/fe_tlshttp.o: frontend/data/cacert.pem frontend/fe_mbedtls_config.h
+# the CHD read-ahead (fe_chdcache.cpp) sees libchdr's header; the link wraps chd_read and chd_close with it
+%/port/frontend/fe_chdcache.o: EXTRA_FLAGS = -I$(ROOT)/$(CHD)/include
+CHD_WRAP := --wrap=chd_read --wrap=chd_close
 # the helper payload is installer_main.cpp without the install step
 %/port/installer/helper_main.o: EXTRA_FLAGS = -DGENPLUS_HELPER_ONLY
+
+# glslang (third_party/glslang, 15.1.0, BSD-3-Clause and others: its LICENSE.txt): the user's own .slangp presets
+# compiled on the console (ProsperoSlangExt.cpp). Built without HLSL and without SPIRV-Tools.
+GLSLANG := third_party/glslang
+GLSLANG_SRC := $(wildcard $(GLSLANG)/glslang/MachineIndependent/*.cpp $(GLSLANG)/glslang/MachineIndependent/preprocessor/*.cpp \
+	$(GLSLANG)/glslang/GenericCodeGen/*.cpp) $(GLSLANG)/glslang/OSDependent/Unix/ossource.cpp \
+	$(GLSLANG)/glslang/ResourceLimits/ResourceLimits.cpp $(addprefix $(GLSLANG)/SPIRV/,GlslangToSpv.cpp SpvBuilder.cpp \
+	SpvPostProcess.cpp InReadableOrder.cpp Logger.cpp SpvTools.cpp disassemble.cpp doc.cpp)
+GLSLANG_FLAGS := -std=c++17 -I$(GLSLANG) -w
+%/port/coreorbis/orbis-shims/ProsperoSlangExt.o: EXTRA_FLAGS = -I$(GLSLANG) $(PS5_GPU_DEFS)
 
 # ---------------- the GPU (optional) ----------------
 # PS5_VULKAN=<a PS5_Vulkan checkout> (github.com/mihawk-99/PS5_Vulkan, with tools/setup-native-dependencies.sh and
@@ -266,7 +279,7 @@ build/app/genplus-pie.elf: $(EBOOT_OBJS) $(NATIVE)/tooling/native/ps5-pie.ld $(N
 	$(LLD) -m elf_x86_64 -pie -z max-page-size=0x4000 --hash-style=gnu \
 		-T $(NATIVE)/tooling/native/ps5-pie.ld -T $(NATIVE)/tooling/native/ehframe.ld --eh-frame-hdr \
 		--version-script $(NATIVE)/tooling/native/app-symbols.map --version-script $(NATIVE)/tooling/native/localize.map \
-		-e _start --no-dynamic-linker -o $@ $(EBOOT_OBJS) \
+		-e _start --no-dynamic-linker $(CHD_WRAP) -o $@ $(EBOOT_OBJS) \
 		--as-needed $(APP_STUBS) -L $(SDK_LIB) \
 		$(SDK_LIB)/libc++.a $(SDK_LIB)/libc++abi.a $(SDK_LIB)/libunwind.a $(SDK_LIB)/libc.a -lpthread
 EBOOT_EXTRA_STUBS =
@@ -275,7 +288,10 @@ else
 # archive carries zlib 1.3.1 (its shader cache's), the same release as libchdr's copy: that copy is left out, and
 # so is libretro's scrc32.c (its crc32 is zlib's, which RADV's archive defines).
 EBOOT_OBJS := $(filter-out $(PS5_OUT)/core/$(CHD)/deps/zlib-1.3.1/% $(PS5_OUT)/core/libretro/scrc32.o,$(EBOOT_OBJS)) \
-	$(PS5_OUT)/slang_presets.o
+	$(PS5_OUT)/slang_presets.o $(patsubst %.cpp,$(PS5_OUT)/glslang/%.o,$(GLSLANG_SRC))
+$(PS5_OUT)/glslang/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(PS5_CXX) $(GLSLANG_FLAGS) -O2 -fPIC -march=znver2 -c -o $@ $<
 AGC_STUBS := build/app/stubs/libSceAgc.so build/app/stubs/libSceAgcDriver.so
 build/app/stubs/libSceAgc.so: $(PS5_VULKAN)/vendor/ps5/sdk/stubs/agc_canary_link_stub.c
 build/app/stubs/libSceAgcDriver.so: $(PS5_VULKAN)/vendor/ps5/sdk/stubs/agc_driver_canary_link_stub.c
@@ -292,7 +308,7 @@ $(PS5_OUT)/slang_presets.o: $(SLANG_CPP) coreorbis/orbis-shims/ProsperoSlang.h
 build/app/genplus-pie.elf: $(EBOOT_OBJS) $(AGC_STUBS) build/app/radv-link.args $(NATIVE)/tooling/native/app-symbols.map \
 		$(NATIVE)/tooling/native/localize.map
 	$(PS5_PAYLOAD_SDK)/bin/prospero-lld --eh-frame-hdr --no-dynamic-linker -z nodynamic-undefined-weak --version-script $(NATIVE)/tooling/native/app-symbols.map \
-		--version-script $(NATIVE)/tooling/native/localize.map --exclude-libs=ALL \
+		--version-script $(NATIVE)/tooling/native/localize.map --exclude-libs=ALL $(CHD_WRAP) \
 		-e _start -o $@ $(EBOOT_OBJS) $(AGC_STUBS) $$(cat build/app/radv-link.args) \
 		--as-needed $(APP_STUBS)
 EBOOT_EXTRA_STUBS = $(foreach s,$(AGC_STUBS),--stub $(s))
@@ -395,8 +411,13 @@ $(HOST_OUT)/slang_presets.o: $(SLANG_CPP) coreorbis/orbis-shims/ProsperoSlang.h
 	@mkdir -p $(dir $@)
 	$(HOST_CXX) -std=c++17 -O0 -Icoreorbis/orbis-shims -c -o $@ $<
 
-$(HOST_OUT)/genplus-ps5-host: $(HOST_CORE_OBJ) $(HOST_EMU_OBJ) $(HOST_OUT)/helper_data.o $(HOST_OUT)/slang_presets.o
-	$(HOST_CXX) $(HOST_SAN) -o $@ $^ -lpthread -lm -lvulkan
+HOST_GLSLANG_OBJ := $(patsubst %.cpp,$(HOST_OUT)/glslang/%.o,$(GLSLANG_SRC))
+$(HOST_OUT)/glslang/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(HOST_CXX) $(GLSLANG_FLAGS) -O2 -g1 -c -o $@ $<
+
+$(HOST_OUT)/genplus-ps5-host: $(HOST_CORE_OBJ) $(HOST_EMU_OBJ) $(HOST_OUT)/helper_data.o $(HOST_OUT)/slang_presets.o $(HOST_GLSLANG_OBJ)
+	$(HOST_CXX) $(HOST_SAN) -o $@ $^ -Wl,--wrap=chd_read -Wl,--wrap=chd_close -lpthread -lm -lvulkan
 
 test: host
 	bash tests/run-tests.sh

@@ -17,6 +17,8 @@ bool Init();
 void Shutdown();
 // The GPU draws the picture (ProsperoGpu.h): the surface is then premultiplied RGBA laid over it.
 bool GpuActive();
+// The GPU shader picked is still being prepared (compiled on a thread of its own: the plain picture meanwhile).
+bool ShaderBuilding();
 // The shaders of the renderer in use: the CPU's (ProsperoCrt.h) or the GPU's (slang presets); 0 is "Off".
 int ShaderCount();
 const char* ShaderName(int i);

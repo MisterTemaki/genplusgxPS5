@@ -19,7 +19,8 @@ void Shutdown();
 int Push(const int16_t* stereo, int frames);
 int Free(); // frames that fit right now
 int Queued(); // frames waiting to be played
-// Underruns since the start (the audio thread played silence because the ring was empty).
+// Underruns since the start: the audio thread played silence because the ring was empty while the game was feeding
+// it (the silence of the shelf and the menus, when nothing is pushed, is not counted).
 uint64_t Underruns();
 // True when the audio port opened (the output thread runs and plays the ring). Without it, nothing drains the ring,
 // so the frontend must not use it as a clock.

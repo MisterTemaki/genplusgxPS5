@@ -16,11 +16,13 @@
 #include "ProsperoJailbreak.h"
 #include "ProsperoUpdate.h"
 #include "ProsperoCrt.h"
+#include "ProsperoGpu.h"
 #include "ProsperoInput.h"
 #include "ProsperoSce.h"
 #include "ProsperoVideo.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -181,7 +183,7 @@ void DrawOptionBox(const std::string& title, const std::vector<Row>& rows, int s
 		DrawText(bx + 40, y, FitText(T(row.label.c_str()), scale, bw * 3 / 5).c_str(), scale, col);
 		if (!row.value.empty())
 		{
-			const std::string tv = T(row.value.c_str());
+			const std::string tv = FitText(T(row.value.c_str()), scale, bw / 2 - 60); // a long preset path
 			const std::string v = (top + i == sel ? "< " + tv + " >" : tv);
 			DrawText(bx + bw - 40 - TextWidth(v.c_str(), scale), y, v.c_str(), scale, top + i == sel ? kText : kAccent);
 		}
@@ -217,6 +219,7 @@ enum SettingRow
 {
 	H_VIDEO,
 	S_SHADER,
+	S_SHADERPARAMS, // GPU only: the shader's parameters, a screen of their own
 	S_SCALE,
 	S_ASPECT,
 	S_NTSC,
@@ -336,6 +339,13 @@ Row SettingRowFor(int s)
 	{
 		case H_VIDEO: return {"VIDEO", "", true, true};
 		case S_SHADER: return {ps5video::GpuActive() ? "Shader (GPU)" : "Shader", ps5video::ShaderName(std::min(c.shader, ps5video::ShaderCount() - 1))};
+		case S_SHADERPARAMS:
+		{
+			const int n = c.shader > 0 ? ps5gpu::ShaderParamCount(c.shader) : 0;
+			if (n == 0)
+				return {"Shader parameters", c.shader > 0 ? "None" : "(shader Off)", false};
+			return {"Shader parameters", Fmt(T("%d to adjust"), n)};
+		}
 		case S_SCALE: return {"Screen size", ps5video::ScaleName(ps5video::Scale(c.scale))};
 		case S_ASPECT: return {"Aspect ratio", emu::kAspects[c.aspect % emu::kAspectCount].name};
 		case S_NTSC: return {"NTSC filter (Blargg)", emu::kNtscFilters[c.ntsc % emu::kNtscFilterCount].name};
@@ -447,12 +457,20 @@ void ChangeSetting(int s, int dir)
 	emu::ApplySettings();
 }
 
-std::vector<Row> SettingRows()
+// The rows shown, and which setting each one is (`ids`; S_COUNT is Back): Shader parameters only with the GPU.
+std::vector<Row> SettingRows(std::vector<int>& ids)
 {
 	std::vector<Row> rows;
+	ids.clear();
 	for (int s = 0; s < S_COUNT; s++)
+	{
+		if (s == S_SHADERPARAMS && !ps5video::GpuActive())
+			continue;
 		rows.push_back(SettingRowFor(s));
+		ids.push_back(s);
+	}
 	rows.push_back({"Back", ""});
+	ids.push_back(S_COUNT);
 	return rows;
 }
 
@@ -470,19 +488,23 @@ void Background(bool over_game)
 		Header("Settings");
 }
 
+void ShaderParamsScreen(bool over_game);
+
 void SettingsScreen(bool over_game)
 {
 	NavReader nav;
-	int sel = S_SHADER;
+	std::vector<int> ids;
+	int sel = 1; // Shader (row 0 is the VIDEO title)
 	for (;;)
 	{
 		PollUpdate(false);
-		const std::vector<Row> rows = SettingRows();
+		const std::vector<Row> rows = SettingRows(ids);
+		const int id = ids[size_t(std::min(sel, int(ids.size()) - 1))];
 		Background(over_game);
 		DrawOptionBox(GameHasOwnSettings() ? Fmt(T("Settings: %s"), emu::GameName().c_str()) : std::string("Settings"), rows, sel, over_game);
-		if (sel == S_UPDATES && g_upd.st.phase == update::Phase::Failed && !g_upd.st.error.empty())
+		if (id == S_UPDATES && g_upd.st.phase == update::Phase::Failed && !g_upd.st.error.empty())
 			DrawText(80, H - 130, FitText(g_upd.st.error, 2, W - 160).c_str(), 2, kAccent);
-		else if (sel == S_UPDATES && !g_upd.helper)
+		else if (id == S_UPDATES && !g_upd.helper)
 			DrawText(80, H - 130, T("Updates are downloaded by the helper: send the payload, then open Settings again."), 2, kDim);
 		if (!over_game)
 			Footer(std::string(icon::Cross) + " " + T("Change") + "     " + icon::DpadLeftRight + " " + T("Adjust") + "     " + icon::Circle + " " + T("Back"));
@@ -492,16 +514,98 @@ void SettingsScreen(bool over_game)
 			sel = Step(sel, -1, rows);
 		if (n.down)
 			sel = Step(sel, 1, rows);
-		if (sel == S_UPDATES)
+		if (id == S_UPDATES)
 		{
 			if (n.ok)
 				UpdateAction();
 		}
-		else if (sel < S_COUNT && (n.left || n.right || n.ok))
-			ChangeSetting(sel, n.left ? -1 : 1);
-		if (n.back || n.options || n.menu || (n.ok && sel == S_COUNT))
+		else if (id == S_SHADERPARAMS)
+		{
+			if (n.ok && rows[size_t(sel)].enabled)
+			{
+				ShaderParamsScreen(over_game);
+				nav = NavReader();
+			}
+		}
+		else if (id < S_COUNT && (n.left || n.right || n.ok))
+			ChangeSetting(id, n.left ? -1 : 1);
+		if (n.back || n.options || n.menu || (n.ok && id == S_COUNT))
 		{
 			Config().Save();
+			return;
+		}
+	}
+}
+
+// Settings -> Shader parameters (GPU): the picked shader's #pragma parameter values, changed live with Left/Right
+// (Cross puts one back to its default; the last row puts them all back). Kept in shader-params.ini on leaving.
+std::string ParamValue(const ps5gpu::ParamInfo& p)
+{
+	char buf[32];
+	const bool whole = p.step >= 1.0f && std::floor(p.value) == p.value;
+	snprintf(buf, sizeof(buf), whole ? "%.0f" : (p.step >= 0.1f ? "%.1f" : (p.step >= 0.01f ? "%.2f" : "%.3f")), double(p.value));
+	return buf;
+}
+
+void ShaderParamsScreen(bool over_game)
+{
+	const int shader = Config().shader;
+	NavReader nav;
+	int sel = 0;
+	for (;;)
+	{
+		const int n = ps5gpu::ShaderParamCount(shader);
+		std::vector<Row> rows;
+		std::vector<ps5gpu::ParamInfo> info(static_cast<size_t>(std::max(0, n)));
+		for (int i = 0; i < n; i++)
+		{
+			ps5gpu::ShaderParam(shader, i, &info[size_t(i)]);
+			const ps5gpu::ParamInfo& p = info[size_t(i)];
+			// a parameter that is only a title in the shader (min == max) is shown as one
+			if (p.min == p.max)
+				rows.push_back({p.desc && *p.desc ? p.desc : p.name, "", true, true});
+			else
+				rows.push_back({p.desc && *p.desc ? p.desc : p.name, ParamValue(p) + (p.value != p.def ? " *" : "")});
+		}
+		rows.push_back({"Put them all back to the shader's own", ""});
+		rows.push_back({"Back", ""});
+		if (rows[size_t(sel)].header)
+			sel = Step(sel, 1, rows);
+		Background(over_game);
+		DrawOptionBox(Fmt(T("Shader parameters: %s"), ps5video::ShaderName(shader)), rows, sel, over_game);
+		if (sel < n)
+			DrawText(80, H - 130, FitText(Fmt(T("%s  (default %s, from %s to %s)"), info[size_t(sel)].name,
+				ParamValue({nullptr, nullptr, 0, 0, 0, info[size_t(sel)].step, info[size_t(sel)].def}).c_str(),
+				ParamValue({nullptr, nullptr, 0, 0, 0, info[size_t(sel)].step, info[size_t(sel)].min}).c_str(),
+				ParamValue({nullptr, nullptr, 0, 0, 0, info[size_t(sel)].step, info[size_t(sel)].max}).c_str()), 2, W - 160).c_str(), 2, kDim);
+		if (!over_game)
+			Footer(std::string(icon::DpadLeftRight) + " " + T("Adjust") + "     " + icon::Cross + " " + T("Default") + "     " + icon::Circle + " " + T("Back"));
+		Present();
+		const Nav nv = nav.Read();
+		if (nv.up)
+			sel = Step(sel, -1, rows);
+		if (nv.down)
+			sel = Step(sel, 1, rows);
+		if (sel < n)
+		{
+			const ps5gpu::ParamInfo& p = info[size_t(sel)];
+			const float step = p.step > 0 ? p.step : (p.max - p.min) / 100.0f;
+			if (nv.left || nv.right)
+			{
+				float v = p.value + (nv.left ? -step : step);
+				v = std::round((v - p.min) / step) * step + p.min; // on the shader's own steps
+				v = std::max(p.min, std::min(p.max, v));
+				ps5gpu::SetShaderParam(shader, p.name, v);
+			}
+			else if (nv.ok)
+				ps5gpu::SetShaderParam(shader, p.name, p.def);
+		}
+		else if (nv.ok && sel == n)
+			ps5gpu::ResetShaderParams(shader);
+		if (nv.back || nv.options || nv.menu || (nv.ok && sel == n + 1))
+		{
+			if (!ps5gpu::SaveShaderParams())
+				emu::Osd("Could not save the shader parameters");
 			return;
 		}
 	}

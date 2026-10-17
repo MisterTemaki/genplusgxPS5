@@ -359,12 +359,12 @@ def main():
             for li, l in enumerate(luts)) or "{nullptr, nullptr, 0, false, 0, false}"))
     out.append("} // namespace")
     out.append("")
-    out.append("const Preset kPresets[] = {")
+    out.append("const Preset kBuiltinPresets[] = {")
     for pi, (name, passes, params, luts, fullscreen) in enumerate(presets):
         out.append("\t{%s, p%d_passes, %d, p%d_params, %d, p%d_luts, %d, %s}," % (
             c_str(name), pi, len(passes), pi, len(params), pi, len(luts), "true" if fullscreen else "false"))
     out.append("};")
-    out.append("const int kPresetCount = %d;" % len(presets))
+    out.append("const int kBuiltinPresetCount = %d;" % len(presets))
     out.append("} // namespace ps5slang")
     with open(out_path, "w") as f:
         f.write("\n".join(out) + "\n")

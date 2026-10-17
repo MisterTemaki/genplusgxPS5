@@ -15,6 +15,7 @@
 #include "ProsperoInput.h"
 #include "ProsperoSce.h"
 #include "ProsperoCrash.h"
+#include "ProsperoGpu.h"
 #include "ProsperoThread.h"
 #include "ProsperoVideo.h"
 
@@ -174,12 +175,14 @@ struct Backdrop
 {
 	std::vector<uint32_t> px; // W*H
 	const CoverTex* from = nullptr;
+	uint64_t id = 0; // a new one each build: the GPU's copy is kept by it
 };
 
 void BuildBackdrop(Pool& pool, Backdrop& bd, const CoverTex* tex)
 {
 	bd.px.resize(size_t(W) * H);
 	bd.from = tex;
+	bd.id = NewCoverId();
 	// 1. a 64x36 thumbnail: the cover's smallest level, scaled to fill (cropped), or a plain colour
 	constexpr int TW = 64, TH = 36;
 	float small[TH][TW][3];
@@ -458,6 +461,84 @@ void DrawGlow(const Placed& p, uint32_t* surf, int x0, int x1, float strength)
 	}
 }
 
+// ---- the same shelf drawn by the GPU (ps5gpu::SetScene): quads in perspective at the output's resolution --------
+void FullQuad(ps5gpu::SceneQuad& q, uint64_t tex, float alpha)
+{
+	q.tex = tex;
+	const float xs[4] = {0, float(W), 0, float(W)}, ys[4] = {0, 0, float(H), float(H)};
+	for (int i = 0; i < 4; i++)
+	{
+		q.x[i] = xs[i];
+		q.y[i] = ys[i];
+		q.w[i] = 1;
+	}
+	q.alpha = alpha;
+}
+
+// a placed cover as quads (glow, cover, reflection), its texture sent to the GPU the first time
+void CoverQuads(const Placed& p, std::vector<ps5gpu::SceneQuad>& out)
+{
+	const CoverTex& t = *p.tex;
+	if (!ps5gpu::SceneTexture(t.id, t.px[0].data(), t.w[0], t.h[0], true))
+		return;
+	float X[2], top[2], bot[2], dd[2];
+	for (int i = 0; i < 2; i++)
+	{
+		const float tt = i == 0 ? -0.5f : 0.5f;
+		dd[i] = p.dist + p.b * tt;
+		X[i] = W * 0.5f + kFocal * (p.cx + p.a * tt) / dd[i];
+		top[i] = kHorizon - kFocal * (p.wh - kCamY) / dd[i];
+		bot[i] = kHorizon + kFocal * kCamY / dd[i];
+	}
+	const float bright = p.bright / 256.0f, alpha = p.alpha / 256.0f;
+	if (std::abs(p.d) < 0.5f)
+	{
+		ps5gpu::SceneQuad gq;
+		gq.mode = ps5gpu::kQuadGlow;
+		const float R = 70.0f;
+		const float l = float(p.sx0), r = float(p.sx1);
+		const float gt = kHorizon - kFocal * (p.wh - kCamY) / p.dist, gb = kHorizon + kFocal * kCamY / p.dist;
+		const float xs[4] = {l - R, r + R, l - R, r + R}, ys[4] = {gt - R, gt - R, gb + R * 0.6f, gb + R * 0.6f};
+		for (int i = 0; i < 4; i++)
+		{
+			gq.x[i] = xs[i];
+			gq.y[i] = ys[i];
+		}
+		gq.rect[0] = l;
+		gq.rect[1] = gt;
+		gq.rect[2] = r;
+		gq.rect[3] = gb;
+		gq.glow_r = R;
+		gq.alpha = 1.0f - std::abs(p.d) * 2.0f;
+		gq.color[0] = (t.average & 0xff) / 255.0f;
+		gq.color[1] = ((t.average >> 8) & 0xff) / 255.0f;
+		gq.color[2] = ((t.average >> 16) & 0xff) / 255.0f;
+		out.push_back(gq);
+	}
+	ps5gpu::SceneQuad c;
+	c.tex = t.id;
+	c.bright = bright;
+	c.alpha = alpha;
+	const float cx[4] = {X[0], X[1], X[0], X[1]}, cy[4] = {top[0], top[1], bot[0], bot[1]};
+	const float cw[4] = {dd[0], dd[1], dd[0], dd[1]};
+	for (int i = 0; i < 4; i++)
+	{
+		c.x[i] = cx[i];
+		c.y[i] = cy[i];
+		c.w[i] = cw[i];
+	}
+	// the reflection: the cover's bottom part, upside down, below it
+	ps5gpu::SceneQuad r = c;
+	r.mode = ps5gpu::kQuadReflection;
+	r.v0 = 1.0f;
+	r.v1 = 1.0f - kReflect;
+	const float ry[4] = {bot[0], bot[1], bot[0] + (bot[0] - top[0]) * kReflect, bot[1] + (bot[1] - top[1]) * kReflect};
+	for (int i = 0; i < 4; i++)
+		r.y[i] = ry[i];
+	out.push_back(r);
+	out.push_back(c);
+}
+
 // ---- input: left/right with key repeat that speeds up -------------------------------------------------
 struct Repeat
 {
@@ -626,6 +707,13 @@ std::string Shelf()
 	ShelfState& st = S();
 	GENPLUS_STAGE(Shelf, "pool");
 	Pool pool;
+	// the GPU draws the backdrop and the covers when it can (text stays on the surface)
+	struct SceneGuard
+	{
+		~SceneGuard() { ps5gpu::ClearScene(); }
+	} scene_guard;
+	const bool gpu_shelf = ps5video::GpuActive() && ps5gpu::SceneAvailable();
+	OrbisLog("[shelf] drawn by the %s", gpu_shelf ? "GPU" : "CPU");
 
 	GENPLUS_STAGE(Shelf, "scan games");
 	Loading("Looking for games...");
@@ -854,6 +942,30 @@ std::string Shelf()
 		uint32_t* surf = ps5video::Surface();
 		const uint32_t fade_w = uint32_t(fade * 256);
 		const double t_render = Now();
+		if (gpu_shelf)
+		{
+			std::vector<ps5gpu::SceneQuad> quads;
+			const bool old_too = fade_w < 256 && !bd_old.px.empty();
+			if (old_too && ps5gpu::SceneTexture(bd_old.id, bd_old.px.data(), W, H, false))
+			{
+				quads.emplace_back();
+				FullQuad(quads.back(), bd_old.id, 1.0f);
+			}
+			if (ps5gpu::SceneTexture(bd_cur.id, bd_cur.px.data(), W, H, false))
+			{
+				quads.emplace_back();
+				FullQuad(quads.back(), bd_cur.id, old_too ? fade : 1.0f);
+			}
+			for (const Placed& p : placed)
+				CoverQuads(p, quads);
+			ps5gpu::SetScene(quads);
+			// the surface: only the text over the scene
+			pool.Run([&](int x0, int x1) {
+				for (int y = 0; y < H; y++)
+					memset(surf + size_t(y) * W + x0, 0, size_t(x1 - x0) * 4);
+			});
+		}
+		else
 		pool.Run([&](int x0, int x1) {
 			// backdrop
 			for (int y = 0; y < H; y++)
@@ -884,7 +996,8 @@ std::string Shelf()
 			sum += Now() - t_render;
 			if (++frames == 60)
 			{
-				OrbisLog("[shelf] 3D pass: %.2f ms a frame (average of 60)", sum / frames * 1000.0);
+				OrbisLog("[shelf] 3D pass (%s): %.2f ms a frame (average of 60)", gpu_shelf ? "GPU quads" : "CPU",
+					sum / frames * 1000.0);
 				sum = 0;
 				frames = 0;
 			}

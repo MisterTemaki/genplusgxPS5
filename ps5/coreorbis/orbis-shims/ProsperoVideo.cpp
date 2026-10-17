@@ -389,6 +389,11 @@ bool GpuActive()
 	return g.gpu;
 }
 
+bool ShaderBuilding()
+{
+	return g.gpu && ps5gpu::Building();
+}
+
 int ShaderCount()
 {
 	return g.gpu ? ps5gpu::ShaderCount() : int(ps5crt::Shader::Count);

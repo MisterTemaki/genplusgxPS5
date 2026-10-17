@@ -78,6 +78,9 @@ void CopyGameKeys(Settings& to, const Settings& from)
 
 void Settings::Load()
 {
+	// off by default (2.0); the host tests turn the default on (orbis_paths.cpp reads the same variable)
+	if (const char* d = getenv("GENPLUS_LOGS_DEFAULT"))
+		debug_logs = atoi(d) != 0;
 	if (LoadFrom(IniPath()))
 		OrbisLog("[settings] loaded %s", IniPath().c_str());
 }

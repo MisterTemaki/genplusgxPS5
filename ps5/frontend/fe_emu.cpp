@@ -638,10 +638,17 @@ void PerfFrame(double core_ms, double present_ms, double shader_ms)
 	g_perf.next = now + 1.0;
 }
 
+extern "C" void fe_chdcache_take(unsigned long long* hits, unsigned long long* misses);
+
 void PerfStop()
 {
 	if (!g_perf.f)
 		return;
+	unsigned long long hits = 0, misses = 0;
+	fe_chdcache_take(&hits, &misses);
+	if (hits + misses)
+		OrbisLog("[perf] CHD: %llu hunk(s) read, %llu decompressed ahead on the worker, %llu on the emulation thread",
+			hits + misses, hits, misses);
 	const double secs = Now() - g_perf.start;
 	OrbisLog("[perf] %.0f s, %llu frames: core %.2f ms a frame on average, %.2f ms at worst; %llu late frames; "
 			 "sound/picture drift %.1f to %.1f ms",
@@ -1281,28 +1288,85 @@ StateCheck CheckState(std::vector<uint8_t>& data, size_t want, std::string& why)
 	return StateCheck::Damaged;
 }
 
+// rename(), with the host tests' fault injection: GENPLUS_HOST_FAIL_RENAME=<item>[,<item>...] makes every rename whose
+// source or target contains an item's text fail (EIO), to check the save paths against a storage that refuses a
+// step ("from=<text>" / "to=<text>" look at one side only).
+int Rename(const std::string& from, const std::string& to)
+{
+#ifndef __PROSPERO__
+	if (const char* fail = getenv("GENPLUS_HOST_FAIL_RENAME"))
+	{
+		std::string list = fail;
+		size_t pos = 0;
+		while (pos <= list.size())
+		{
+			size_t end = list.find(',', pos);
+			if (end == std::string::npos)
+				end = list.size();
+			std::string item = list.substr(pos, end - pos);
+			// "from=<text>" matches the source only, "to=<text>" the target only, "<text>" either
+			bool src = true, dst = true;
+			if (item.compare(0, 5, "from=") == 0)
+			{
+				item = item.substr(5);
+				dst = false;
+			}
+			else if (item.compare(0, 3, "to=") == 0)
+			{
+				item = item.substr(3);
+				src = false;
+			}
+			if (!item.empty() && ((src && from.find(item) != std::string::npos) || (dst && to.find(item) != std::string::npos)))
+			{
+				errno = EIO;
+				return -1;
+			}
+			pos = end + 1;
+		}
+	}
+#endif
+	return rename(from.c_str(), to.c_str());
+}
+
 // A state written over another one keeps the other as <state>.prev: the new state is written in full first
-// (<state>.part, flushed and read back by WriteFileAtomic), then the old one becomes .prev, then the new one takes its name. If the
-// old one can't be kept, nothing is replaced: the slot keeps the state it had, and the save is reported failed.
+// (<state>.part, flushed and read back by WriteFileAtomic), then the old one becomes .prev, then the new one takes
+// its name. If the old one can't be kept, nothing is replaced. If the new one can't take its name, the old one is
+// put back; if even that fails, it is still whole in <state>.prev (the pause menu's "Load the previous state"), and
+// the log and the screen say so -- no step loses the state the slot had.
 bool WriteState(const std::string& path, std::vector<uint8_t> data)
 {
 	AddTrailer(data);
 	const std::string part = path + ".part";
+	const std::string prev = path + ".prev";
 	if (!WriteFileAtomic(part, data.data(), data.size())) // flushed and read back
 		return false;
-	if (FileExists(path) && rename(path.c_str(), (path + ".prev").c_str()) != 0)
+	const bool had_old = FileExists(path);
+	if (had_old && Rename(path, prev) != 0)
 	{
 		OrbisLog("[emu] could not keep the previous state of %s (errno %d): the slot is left as it was", path.c_str(),
 			errno);
 		remove(part.c_str());
 		return false;
 	}
-	if (rename(part.c_str(), path.c_str()) != 0)
+	if (Rename(part, path) != 0)
 	{
-		// the old state is .prev now: put it back, so the slot is as it was
-		OrbisLog("[emu] could not put the new state in place (errno %d): the slot is left as it was", errno);
-		rename((path + ".prev").c_str(), path.c_str());
+		const int err = errno;
 		remove(part.c_str());
+		if (!had_old)
+		{
+			OrbisLog("[emu] could not put the new state in place (errno %d): the slot stays empty", err);
+			return false;
+		}
+		if (Rename(prev, path) == 0)
+		{
+			OrbisLog("[emu] could not put the new state in place (errno %d): the old one is back, the slot is left as it was",
+				err);
+			return false;
+		}
+		OrbisLog("[emu] could not put the new state in place (errno %d), nor the old one back (errno %d): the slot's "
+				 "state is whole in %s",
+			err, errno, prev.c_str());
+		emu::Osd("The slot's state is kept as its previous state: load it from the pause menu");
 		return false;
 	}
 	return true;
@@ -1544,6 +1608,14 @@ FrameResult RunFrame()
 		g.next_sram_check = now + 3.0;
 		SaveSram(false);
 		SaveBram();
+	}
+	// a GPU shader being compiled (the first time only: then it comes from the pipeline cache): said on screen
+	if (ps5video::ShaderBuilding())
+	{
+		g.osd = Fmt(T("Preparing the shader %s..."), ps5video::ShaderName(cfg.shader));
+		g.osd_until = now + 0.5;
+		g.next_shader_check = now + 2.0; // the plain picture's time is not the shader's
+		ps5video::TakeShaderMs();
 	}
 	if (now >= g.next_shader_check)
 	{

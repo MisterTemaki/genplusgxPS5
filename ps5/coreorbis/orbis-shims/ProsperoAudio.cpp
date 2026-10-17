@@ -14,6 +14,7 @@
 #include "ProsperoSce.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <unistd.h>
 #include <thread>
@@ -22,6 +23,11 @@ namespace ps5audio
 {
 namespace
 {
+int64_t NowMs()
+{
+	return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 struct State
 {
 	int handle = -1;
@@ -30,6 +36,7 @@ struct State
 	alignas(64) std::atomic<uint32_t> head{0}; // written by the producer (frames, wraps)
 	alignas(64) std::atomic<uint32_t> tail{0}; // written by the audio thread
 	std::atomic<uint64_t> underruns{0};
+	std::atomic<int64_t> last_push_ms{-1000000}; // when the producer last pushed: underruns count only while it feeds
 	int16_t ring[kCapacity * 2];
 };
 State* g = nullptr;
@@ -56,7 +63,10 @@ void Run()
 		else
 		{
 			memset(grain, 0, sizeof(grain));
-			g->underruns.fetch_add(1, std::memory_order_relaxed);
+			// an underrun is the ring running dry while a game feeds it; the shelf and the menus feed nothing, and
+			// the silence they play is not one
+			if (NowMs() - g->last_push_ms.load(std::memory_order_relaxed) < 100)
+				g->underruns.fetch_add(1, std::memory_order_relaxed);
 		}
 		if (sceAudioOutOutput(g->handle, grain) < 0)
 			usleep(kGrain * 1000000 / kRate); // an error returns at once: don't drain the ring at CPU speed
@@ -116,6 +126,7 @@ int Push(const int16_t* stereo, int frames)
 {
 	if (!g || frames <= 0)
 		return 0;
+	g->last_push_ms.store(NowMs(), std::memory_order_relaxed);
 	const int n = frames < Free() ? frames : Free();
 	const uint32_t head = g->head.load(std::memory_order_relaxed);
 	for (int i = 0; i < n; i++)

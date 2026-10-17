@@ -33,9 +33,17 @@ namespace fe
 {
 // A cover ready to draw: three levels, each stored column by column (a column is contiguous), because
 // the shelf draws covers as vertical spans.
+// a number no other cover texture has had (the GPU keeps its copies of the covers by it)
+inline uint64_t NewCoverId()
+{
+	static std::atomic<uint64_t> next{1};
+	return next++;
+}
+
 struct CoverTex
 {
 	static constexpr int kLevels = 3;
+	uint64_t id = NewCoverId();
 	int w[kLevels] = {}, h[kLevels] = {};
 	std::vector<uint32_t> px[kLevels]; // px[l][x * h[l] + y], A8B8G8R8
 	uint32_t average = 0; // for the glow

@@ -41,9 +41,21 @@ void SetGame(const uint32_t*, int, int, Rect, int, bool, bool) {}
 void HideGame() {}
 bool Present(const uint32_t*, Rect, bool) { return false; }
 double TakeShaderMs() { return 0; }
+bool Building() { return false; }
+int ShaderParamCount(int) { return 0; }
+bool ShaderParam(int, int, ParamInfo*) { return false; }
+void SetShaderParam(int, const char*, float) {}
+void ResetShaderParams(int) {}
+bool SaveShaderParams() { return true; }
+bool SceneAvailable() { return false; }
+bool SceneTexture(uint64_t, const uint32_t*, int, int, bool) { return false; }
+bool HasSceneTexture(uint64_t) { return false; }
+void SetScene(const std::vector<SceneQuad>&) {}
+void ClearScene() {}
 } // namespace ps5gpu
 #else
 #include "ProsperoSlang.h"
+#include "ProsperoThread.h"
 
 #if defined(__PROSPERO__)
 // RADV's compiler names mkstemp (aco_print_asm.cpp, only for its debug dumps). No system module gives a title one;
@@ -65,8 +77,11 @@ extern "C" int mkstemp(char* path)
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <atomic>
 #include <map>
+#include <mutex>
 #include <new>
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -118,7 +133,8 @@ namespace
 	X(CmdCopyImageToBuffer) X(CmdCopyImage) X(CmdBeginRenderPass) X(CmdEndRenderPass) X(CmdBindPipeline)               \
 	X(CmdBindDescriptorSets) X(CmdBindVertexBuffers) X(CmdPushConstants) X(CmdSetViewport) X(CmdSetScissor)           \
 	X(CmdDraw) X(CmdClearColorImage) X(CreateQueryPool) X(DestroyQueryPool) X(CmdResetQueryPool)                       \
-	X(CmdWriteTimestamp) X(GetQueryPoolResults)
+	X(CmdWriteTimestamp) X(GetQueryPoolResults) X(FreeDescriptorSets) X(FreeCommandBuffers) X(CreatePipelineCache)          \
+	X(DestroyPipelineCache) X(GetPipelineCacheData) X(CmdBlitImage)
 #define GPU_SWAPCHAIN_FNS(X)                                                                                         \
 	X(CreateSwapchainKHR) X(DestroySwapchainKHR) X(GetSwapchainImagesKHR) X(AcquireNextImageKHR) X(QueuePresentKHR)
 
@@ -222,6 +238,40 @@ struct State
 	VkDescriptorPool dpool = VK_NULL_HANDLE;
 	Chain ui_chain;
 	Chain game_chain;
+	// shaders built off the frame loop: the old one stays on screen meanwhile
+	VkPipelineCache pcache = VK_NULL_HANDLE; // saved to <root>/cache/gpu-pipelines.bin: a shader built once loads fast
+	std::mutex queue_mx; // the queue: the frame's submit and present, the builder's uploads
+	std::mutex upload_mx; // the upload command pool
+	std::mutex dpool_mx; // the descriptor pool
+	VkCommandPool upload_pool = VK_NULL_HANDLE;
+	size_t pcache_saved = 0; // the size of the cache file last written (or read)
+	ps5::BigThread builder; // a big stack: RADV's shader compiler (ACO) recurses deep, and the SDK's default stack is small
+	std::atomic<bool> building{false};
+	std::atomic<bool> built_ready{false};
+	int building_preset = -1;
+	Chain* built = nullptr; // the builder's result (nullptr: it failed)
+	// the shader parameters set in the menu: preset name -> parameter -> value
+	std::mutex param_mx; // param_overrides: the menu writes, the builder reads
+	std::map<std::string, std::map<std::string, float>> param_overrides;
+	// the shelf's scene (SetScene): its quad pipeline, its textures (mip-mapped), the quads
+	VkDescriptorSetLayout scene_set_layout = VK_NULL_HANDLE;
+	VkPipelineLayout scene_layout = VK_NULL_HANDLE;
+	VkPipeline scene_pipe = VK_NULL_HANDLE;
+	VkSampler scene_sampler = VK_NULL_HANDLE;
+	VkDescriptorSet scene_dummy_set = VK_NULL_HANDLE;
+	struct SceneTex
+	{
+		VkImage img = VK_NULL_HANDLE;
+		VkDeviceMemory mem = VK_NULL_HANDLE;
+		VkImageView view = VK_NULL_HANDLE;
+		VkDescriptorSet set = VK_NULL_HANDLE;
+		uint64_t used = 0; // the present it was last drawn in
+		size_t bytes = 0;
+	};
+	std::map<uint64_t, SceneTex> scene_tex;
+	std::vector<SceneQuad> scene;
+	bool scene_on = false;
+	uint64_t presents = 0;
 	// the next frame's game picture
 	bool game = false;
 	int presents_without_game = 0; // the shelf draws no game: after a moment the GPU stops drawing the last one
@@ -511,7 +561,7 @@ bool BuildPass(PassRt& p, VkRenderPass rp, bool blend)
 	pi.pDynamicState = &ds;
 	pi.layout = p.layout;
 	pi.renderPass = rp;
-	const bool ok = Check(vkCreateGraphicsPipelines(g.device, VK_NULL_HANDLE, 1, &pi, nullptr, &p.pipeline),
+	const bool ok = Check(vkCreateGraphicsPipelines(g.device, g.pcache, 1, &pi, nullptr, &p.pipeline),
 		"vkCreateGraphicsPipelines");
 	vkDestroyShaderModule(g.device, vs, nullptr);
 	vkDestroyShaderModule(g.device, fs, nullptr);
@@ -525,6 +575,7 @@ bool BuildPass(PassRt& p, VkRenderPass rp, bool blend)
 		ai.descriptorPool = g.dpool;
 		ai.descriptorSetCount = 1;
 		ai.pSetLayouts = &p.set_layout;
+		std::lock_guard<std::mutex> lock(g.dpool_mx);
 		if (!Check(vkAllocateDescriptorSets(g.device, &ai, &p.set[k]), "vkAllocateDescriptorSets"))
 			return false;
 	}
@@ -543,6 +594,12 @@ void FreeChain(Chain& c)
 			vkDestroyDescriptorSetLayout(g.device, p.set_layout, nullptr);
 		if (p.render_pass)
 			vkDestroyRenderPass(g.device, p.render_pass, nullptr);
+		{
+			std::lock_guard<std::mutex> lock(g.dpool_mx);
+			for (VkDescriptorSet& set : p.set)
+				if (set)
+					vkFreeDescriptorSets(g.device, g.dpool, 1, &set);
+		}
 		FreeImage(p.out[0]);
 		FreeImage(p.out[1]);
 		FreeBuffer(p.ubo);
@@ -556,12 +613,36 @@ void FreeChain(Chain& c)
 
 bool UploadImage(Image& im, const uint8_t* rgba, int w, int h);
 
+// the values set in the menu (Shader parameters) over the preset's own; the builder thread calls this too
+void ApplyOverrides(Chain& c)
+{
+	if (c.preset < 0 || c.preset >= ps5slang::PresetCount())
+		return;
+	const ps5slang::Preset& pr = ps5slang::PresetAt(c.preset);
+	std::lock_guard<std::mutex> lk(g.param_mx);
+	const auto ov = g.param_overrides.find(pr.name);
+	for (int i = 0; i < pr.param_count && size_t(i) < c.params.size(); i++)
+	{
+		float v = pr.params[i].value;
+		if (ov != g.param_overrides.end())
+		{
+			const auto it = ov->second.find(pr.params[i].name);
+			if (it != ov->second.end())
+				v = it->second;
+		}
+		c.params[size_t(i)] = v;
+	}
+}
+
 bool BuildChain(Chain& c, int preset, bool ui)
 {
 	FreeChain(c);
-	if (preset < 0 || preset >= ps5slang::kPresetCount)
+	if (preset < 0 || preset >= ps5slang::PresetCount())
 		return false;
-	const ps5slang::Preset& pr = ps5slang::kPresets[preset];
+	// a preset of the user's own: compiled the first time (here, on the build thread)
+	if (ps5slang::IsExternal(preset) && !ps5slang::EnsureCompiled(preset, nullptr))
+		return false;
+	const ps5slang::Preset& pr = ps5slang::PresetAt(preset);
 	c.preset = preset;
 	c.passes.resize(size_t(pr.pass_count));
 	for (int i = 0; i < pr.param_count; i++)
@@ -617,6 +698,7 @@ bool BuildChain(Chain& c, int preset, bool ui)
 		stbi_image_free(px);
 		c.luts.push_back(im);
 	}
+	ApplyOverrides(c);
 	c.built = true;
 	return true;
 }
@@ -628,13 +710,17 @@ bool UploadImage(Image& im, const uint8_t* rgba, int w, int h)
 	if (!MakeBuffer(st, VkDeviceSize(w) * h * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT))
 		return false;
 	memcpy(st.map, rgba, size_t(w) * h * 4);
+	std::lock_guard<std::mutex> upload_lock(g.upload_mx);
 	VkCommandBufferAllocateInfo ai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-	ai.commandPool = g.pool;
+	ai.commandPool = g.upload_pool;
 	ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 	ai.commandBufferCount = 1;
 	VkCommandBuffer c;
 	if (!Check(vkAllocateCommandBuffers(g.device, &ai, &c), "vkAllocateCommandBuffers"))
+	{
+		FreeBuffer(st);
 		return false;
+	}
 	VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
 	bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 	vkBeginCommandBuffer(c, &bi);
@@ -648,8 +734,18 @@ bool UploadImage(Image& im, const uint8_t* rgba, int w, int h)
 	VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
 	si.commandBufferCount = 1;
 	si.pCommandBuffers = &c;
-	const bool ok = Check(vkQueueSubmit(g.queue, 1, &si, VK_NULL_HANDLE), "vkQueueSubmit (upload)");
-	vkQueueWaitIdle(g.queue);
+	VkFenceCreateInfo fi = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+	VkFence done = VK_NULL_HANDLE;
+	vkCreateFence(g.device, &fi, nullptr, &done);
+	bool ok;
+	{
+		std::lock_guard<std::mutex> q(g.queue_mx);
+		ok = Check(vkQueueSubmit(g.queue, 1, &si, done), "vkQueueSubmit (upload)");
+	}
+	if (ok)
+		vkWaitForFences(g.device, 1, &done, VK_TRUE, UINT64_MAX);
+	vkDestroyFence(g.device, done, nullptr);
+	vkFreeCommandBuffers(g.device, g.upload_pool, 1, &c);
 	FreeBuffer(st);
 	return ok;
 }
@@ -718,7 +814,7 @@ bool Resolve(Chain& c, int i, const std::string& n, Tex& t, int& w, int& h)
 				found = true;
 			}
 		}
-		const ps5slang::Preset& pr = ps5slang::kPresets[c.preset];
+		const ps5slang::Preset& pr = ps5slang::PresetAt(c.preset);
 		for (int k = 0; k < pr.lut_count && !found; k++)
 			if (n == pr.luts[k].name)
 			{
@@ -736,7 +832,7 @@ bool Resolve(Chain& c, int i, const std::string& n, Tex& t, int& w, int& h)
 void FillUniforms(Chain& c, int i, uint8_t* block, const ps5slang::Member* m, int count, int out_w, int out_h,
 	int vp_w, int vp_h)
 {
-	const ps5slang::Preset& pr = ps5slang::kPresets[c.preset];
+	const ps5slang::Preset& pr = ps5slang::PresetAt(c.preset);
 	const ps5slang::Pass& d = *c.passes[size_t(i)].def;
 	for (int k = 0; k < count; k++)
 	{
@@ -1039,7 +1135,591 @@ bool HasExtension(const std::vector<VkExtensionProperties>& v, const char* name)
 			return true;
 	return false;
 }
+std::string PipelineCachePath()
+{
+	return OrbisDir("cache") + "/gpu-pipelines.bin";
+}
+
+// the pipeline cache to its file (written whole to a temporary file first)
+void SavePipelineCache()
+{
+	if (!g.pcache)
+		return;
+	size_t n = 0;
+	if (vkGetPipelineCacheData(g.device, g.pcache, &n, nullptr) != VK_SUCCESS || n == 0 || n == g.pcache_saved)
+		return; // nothing new since the last save
+	OrbisMkdirs(OrbisDir("cache"));
+	std::vector<uint8_t> data(n);
+	if (vkGetPipelineCacheData(g.device, g.pcache, &n, data.data()) != VK_SUCCESS)
+		return;
+	const std::string path = PipelineCachePath(), tmp = path + ".part";
+	FILE* f = fopen(tmp.c_str(), "wb");
+	if (!f)
+		return;
+	const bool ok = fwrite(data.data(), 1, n, f) == n;
+	if (fclose(f) == 0 && ok && rename(tmp.c_str(), path.c_str()) == 0)
+	{
+		g.pcache_saved = n;
+		OrbisLog("[gpu] pipeline cache saved: %zu KiB", n >> 10);
+	}
+	else
+		remove(tmp.c_str());
+}
+
+// Builds `preset` on a thread of its own; Present takes it when it is done.
+void StartBuild(int preset)
+{
+	if (g.builder.joinable())
+		g.builder.join();
+	g.building_preset = preset;
+	g.built_ready = false;
+	g.building = true;
+	g.builder = ps5::BigThread([preset] {
+		Chain* c = new Chain;
+		const auto t0 = std::chrono::steady_clock::now();
+		if (!BuildChain(*c, preset, false))
+		{
+			FreeChain(*c);
+			delete c;
+			c = nullptr;
+		}
+		const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+		OrbisLog("[gpu] shader %s built in the background in %.2f s", ps5slang::PresetAt(preset).name, secs);
+		g.built = c;
+		g.built_ready = true;
+		g.building = false;
+	}, size_t(8) << 20);
+}
+
+// ---- the shelf's scene: textured quads in perspective, under the surface -------------------------------------
+const char* const kSceneVs = R"(#version 450
+layout(push_constant) uniform Q
+{
+	vec4 x, y, w, uv, p, rect, col, size; // p: bright, alpha, mode; size: surface w, h, output w, h
+} q;
+layout(location = 0) out vec2 vUv;
+layout(location = 1) noperspective out float vK;
+void main()
+{
+	int i = gl_VertexIndex;
+	float w = q.w[i];
+	vec2 ndc = vec2(q.x[i] / q.size.x, q.y[i] / q.size.y) * 2.0 - 1.0;
+	gl_Position = vec4(ndc * w, 0.0, w);
+	vUv = vec2((i & 1) != 0 ? q.uv.z : q.uv.x, (i & 2) != 0 ? q.uv.w : q.uv.y);
+	vK = (i & 2) != 0 ? 1.0 : 0.0;
+}
+)";
+const char* const kSceneFs = R"(#version 450
+layout(push_constant) uniform Q
+{
+	vec4 x, y, w, uv, p, rect, col, size;
+} q;
+layout(set = 0, binding = 0) uniform sampler2D T;
+layout(location = 0) in vec2 vUv;
+layout(location = 1) noperspective in float vK;
+layout(location = 0) out vec4 FragColor;
+void main()
+{
+	int mode = int(q.p.z + 0.5);
+	if (mode == 2)
+	{
+		// the glow: by the distance to the rectangle, in surface pixels; added (alpha 0)
+		vec2 f = gl_FragCoord.xy * q.size.xy / q.size.zw;
+		float dx = max(max(q.rect.x - f.x, 0.0), f.x - q.rect.z);
+		float dy = max(max(q.rect.y - f.y, 0.0), f.y - q.rect.w);
+		float d = length(vec2(dx, dy));
+		if (d >= q.col.w || d <= 0.0)
+			discard;
+		float k = 1.0 - d / q.col.w;
+		float a = k * k * q.p.y * 0.85;
+		FragColor = vec4(q.col.rgb * a, 0.0);
+		return;
+	}
+	vec4 c = texture(T, vUv);
+	float a = q.p.y;
+	// the quad's own edges, smoothed over a pixel (no multisampling)
+	vec2 lo = min(vUv - min(q.uv.xy, q.uv.zw), max(q.uv.xy, q.uv.zw) - vUv);
+	vec2 fw = max(fwidth(vUv), vec2(1e-6));
+	a *= clamp(min(lo.x / fw.x, lo.y / fw.y) + 0.5, 0.0, 1.0);
+	if (mode == 1)
+		a *= 0.30 * (1.0 - vK) * (1.0 - vK);
+	FragColor = vec4(c.rgb * q.p.x * a, a);
+}
+)";
+
+bool AllocSceneSet(VkDescriptorSet& set, VkImageView view)
+{
+	VkDescriptorSetAllocateInfo ai = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+	ai.descriptorPool = g.dpool;
+	ai.descriptorSetCount = 1;
+	ai.pSetLayouts = &g.scene_set_layout;
+	{
+		std::lock_guard<std::mutex> lock(g.dpool_mx);
+		if (!Check(vkAllocateDescriptorSets(g.device, &ai, &set), "vkAllocateDescriptorSets (scene)"))
+			return false;
+	}
+	VkDescriptorImageInfo info = {g.scene_sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+	VkWriteDescriptorSet w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+	w.dstSet = set;
+	w.dstBinding = 0;
+	w.descriptorCount = 1;
+	w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	w.pImageInfo = &info;
+	vkUpdateDescriptorSets(g.device, 1, &w, 0, nullptr);
+	return true;
+}
+
+// The quad pipeline (its shaders compiled here by glslang). False: the shelf stays on the CPU.
+bool InitScene()
+{
+	std::vector<uint32_t> vs, fs;
+	std::string err;
+	bool compiled = false;
+	{
+		// on a thread with a big stack (glslang's parser recurses; the caller's stack may be the SDK's small one)
+		ps5::BigThread t([&] {
+			compiled = ps5slang::CompileGlsl(kSceneVs, true, vs, err) && ps5slang::CompileGlsl(kSceneFs, false, fs, err);
+		}, size_t(4) << 20);
+		t.join();
+	}
+	if (!compiled)
+	{
+		OrbisLog("[gpu] the shelf's quad shader did not compile (%s): the CPU draws the shelf", err.c_str());
+		return false;
+	}
+	VkDescriptorSetLayoutBinding b = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+	VkDescriptorSetLayoutCreateInfo li = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+	li.bindingCount = 1;
+	li.pBindings = &b;
+	if (!Check(vkCreateDescriptorSetLayout(g.device, &li, nullptr, &g.scene_set_layout), "vkCreateDescriptorSetLayout"))
+		return false;
+	VkPushConstantRange pc = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128};
+	VkPipelineLayoutCreateInfo pli = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+	pli.setLayoutCount = 1;
+	pli.pSetLayouts = &g.scene_set_layout;
+	pli.pushConstantRangeCount = 1;
+	pli.pPushConstantRanges = &pc;
+	if (!Check(vkCreatePipelineLayout(g.device, &pli, nullptr, &g.scene_layout), "vkCreatePipelineLayout"))
+		return false;
+	VkShaderModule vm = Module(vs.data(), unsigned(vs.size() * 4)), fm = Module(fs.data(), unsigned(fs.size() * 4));
+	if (!vm || !fm)
+		return false;
+	VkPipelineShaderStageCreateInfo st[2] = {{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO},
+		{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}};
+	st[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+	st[0].module = vm;
+	st[0].pName = "main";
+	st[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+	st[1].module = fm;
+	st[1].pName = "main";
+	VkPipelineVertexInputStateCreateInfo vi = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+	VkPipelineInputAssemblyStateCreateInfo ia = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+	ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+	VkPipelineViewportStateCreateInfo vp = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+	vp.viewportCount = 1;
+	vp.scissorCount = 1;
+	VkPipelineRasterizationStateCreateInfo rs = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+	rs.polygonMode = VK_POLYGON_MODE_FILL;
+	rs.cullMode = VK_CULL_MODE_NONE;
+	rs.lineWidth = 1.0f;
+	VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+	ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+	VkPipelineColorBlendAttachmentState ba = {};
+	ba.colorWriteMask = 0xf;
+	ba.blendEnable = VK_TRUE;
+	ba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+	ba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+	ba.colorBlendOp = VK_BLEND_OP_ADD;
+	ba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+	ba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+	ba.alphaBlendOp = VK_BLEND_OP_ADD;
+	VkPipelineColorBlendStateCreateInfo cb = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+	cb.attachmentCount = 1;
+	cb.pAttachments = &ba;
+	VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+	VkPipelineDynamicStateCreateInfo ds = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+	ds.dynamicStateCount = 2;
+	ds.pDynamicStates = dyn;
+	VkGraphicsPipelineCreateInfo pi = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+	pi.stageCount = 2;
+	pi.pStages = st;
+	pi.pVertexInputState = &vi;
+	pi.pInputAssemblyState = &ia;
+	pi.pViewportState = &vp;
+	pi.pRasterizationState = &rs;
+	pi.pMultisampleState = &ms;
+	pi.pColorBlendState = &cb;
+	pi.pDynamicState = &ds;
+	pi.layout = g.scene_layout;
+	pi.renderPass = g.final_pass;
+	const bool ok = Check(vkCreateGraphicsPipelines(g.device, g.pcache, 1, &pi, nullptr, &g.scene_pipe),
+		"vkCreateGraphicsPipelines (scene)");
+	vkDestroyShaderModule(g.device, vm, nullptr);
+	vkDestroyShaderModule(g.device, fm, nullptr);
+	if (!ok)
+		return false;
+	VkSamplerCreateInfo si = {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+	si.magFilter = si.minFilter = VK_FILTER_LINEAR;
+	si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+	si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	si.maxLod = 16.0f;
+	if (!Check(vkCreateSampler(g.device, &si, nullptr, &g.scene_sampler), "vkCreateSampler (scene)"))
+		return false;
+	return AllocSceneSet(g.scene_dummy_set, g.dummy.view);
+}
+
+void FreeSceneTex(State::SceneTex& t)
+{
+	if (t.set)
+	{
+		std::lock_guard<std::mutex> lock(g.dpool_mx);
+		vkFreeDescriptorSets(g.device, g.dpool, 1, &t.set);
+	}
+	if (t.view)
+		vkDestroyImageView(g.device, t.view, nullptr);
+	if (t.img)
+		vkDestroyImage(g.device, t.img, nullptr);
+	if (t.mem)
+		vkFreeMemory(g.device, t.mem, nullptr);
+	t = State::SceneTex();
+}
+
+void FreeScene()
+{
+	for (auto& kv : g.scene_tex)
+		FreeSceneTex(kv.second);
+	g.scene_tex.clear();
+	g.scene.clear();
+	g.scene_on = false;
+	if (g.scene_dummy_set)
+	{
+		std::lock_guard<std::mutex> lock(g.dpool_mx);
+		vkFreeDescriptorSets(g.device, g.dpool, 1, &g.scene_dummy_set);
+	}
+	if (g.scene_sampler)
+		vkDestroySampler(g.device, g.scene_sampler, nullptr);
+	if (g.scene_pipe)
+		vkDestroyPipeline(g.device, g.scene_pipe, nullptr);
+	if (g.scene_layout)
+		vkDestroyPipelineLayout(g.device, g.scene_layout, nullptr);
+	if (g.scene_set_layout)
+		vkDestroyDescriptorSetLayout(g.device, g.scene_set_layout, nullptr);
+	g.scene_dummy_set = VK_NULL_HANDLE;
+	g.scene_sampler = VK_NULL_HANDLE;
+	g.scene_pipe = VK_NULL_HANDLE;
+	g.scene_layout = VK_NULL_HANDLE;
+	g.scene_set_layout = VK_NULL_HANDLE;
+}
+
+// a texture with its whole mip chain: level 0 copied in, the others blitted down from it
+bool MakeSceneTex(State::SceneTex& t, const uint32_t* px, int w, int h, bool column_major)
+{
+	int levels = 1;
+	while ((std::max(w, h) >> levels) > 0)
+		levels++;
+	VkImageCreateInfo ii = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+	ii.imageType = VK_IMAGE_TYPE_2D;
+	ii.format = VK_FORMAT_R8G8B8A8_UNORM; // the surface's (and the covers') byte order
+	ii.extent = {uint32_t(w), uint32_t(h), 1};
+	ii.mipLevels = uint32_t(levels);
+	ii.arrayLayers = 1;
+	ii.samples = VK_SAMPLE_COUNT_1_BIT;
+	ii.tiling = VK_IMAGE_TILING_OPTIMAL;
+	ii.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+	if (!Check(vkCreateImage(g.device, &ii, nullptr, &t.img), "vkCreateImage (scene)"))
+		return false;
+	VkMemoryRequirements req;
+	vkGetImageMemoryRequirements(g.device, t.img, &req);
+	VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+	ai.allocationSize = req.size;
+	ai.memoryTypeIndex = MemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	if (ai.memoryTypeIndex == UINT32_MAX)
+		ai.memoryTypeIndex = MemoryType(req.memoryTypeBits, 0);
+	if (!Check(vkAllocateMemory(g.device, &ai, nullptr, &t.mem), "vkAllocateMemory (scene)"))
+		return false;
+	vkBindImageMemory(g.device, t.img, t.mem, 0);
+	t.bytes = size_t(req.size);
+	VkImageViewCreateInfo vi = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+	vi.image = t.img;
+	vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	vi.format = ii.format;
+	vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, uint32_t(levels), 0, 1};
+	if (!Check(vkCreateImageView(g.device, &vi, nullptr, &t.view), "vkCreateImageView (scene)"))
+		return false;
+
+	Buffer st;
+	if (!MakeBuffer(st, VkDeviceSize(w) * h * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT))
+		return false;
+	uint32_t* dst = static_cast<uint32_t*>(st.map);
+	if (column_major)
+	{
+		for (int x = 0; x < w; x++)
+			for (int y = 0; y < h; y++)
+				dst[size_t(y) * w + x] = px[size_t(x) * h + y] | 0xff000000u;
+	}
+	else
+		for (size_t i = 0; i < size_t(w) * h; i++)
+			dst[i] = px[i] | 0xff000000u;
+
+	std::lock_guard<std::mutex> upload_lock(g.upload_mx);
+	VkCommandBufferAllocateInfo cai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+	cai.commandPool = g.upload_pool;
+	cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	cai.commandBufferCount = 1;
+	VkCommandBuffer c;
+	if (!Check(vkAllocateCommandBuffers(g.device, &cai, &c), "vkAllocateCommandBuffers"))
+	{
+		FreeBuffer(st);
+		return false;
+	}
+	VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+	bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+	vkBeginCommandBuffer(c, &bi);
+	auto barrier = [&](int level, VkImageLayout from, VkImageLayout to) {
+		VkImageMemoryBarrier b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+		b.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+		b.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+		b.oldLayout = from;
+		b.newLayout = to;
+		b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		b.image = t.img;
+		b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, uint32_t(level), 1, 0, 1};
+		vkCmdPipelineBarrier(c, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr,
+			0, nullptr, 1, &b);
+	};
+	for (int l = 0; l < levels; l++)
+		barrier(l, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+	VkBufferImageCopy r = {};
+	r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+	r.imageExtent = {uint32_t(w), uint32_t(h), 1};
+	vkCmdCopyBufferToImage(c, st.buf, t.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
+	for (int l = 1; l < levels; l++)
+	{
+		barrier(l - 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		VkImageBlit bl = {};
+		bl.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, uint32_t(l - 1), 0, 1};
+		bl.srcOffsets[1] = {std::max(1, w >> (l - 1)), std::max(1, h >> (l - 1)), 1};
+		bl.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, uint32_t(l), 0, 1};
+		bl.dstOffsets[1] = {std::max(1, w >> l), std::max(1, h >> l), 1};
+		vkCmdBlitImage(c, t.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl,
+			VK_FILTER_LINEAR);
+		barrier(l - 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	}
+	barrier(levels - 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	vkEndCommandBuffer(c);
+	VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+	si.commandBufferCount = 1;
+	si.pCommandBuffers = &c;
+	VkFenceCreateInfo fi = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+	VkFence done = VK_NULL_HANDLE;
+	vkCreateFence(g.device, &fi, nullptr, &done);
+	bool ok;
+	{
+		std::lock_guard<std::mutex> q(g.queue_mx);
+		ok = Check(vkQueueSubmit(g.queue, 1, &si, done), "vkQueueSubmit (scene texture)");
+	}
+	if (ok)
+		vkWaitForFences(g.device, 1, &done, VK_TRUE, UINT64_MAX);
+	vkDestroyFence(g.device, done, nullptr);
+	vkFreeCommandBuffers(g.device, g.upload_pool, 1, &c);
+	FreeBuffer(st);
+	return ok && AllocSceneSet(t.set, t.view);
+}
+
+void RecordScene(VkCommandBuffer cmd)
+{
+	const VkViewport view = {0, 0, float(g.out_w), float(g.out_h), 0, 1};
+	const VkRect2D sc = {{0, 0}, {uint32_t(g.out_w), uint32_t(g.out_h)}};
+	vkCmdSetViewport(cmd, 0, 1, &view);
+	vkCmdSetScissor(cmd, 0, 1, &sc);
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g.scene_pipe);
+	for (const SceneQuad& q : g.scene)
+	{
+		VkDescriptorSet set = g.scene_dummy_set;
+		if (q.mode != kQuadGlow)
+		{
+			auto it = g.scene_tex.find(q.tex);
+			if (it == g.scene_tex.end())
+				continue;
+			it->second.used = g.presents;
+			set = it->second.set;
+		}
+		float pc[32];
+		for (int i = 0; i < 4; i++)
+		{
+			pc[i] = q.x[i];
+			pc[4 + i] = q.y[i];
+			pc[8 + i] = q.w[i] > 1e-3f ? q.w[i] : 1e-3f;
+		}
+		const float rest[20] = {q.u0, q.v0, q.u1, q.v1, q.bright, q.alpha, float(q.mode), 0, q.rect[0], q.rect[1],
+			q.rect[2], q.rect[3], q.color[0], q.color[1], q.color[2], q.glow_r, float(g.ui_w), float(g.ui_h),
+			float(g.out_w), float(g.out_h)};
+		memcpy(pc + 12, rest, sizeof(rest));
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g.scene_layout, 0, 1, &set, 0, nullptr);
+		vkCmdPushConstants(cmd, g.scene_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128, pc);
+		vkCmdDraw(cmd, 4, 1, 0, 0);
+	}
+}
 } // namespace
+
+bool Building()
+{
+	return g.building.load();
+}
+
+int ShaderParamCount(int shader)
+{
+	const int p = shader <= 0 ? -1 : shader + 1;
+	return p > 1 && p < ps5slang::PresetCount() ? ps5slang::PresetAt(p).param_count : 0;
+}
+
+bool ShaderParam(int shader, int i, ParamInfo* out)
+{
+	const int p = shader <= 0 ? -1 : shader + 1;
+	if (p <= 1 || p >= ps5slang::PresetCount() || i < 0 || i >= ps5slang::PresetAt(p).param_count)
+		return false;
+	const ps5slang::Preset& pr = ps5slang::PresetAt(p);
+	const ps5slang::Param& d = pr.params[i];
+	out->name = d.name;
+	out->desc = d.desc;
+	out->def = d.value;
+	out->min = d.min;
+	out->max = d.max;
+	out->step = d.step;
+	out->value = d.value;
+	std::lock_guard<std::mutex> lk(g.param_mx);
+	const auto ov = g.param_overrides.find(pr.name);
+	if (ov != g.param_overrides.end())
+	{
+		const auto v = ov->second.find(d.name);
+		if (v != ov->second.end())
+			out->value = v->second;
+	}
+	return true;
+}
+
+void SetShaderParam(int shader, const char* name, float value)
+{
+	const int p = shader <= 0 ? -1 : shader + 1;
+	if (p <= 1 || p >= ps5slang::PresetCount())
+		return;
+	const ps5slang::Preset& pr = ps5slang::PresetAt(p);
+	for (int i = 0; i < pr.param_count; i++)
+		if (!strcmp(pr.params[i].name, name))
+		{
+			std::lock_guard<std::mutex> lk(g.param_mx);
+			if (value == pr.params[i].value)
+				g.param_overrides[pr.name].erase(name);
+			else
+				g.param_overrides[pr.name][name] = value;
+			if (g.game_chain.preset == p && size_t(i) < g.game_chain.params.size())
+				g.game_chain.params[size_t(i)] = value;
+		}
+}
+
+void ResetShaderParams(int shader)
+{
+	const int p = shader <= 0 ? -1 : shader + 1;
+	if (p <= 1 || p >= ps5slang::PresetCount())
+		return;
+	{
+		std::lock_guard<std::mutex> lk(g.param_mx);
+		g.param_overrides.erase(ps5slang::PresetAt(p).name);
+	}
+	if (g.game_chain.preset == p)
+		ApplyOverrides(g.game_chain);
+}
+
+namespace
+{
+std::string ShaderParamsPath()
+{
+	return OrbisRoot() + "/shader-params.ini";
+}
+
+// "<preset>\t<parameter>\t<value>" a line (preset names have spaces); a preset or parameter this build doesn't have is
+// left out
+void LoadShaderParams()
+{
+	FILE* f = fopen(ShaderParamsPath().c_str(), "r");
+	if (!f)
+		return;
+	char line[512];
+	int n = 0;
+	std::lock_guard<std::mutex> lk(g.param_mx);
+	while (fgets(line, sizeof(line), f))
+	{
+		char* t1 = strchr(line, '\t');
+		char* t2 = t1 ? strchr(t1 + 1, '\t') : nullptr;
+		if (!t2)
+			continue;
+		*t1 = *t2 = 0;
+		const char* preset = line;
+		const char* name = t1 + 1;
+		char* end = nullptr;
+		const float v = strtof(t2 + 1, &end);
+		if (end == t2 + 1 || !std::isfinite(v))
+			continue;
+		for (int p = 2; p < ps5slang::PresetCount(); p++)
+		{
+			const ps5slang::Preset& pr = ps5slang::PresetAt(p);
+			if (strcmp(pr.name, preset))
+				continue;
+			if (ps5slang::IsExternal(p))
+			{
+				// not compiled yet: its parameters are not known, the value is kept as it is (applied by name)
+				g.param_overrides[pr.name][name] = v;
+				n++;
+				continue;
+			}
+			for (int i = 0; i < pr.param_count; i++)
+			{
+				const ps5slang::Param& d = pr.params[i];
+				if (!strcmp(d.name, name))
+				{
+					g.param_overrides[pr.name][d.name] = std::max(d.min, std::min(d.max, v));
+					n++;
+				}
+			}
+		}
+	}
+	fclose(f);
+	if (n)
+		OrbisLog("[gpu] %d shader parameter(s) set in the menu, from %s", n, ShaderParamsPath().c_str());
+}
+} // namespace
+
+bool SaveShaderParams()
+{
+	std::string text;
+	{
+		std::lock_guard<std::mutex> lk(g.param_mx);
+		for (const auto& pr : g.param_overrides)
+			for (const auto& kv : pr.second)
+			{
+				char buf[64];
+				snprintf(buf, sizeof(buf), "\t%.6g\n", double(kv.second));
+				text += pr.first + "\t" + kv.first + buf;
+			}
+	}
+	const std::string path = ShaderParamsPath(), tmp = path + ".part";
+	if (text.empty())
+	{
+		remove(path.c_str());
+		return true;
+	}
+	FILE* f = fopen(tmp.c_str(), "w");
+	if (!f)
+		return false;
+	const bool ok = fwrite(text.data(), 1, text.size(), f) == text.size();
+	if (fclose(f) != 0 || !ok || rename(tmp.c_str(), path.c_str()) != 0)
+	{
+		remove(tmp.c_str());
+		OrbisLog("[gpu] could not write %s", path.c_str());
+		return false;
+	}
+	return true;
+}
 
 bool Init(int ui_w, int ui_h, bool offscreen, int out_w, int out_h)
 {
@@ -1176,6 +1856,43 @@ bool Init(int ui_w, int ui_h, bool offscreen, int out_w, int out_h)
 			 Check(vkCreateSemaphore(g.device, &smi, nullptr, &g.acquired), "vkCreateSemaphore") &&
 			 Check(vkCreateSemaphore(g.device, &smi, nullptr, &g.rendered), "vkCreateSemaphore");
 	}
+	if (ok)
+	{
+		VkCommandPoolCreateInfo upi = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+		upi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+		upi.queueFamilyIndex = g.family;
+		ok = Check(vkCreateCommandPool(g.device, &upi, nullptr, &g.upload_pool), "vkCreateCommandPool (uploads)");
+	}
+	if (ok)
+	{
+		// the pipelines built before (the driver checks the header: another driver or GPU starts empty)
+		std::vector<uint8_t> data;
+		if (FILE* f = fopen(PipelineCachePath().c_str(), "rb"))
+		{
+			fseek(f, 0, SEEK_END);
+			const long n = ftell(f);
+			fseek(f, 0, SEEK_SET);
+			if (n > 0 && n < (64 << 20))
+			{
+				data.resize(size_t(n));
+				if (fread(data.data(), 1, data.size(), f) != data.size())
+					data.clear();
+			}
+			fclose(f);
+		}
+		VkPipelineCacheCreateInfo ci = {VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+		ci.initialDataSize = data.size();
+		ci.pInitialData = data.empty() ? nullptr : data.data();
+		if (vkCreatePipelineCache(g.device, &ci, nullptr, &g.pcache) == VK_SUCCESS)
+			g.pcache_saved = data.size();
+		else
+		{
+			ci.initialDataSize = 0;
+			ci.pInitialData = nullptr;
+			vkCreatePipelineCache(g.device, &ci, nullptr, &g.pcache);
+		}
+		OrbisLog("[gpu] pipeline cache: %zu KiB from %s", data.size() >> 10, PipelineCachePath().c_str());
+	}
 	if (ok && g.timestamps)
 	{
 		VkQueryPoolCreateInfo qpi = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
@@ -1226,7 +1943,7 @@ bool Init(int ui_w, int ui_h, bool offscreen, int out_w, int out_h)
 				 VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT) &&
 			 UploadImage(g.dummy, black, 1, 1);
 	}
-	ok = ok && BuildChain(g.ui_chain, 1, true); // kPresets[1]: the surface over the game
+	ok = ok && BuildChain(g.ui_chain, 1, true); // preset 1: the surface over the game
 	if (!ok)
 	{
 		OrbisLog("[gpu] set-up failed: the CPU draws the picture");
@@ -1234,6 +1951,13 @@ bool Init(int ui_w, int ui_h, bool offscreen, int out_w, int out_h)
 		return false;
 	}
 	g.ok = true;
+	if (ok && !InitScene())
+		FreeScene(); // the shelf stays on the CPU
+	ps5slang::ScanExternal();
+#ifndef __PROSPERO__
+	ps5slang::CheckAllExternal();
+#endif
+	LoadShaderParams();
 	OrbisLog("[gpu] %s: Vulkan renderer, %dx%d output, %d shader presets", g.device_name, g.out_w, g.out_h,
 		ShaderCount());
 	return true;
@@ -1246,9 +1970,23 @@ bool Active()
 
 void Shutdown()
 {
+	if (g.builder.joinable())
+		g.builder.join();
+	if (g.built)
+	{
+		FreeChain(*g.built);
+		delete g.built;
+		g.built = nullptr;
+	}
 	if (g.device)
 	{
 		vkDeviceWaitIdle(g.device);
+		SavePipelineCache();
+		if (g.pcache)
+			vkDestroyPipelineCache(g.device, g.pcache, nullptr);
+		if (g.upload_pool)
+			vkDestroyCommandPool(g.device, g.upload_pool, nullptr);
+		FreeScene();
 		FreeChain(g.game_chain);
 		FreeChain(g.ui_chain);
 		FreeImage(g.ui);
@@ -1308,29 +2046,30 @@ const char* DeviceName()
 	return g.device_name;
 }
 
-// kPresets[0] is the plain picture, [1] the surface; the shaders the user picks are 0 (plain) and kPresets[2...]
+// preset 0 is the plain picture, 1 the surface; the shaders the user picks are 0 (plain) and presets 2... (the
+// built-in ones, then the user's own)
 int ShaderCount()
 {
-	return std::max(1, ps5slang::kPresetCount - 1);
+	return std::max(1, ps5slang::PresetCount() - 1);
 }
 
 const char* ShaderName(int i)
 {
-	if (i <= 0 || i + 1 >= ps5slang::kPresetCount)
+	if (i <= 0 || i + 1 >= ps5slang::PresetCount())
 		return "Off";
-	return ps5slang::kPresets[i + 1].name;
+	return ps5slang::PresetAt(i + 1).name;
 }
 
 bool ShaderFullscreen(int i)
 {
 	const int p = i <= 0 ? 0 : i + 1;
-	return p < ps5slang::kPresetCount && ps5slang::kPresets[p].fullscreen;
+	return p < ps5slang::PresetCount() && ps5slang::PresetAt(p).fullscreen;
 }
 
 int PassCount(int i)
 {
 	const int p = i <= 0 ? 0 : i + 1;
-	return p < ps5slang::kPresetCount ? ps5slang::kPresets[p].pass_count : 0;
+	return p < ps5slang::PresetCount() ? ps5slang::PresetAt(p).pass_count : 0;
 }
 
 void SetGame(const uint32_t* argb, int w, int h, Rect dst, int shader, bool smooth, bool scanlines)
@@ -1379,6 +2118,68 @@ double TakeShaderMs()
 	return ms;
 }
 
+bool SceneAvailable()
+{
+	return g.ok && g.scene_pipe != VK_NULL_HANDLE;
+}
+
+bool HasSceneTexture(uint64_t key)
+{
+	return g.scene_tex.count(key) != 0;
+}
+
+bool SceneTexture(uint64_t key, const uint32_t* px, int w, int h, bool column_major)
+{
+	if (!SceneAvailable() || !px || w <= 0 || h <= 0)
+		return false;
+	if (g.scene_tex.count(key))
+		return true;
+	// at most kMax textures: the ones not drawn for the longest go first (none drawn in the frame in flight)
+	constexpr size_t kMax = 48;
+	if (g.scene_tex.size() >= kMax)
+	{
+		if (g.in_flight)
+		{
+			vkWaitForFences(g.device, 1, &g.fence, VK_TRUE, UINT64_MAX);
+		}
+		while (g.scene_tex.size() >= kMax)
+		{
+			auto old = g.scene_tex.begin();
+			for (auto it = g.scene_tex.begin(); it != g.scene_tex.end(); ++it)
+				if (it->second.used < old->second.used)
+					old = it;
+			bool in_scene = false;
+			for (const SceneQuad& q : g.scene)
+				in_scene |= q.tex == old->first;
+			if (in_scene)
+				break; // all in use: one more, then
+			FreeSceneTex(old->second);
+			g.scene_tex.erase(old);
+		}
+	}
+	State::SceneTex t;
+	if (!MakeSceneTex(t, px, w, h, column_major))
+	{
+		FreeSceneTex(t);
+		return false;
+	}
+	t.used = g.presents;
+	g.scene_tex[key] = t;
+	return true;
+}
+
+void SetScene(const std::vector<SceneQuad>& quads)
+{
+	g.scene = quads;
+	g.scene_on = true;
+}
+
+void ClearScene()
+{
+	g.scene.clear();
+	g.scene_on = false;
+}
+
 bool Present(const uint32_t* ui, Rect dirty, bool wait_vsync)
 {
 	if (!g.ok)
@@ -1402,19 +2203,54 @@ bool Present(const uint32_t* ui, Rect dirty, bool wait_vsync)
 			memcpy(static_cast<uint32_t*>(g.ui_staging.map) + size_t(y) * g.ui_w + dirty.x,
 				ui + size_t(y) * g.ui_w + dirty.x, size_t(dirty.w) * 4);
 
-	// the game's chain for the shader picked
-	const int preset = g.shader <= 0 ? 0 : g.shader + 1;
-	if (g.game && g.game_chain.preset != preset)
+	// the game's chain for the shader picked: built on a thread of its own, the picture going on meanwhile with the
+	// shader it had (or the plain picture, which builds at once)
+	int preset = g.shader <= 0 ? 0 : g.shader + 1;
+	if (g.built_ready)
 	{
-		vkDeviceWaitIdle(g.device);
-		if (!BuildChain(g.game_chain, preset, false))
+		if (g.builder.joinable())
+			g.builder.join();
+		g.built_ready = false;
+		Chain* c = g.built;
+		g.built = nullptr;
+		if (c)
+		{
+			vkDeviceWaitIdle(g.device);
+			FreeChain(g.game_chain);
+			g.game_chain = std::move(*c);
+			delete c;
+			ApplyOverrides(g.game_chain); // what the menu changed while it was being built
+			OrbisLog("[gpu] shader %s: %d pass(es)", ps5slang::PresetAt(g.game_chain.preset).name,
+				int(g.game_chain.passes.size()));
+			SavePipelineCache();
+		}
+		else if (g.building_preset == preset)
 		{
 			OrbisLog("[gpu] shader %s could not be set up: the plain picture", ShaderName(g.shader));
 			g.shader = 0;
-			BuildChain(g.game_chain, 0, false);
+			preset = 0;
 		}
-		else
-			OrbisLog("[gpu] shader %s: %d pass(es)", ShaderName(g.shader), int(g.game_chain.passes.size()));
+		g.building_preset = -1;
+	}
+	if (g.game && g.game_chain.preset != preset)
+	{
+		if (preset == 0 || !g.game_chain.built)
+		{
+			// the plain picture (or nothing yet on screen): built here, at once
+			vkDeviceWaitIdle(g.device);
+			BuildChain(g.game_chain, 0, false);
+			if (preset == 0)
+				OrbisLog("[gpu] shader Off: 1 pass(es)");
+		}
+		if (preset != 0 && !g.building && g.building_preset != preset)
+		{
+			StartBuild(preset);
+#ifndef __PROSPERO__
+			// host tests: GENPLUS_HOST_GPU_SYNC_BUILD=1 waits for it (a shader's picture checked at a set frame)
+			if (getenv("GENPLUS_HOST_GPU_SYNC_BUILD") && g.builder.joinable())
+				g.builder.join();
+#endif
+		}
 	}
 	// the plain picture's filter and scanlines
 	if (g.game && preset == 0 && !g.game_chain.params.empty())
@@ -1502,7 +2338,7 @@ bool Present(const uint32_t* ui, Rect dirty, bool wait_vsync)
 		const double sx = double(g.out_w) / g.ui_w, sy = double(g.out_h) / g.ui_h;
 		vp = {int(std::lround(g.game_dst.x * sx)), int(std::lround(g.game_dst.y * sy)),
 			int(std::lround(g.game_dst.w * sx)), int(std::lround(g.game_dst.h * sy))};
-		if (ps5slang::kPresets[gc.preset].fullscreen)
+		if (ps5slang::PresetAt(gc.preset).fullscreen)
 			vp = {0, 0, g.out_w, g.out_h}; // the preset places the game itself, in its bezel
 		vp.w = std::max(1, std::min(vp.w, g.out_w - vp.x));
 		vp.h = std::max(1, std::min(vp.h, g.out_h - vp.y));
@@ -1545,6 +2381,10 @@ bool Present(const uint32_t* ui, Rect dirty, bool wait_vsync)
 		// a feedback last pass would flip its images: the last pass never has any (it draws to the target)
 		RecordPass(cmd, gc, gc.passes.size() - 1, vp, plain_smooth);
 	}
+	// the shelf's scene, under the surface (no game then)
+	if (g.scene_on && !draw_game && g.scene_pipe)
+		RecordScene(cmd);
+	g.presents++;
 	// the surface over everything
 	{
 		Chain& uc = g.ui_chain;
@@ -1608,6 +2448,7 @@ bool Present(const uint32_t* ui, Rect dirty, bool wait_vsync)
 		si.signalSemaphoreCount = 1;
 		si.pSignalSemaphores = &g.rendered;
 	}
+	std::unique_lock<std::mutex> queue_lock(g.queue_mx);
 	if (!Check(vkQueueSubmit(g.queue, 1, &si, g.fence), "vkQueueSubmit"))
 		return false;
 	g.in_flight = true;
@@ -1620,14 +2461,17 @@ bool Present(const uint32_t* ui, Rect dirty, bool wait_vsync)
 		pi.pSwapchains = &g.swapchain;
 		pi.pImageIndices = &index;
 		const VkResult r = vkQueuePresentKHR(g.queue, &pi);
+		queue_lock.unlock();
 		if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR)
 		{
 			OrbisLog("[gpu] vkQueuePresentKHR -> %d", int(r));
 			return false;
 		}
 	}
+	if (queue_lock.owns_lock())
+		queue_lock.unlock();
 #ifndef __PROSPERO__
-	else
+	if (g.offscreen)
 	{
 		vkWaitForFences(g.device, 1, &g.fence, VK_TRUE, UINT64_MAX);
 		g.in_flight = false;
