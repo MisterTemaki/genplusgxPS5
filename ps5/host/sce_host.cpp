@@ -269,6 +269,43 @@ int sceVideoOutSubmitFlip(int, int idx, uint32_t, int64_t)
 	return 0;
 }
 
+// The GPU renderer's frames (ProsperoGpu.cpp, off screen on the host): counted and dumped as the flips are.
+extern "C" void HostGpuFlip(const uint8_t* bgra, int w, int h, bool wait_vsync)
+{
+	const uint64_t n = g_flips.fetch_add(1);
+	if (g_dumps.count(n))
+	{
+		const char* dir = getenv("GENPLUS_HOST_DUMP_DIR");
+		char path[512];
+		snprintf(path, sizeof(path), "%s/flip%05llu.ppm", dir ? dir : ".", (unsigned long long)n);
+		if (FILE* f = fopen(path, "wb"))
+		{
+			fprintf(f, "P6\n%d %d\n255\n", w, h);
+			std::vector<uint8_t> row(size_t(w) * 3);
+			for (int y = 0; y < h; y++)
+			{
+				const uint8_t* p = bgra + size_t(y) * w * 4;
+				for (int x = 0; x < w; x++)
+				{
+					row[size_t(x) * 3 + 0] = p[x * 4 + 2];
+					row[size_t(x) * 3 + 1] = p[x * 4 + 1];
+					row[size_t(x) * 3 + 2] = p[x * 4 + 0];
+				}
+				fwrite(row.data(), 1, row.size(), f);
+			}
+			fclose(f);
+		}
+	}
+	if (const char* m = getenv("GENPLUS_HOST_MAX_FLIPS"))
+		if (n >= strtoull(m, nullptr, 10))
+		{
+			fprintf(stderr, "[host] GENPLUS_HOST_MAX_FLIPS reached: abort\n");
+			_exit(3);
+		}
+	if (wait_vsync)
+		sceKernelWaitEqueue(nullptr, nullptr, 0, nullptr, nullptr);
+}
+
 int32_t sceAudioOutInit(void)
 {
 	return 0;

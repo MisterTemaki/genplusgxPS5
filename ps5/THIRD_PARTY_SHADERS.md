@@ -60,3 +60,29 @@ OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 
 crt-1tap and crt-2tap: "Copyright (C) 2023-2026, Public domain license (CC0)" -- fishku. crt-lottes: "PUBLIC
 DOMAIN CRT STYLED SCAN-LINE SHADER by Timothy Lottes". monoCRT: "by hunterk, license: public domain".
+
+## The GPU's shaders (1.9)
+
+The GPU renderer (`coreorbis/orbis-shims/ProsperoGpu.cpp`, with the RADV build) runs RetroArch slang presets as
+they are, from libretro's slang-shaders collection (`shaders/slang/`, revision
+`e1d75632a205c70f14a4cc947c46d5abb7b3f7f1` of 8 October 2026), compiled to SPIR-V at build time
+(`tools/slang_compile.py`, `shaders/presets.txt`). Each file keeps the licence written at its top. Of the presets
+built in:
+
+| Preset (`shaders/presets.txt`) | Licence of its shaders |
+|---|---|
+| crt-lottes, crt-lottes-fast, crt-1tap, crt-2tap, monoCRT | public domain / Unlicense / CC0 |
+| newpixie-mini, crt-hyllian-fast, crt-hyllian, crt-nobody, crt-blurPi-sharp/soft, ScaleFX | MIT |
+| crt-easymode, crt-easymode-halation, crt-aperture | GPL |
+| crt-guest-advanced (and -fast, -ntsc), crt-consumer | GPL-2.0-or-later |
+| crt-geom, crt-pi, zfast-crt | GPL-2.0-or-later |
+| crt-royale | GPL-2.0-or-later |
+| crt-yah | its passes' own licences (GPL and MIT parts) |
+| Mega Bezel (Potato, Standard) | GPL-3.0-or-later and the licences of the shaders it includes (Guest, Dogway, Hyllian...) |
+
+The plain picture and the menu overlay (`shaders/plain.slang`, `shaders/ui.slang`) are this port's own (MIT).
+
+**Licences, plainly:** Genesis Plus GX's own licence is non-commercial, and the GPL does not allow added
+restrictions, so a binary that combines the two is not a clean combination. The project's maintainer chose to ship
+the GPU build this way, knowing it. The CPU-only build (`make ps5` without `PS5_VULKAN`) contains neither these
+GPL shaders nor RADV.

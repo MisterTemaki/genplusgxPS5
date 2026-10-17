@@ -12,6 +12,7 @@
 #include "shared.h"
 #include "fe_bram.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -77,32 +78,65 @@ static int WriteAtomic(const char* path, const uint8* data, size_t size)
 }
 
 /* Before the first write of a session, the file as it was is copied to <file>.bak (the Sega CD's backup RAM holds
- * the saves of every game of that region: one bad write must not cost them all). */
-static void BackupOnce(const char* path, int which)
+ * the saves of every game of that region: one bad write must not cost them all). The session counts as protected
+ * only once the copy is really there, or when there was no file to copy; returns whether the file may be written
+ * over. While it may not, the new contents go beside it (<file>.new) and the copy is tried again next time. */
+static int BackupOnce(const char* path, int which)
 {
 	char bak[300];
 	struct stat st;
 	uint8* buf;
 	ssize_t n;
-	int fd;
+	int fd, ok = 0;
 	if (s_backed[which])
-		return;
-	s_backed[which] = 1;
+		return 1;
 	if (snprintf(bak, sizeof(bak), "%s.bak", path) >= (int)sizeof(bak))
-		return;
+		return 0;
 	fd = open(path, O_RDONLY);
 	if (fd < 0)
-		return;
-	if (fstat(fd, &st) != 0 || st.st_size <= 0 || st.st_size > 0x100000 || !(buf = (uint8*)malloc((size_t)st.st_size)))
+	{
+		if (errno != ENOENT)
+			return 0; /* there, but unreadable: don't write over it */
+		s_backed[which] = 1; /* nothing to keep */
+		return 1;
+	}
+	if (fstat(fd, &st) != 0 || st.st_size > 0x100000)
 	{
 		close(fd);
-		return;
+		return 0;
+	}
+	if (st.st_size == 0)
+	{
+		close(fd);
+		s_backed[which] = 1;
+		return 1;
+	}
+	buf = (uint8*)malloc((size_t)st.st_size);
+	if (!buf)
+	{
+		close(fd);
+		return 0;
 	}
 	n = read(fd, buf, (size_t)st.st_size);
 	close(fd);
 	if (n == st.st_size)
-		WriteAtomic(bak, buf, (size_t)n);
+		ok = WriteAtomic(bak, buf, (size_t)n);
 	free(buf);
+	if (ok)
+		s_backed[which] = 1;
+	return ok;
+}
+
+/* The file, or <file>.new beside it while it can't be backed up. Returns 1 written over the file, 2 written beside
+ * it, 0 failed. */
+static int WriteProtected(const char* path, int which, const uint8* data, size_t size)
+{
+	char beside[300];
+	if (BackupOnce(path, which))
+		return WriteAtomic(path, data, size) ? 1 : 0;
+	if (snprintf(beside, sizeof(beside), "%s.new", path) >= (int)sizeof(beside))
+		return 0;
+	return WriteAtomic(beside, data, size) ? 2 : 0;
 }
 
 void fe_bram_start(void)
@@ -126,11 +160,11 @@ int fe_bram_flush(void)
 		const char* path = InternalPath();
 		if (crc != s_crc[0] && path && path[0] && !memcmp(scd.bram + 0x2000 - 0x20, kFormatTail, 0x20))
 		{
-			BackupOnce(path, 0);
-			if (WriteAtomic(path, scd.bram, 0x2000))
+			const int w = WriteProtected(path, 0, scd.bram, 0x2000);
+			if (w)
 			{
 				s_crc[0] = crc;
-				written |= 1;
+				written |= w == 1 ? 1 : (1 | 8);
 			}
 			else
 				written |= 4;
@@ -142,11 +176,11 @@ int fe_bram_flush(void)
 		const uint32 crc = crc32(0, scd.cartridge.area, size);
 		if (crc != s_crc[1] && CART_BRAM[0] && !memcmp(scd.cartridge.area + size - 0x20, kFormatTail, 0x20))
 		{
-			BackupOnce(CART_BRAM, 1);
-			if (WriteAtomic(CART_BRAM, scd.cartridge.area, size))
+			const int w = WriteProtected(CART_BRAM, 1, scd.cartridge.area, size);
+			if (w)
 			{
 				s_crc[1] = crc;
-				written |= 2;
+				written |= w == 1 ? 2 : (2 | 8);
 			}
 			else
 				written |= 4;
@@ -157,5 +191,26 @@ int fe_bram_flush(void)
 
 void fe_bram_stop(void)
 {
+	/* the core writes the backup RAM once more when the game is unloaded (libretro.c, bram_save: plain fopen and
+	 * fwrite, no backup). fe_bram_flush has just written it the protected way: the core's paths are cleared so its
+	 * own write opens nothing. check_variables sets them again for the next game. */
+	if (s_active)
+	{
+		CD_BRAM_JP[0] = CD_BRAM_EU[0] = CD_BRAM_US[0] = 0;
+		CART_BRAM[0] = 0;
+	}
 	s_active = 0;
+}
+
+/* For the performance log (fe_emu.cpp): what the CD drive and the PCM chip are doing now. */
+int fe_cd_activity(void)
+{
+	int bits = 0;
+	if (!cdd.loaded)
+		return 0;
+	if (cdd.status == CD_PLAY && cdd.index >= 0 && cdd.index < cdd.toc.last)
+		bits |= cdd.toc.tracks[cdd.index].type ? 4 : 1; /* data read : CD audio */
+	if (system_hw == SYSTEM_MCD && scd.pcm_hw.enabled && (uint8)~scd.pcm_hw.status)
+		bits |= 2;
+	return bits;
 }

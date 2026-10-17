@@ -27,7 +27,7 @@ int Clamp(int v, int lo, int hi)
 const char* const kButtonKeys[Settings::kButtons] = {"btn_a", "btn_b", "btn_c", "btn_x", "btn_y", "btn_z", "btn_start",
 	"btn_mode"};
 constexpr int kPs5ButtonChoices = 9; // emu::kPs5ButtonCount
-constexpr int kShaderCount = 12; // ps5crt::Shader::Count
+constexpr int kShaderCount = 64; // the most of either renderer (ps5video::ShaderCount() at use)
 } // namespace
 
 constexpr int Settings::kDefaultButtons[Settings::kButtons];
@@ -148,6 +148,12 @@ bool Settings::LoadFrom(const std::string& path)
 			state_slot = Clamp(n, 1, 10);
 		else if (key == "covers_download")
 			covers_download = n != 0;
+		else if (key == "language")
+			language = Clamp(n, 0, 4);
+		else if (key == "renderer")
+			renderer = Clamp(n, 0, 1);
+		else if (key == "perf_log")
+			perf_log = n != 0;
 		else if (key == "debug_logs")
 			debug_logs = n != 0;
 		else if (key == "shelf_family")
@@ -215,6 +221,9 @@ bool Settings::SaveTo(const std::string& path, bool game_keys_only) const
 	{
 		fprintf(f, "state_slot=%d\n", state_slot);
 		fprintf(f, "covers_download=%d\n", covers_download ? 1 : 0);
+		fprintf(f, "language=%d\n", language);
+		fprintf(f, "renderer=%d\n", renderer);
+		fprintf(f, "perf_log=%d\n", perf_log ? 1 : 0);
 		fprintf(f, "debug_logs=%d\n", debug_logs ? 1 : 0);
 		fprintf(f, "shelf_family=%d\n", shelf_family);
 		fprintf(f, "last_rom=%s\n", last_rom.c_str());

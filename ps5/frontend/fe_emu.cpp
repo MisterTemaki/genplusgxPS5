@@ -15,6 +15,7 @@
 #include "fe_bram.h"
 #include "ProsperoNotify.h"
 #include "fe_games.h"
+#include "fe_i18n.h"
 #include "fe_settings.h"
 #include "fe_text.h"
 
@@ -33,6 +34,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -41,6 +43,8 @@
 #include <deque>
 #include <map>
 #include <vector>
+
+#include <zlib.h>
 
 namespace emu
 {
@@ -132,10 +136,24 @@ const ConsoleButton kConsoleButtons[kConsoleButtonCount] = {
 	{"Start  (Pause)", "btn_start", RETRO_DEVICE_ID_JOYPAD_START, 6},
 	{"Mode", "btn_mode", RETRO_DEVICE_ID_JOYPAD_SELECT, 7},
 };
+void Osd(const std::string& text);
 } // namespace emu
 
 namespace
 {
+using fe::T;
+
+// printf into a std::string (the translated formats)
+std::string Fmt(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+std::string Fmt(const char* fmt, ...)
+{
+	char buf[1024];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+	return buf;
+}
 constexpr int kTargetQueued = ps5audio::kRate * 60 / 1000; // 60 ms of sound
 constexpr int kRewindEvery = 3; // frames between rewind snapshots
 constexpr size_t kRewindBytes = 192u * 1024 * 1024;
@@ -183,8 +201,9 @@ bool ReadFile(const std::string& path, std::vector<uint8_t>& out)
 	return true;
 }
 
-// data -> path.part, flushed to the disk (fsync) and closed without error, then renamed over path: the old file or
-// the whole new one, never a cut one (a full disk or an I/O error shows up at fflush / fsync / fclose).
+// data -> path.part, flushed to the disk (fsync) and closed without error, read back and compared, then renamed
+// over path: the old file or the whole new one, never a cut or wrong one (a full disk or an I/O error shows up at
+// fflush / fsync / fclose; a write the storage got wrong, in the comparison).
 bool WriteFileAtomic(const std::string& path, const void* data, size_t size)
 {
 	const std::string tmp = path + ".part";
@@ -195,6 +214,13 @@ bool WriteFileAtomic(const std::string& path, const void* data, size_t size)
 	ok = fflush(f) == 0 && ok;
 	ok = fsync(fileno(f)) == 0 && ok;
 	ok = fclose(f) == 0 && ok;
+	if (ok)
+	{
+		std::vector<uint8_t> back;
+		ok = ReadFile(tmp, back) && back.size() == size && (size == 0 || memcmp(back.data(), data, size) == 0);
+		if (!ok)
+			OrbisLog("[emu] %s: what was written doesn't read back the same: not used", tmp.c_str());
+	}
 	if (!ok || rename(tmp.c_str(), path.c_str()) != 0)
 	{
 		remove(tmp.c_str());
@@ -278,6 +304,9 @@ struct State
 	bool shader_warned = false;
 	// saves: the backup copy of the battery save is made once per game, before its first write
 	bool sram_backed_up = false;
+	bool sram_backup_warned = false;
+	double last_shader_ms = 0;
+	bool bram_backup_warned = false;
 };
 State g;
 
@@ -508,11 +537,128 @@ int16_t InputState(unsigned port, unsigned device, unsigned index, unsigned id)
 }
 
 // ---- sound: the core's 44.1 kHz -> 48 kHz, the rate steered by the ring's fill ---------------------------------
+// ---- the performance log (Settings, SYSTEM, Performance log): logs/perf-<system>-<game>.csv, a row a second -----
+// What a real game does to the frame budget, for checking Sega CD FMV, CD audio and long sessions on the console:
+// the core's time per frame (average and worst), the presentation's (the shader on the CPU, or the hand-over to
+// the GPU), the GPU shader's own time, the frames that came late, the sound queued and the underruns, the rate
+// control, the CD drive (CD audio playing, data being read) and the PCM chip, and the drift between the sound
+// the core made and the frames it ran (it should stay flat over hours: a growing one is sound running ahead of,
+// or behind, the picture).
+struct Perf
+{
+	FILE* f = nullptr;
+	double start = 0, next = 0, last_frame = 0;
+	uint64_t frames = 0, rows = 0;
+	double core_sum = 0, core_max = 0, present_sum = 0, frame_max = 0;
+	int late = 0, cdda = 0, cdread = 0, pcm = 0;
+	uint64_t underruns0 = 0;
+	// over the whole session
+	double audio_frames = 0, emu_frames = 0;
+	double total_core = 0, worst_core = 0;
+	uint64_t total_frames = 0, total_late = 0;
+	double drift_min = 1e9, drift_max = -1e9;
+};
+Perf g_perf;
+
+double PerfDrift()
+{
+	return g.sample_rate > 0 && g.fps > 0 ? (g_perf.audio_frames / g.sample_rate - g_perf.emu_frames / g.fps) * 1000.0 : 0;
+}
+
+void PerfStart()
+{
+	g_perf = Perf();
+	if (!fe::Config().perf_log)
+		return;
+	std::string name = fe::Info(g.system).folder + std::string("-") + g.name;
+	for (char& c : name)
+		if (c == '/' || c == '\\' || c == ':' || uint8_t(c) < 32)
+			c = '_';
+	const std::string path = OrbisDir("logs") + "/perf-" + name + ".csv";
+	g_perf.f = fopen(path.c_str(), "w");
+	if (!g_perf.f)
+	{
+		OrbisLog("[perf] can't write %s", path.c_str());
+		return;
+	}
+	fprintf(g_perf.f, "# Genesis Plus GX PS5 %s performance log: %s (%s), %.3f fps, renderer %s, shader %s\n",
+		GENPLUS_PS5_VERSION, g.name.c_str(), emu::SystemName().c_str(), g.fps, ps5video::GpuActive() ? "GPU" : "CPU",
+		ps5video::ShaderName(fe::Config().shader));
+	fprintf(g_perf.f, "time_s,frames,fps,core_ms_avg,core_ms_max,present_ms_avg,frame_ms_max,late_frames,shader_ms,"
+					  "audio_queued_ms,underruns,rate,cd_audio_pct,cd_read_pct,pcm_pct,av_drift_ms\n");
+	fflush(g_perf.f);
+	g_perf.start = g_perf.next = g_perf.last_frame = Now();
+	g_perf.next += 1.0;
+	g_perf.underruns0 = ps5audio::Underruns();
+	OrbisLog("[perf] logging to %s", path.c_str());
+}
+
+void PerfFrame(double core_ms, double present_ms, double shader_ms)
+{
+	if (!g_perf.f)
+		return;
+	const double now = Now();
+	const double frame_ms = (now - g_perf.last_frame) * 1000.0;
+	g_perf.last_frame = now;
+	g_perf.frames++;
+	g_perf.core_sum += core_ms;
+	g_perf.core_max = std::max(g_perf.core_max, core_ms);
+	g_perf.present_sum += present_ms;
+	g_perf.frame_max = std::max(g_perf.frame_max, frame_ms);
+	if (!g.turbo && !g.rewinding && frame_ms > 1500.0 / std::max(1.0, g.fps))
+		g_perf.late++;
+	const int cd = fe_cd_activity();
+	g_perf.cdda += (cd & 1) != 0;
+	g_perf.pcm += (cd & 2) != 0;
+	g_perf.cdread += (cd & 4) != 0;
+	g_perf.total_core += core_ms;
+	g_perf.worst_core = std::max(g_perf.worst_core, core_ms);
+	g_perf.total_frames++;
+	if (now < g_perf.next)
+		return;
+	const double span = now - (g_perf.next - 1.0);
+	const double n = double(std::max<uint64_t>(1, g_perf.frames));
+	const uint64_t under = ps5audio::Underruns();
+	const double drift = PerfDrift();
+	g_perf.drift_min = std::min(g_perf.drift_min, drift);
+	g_perf.drift_max = std::max(g_perf.drift_max, drift);
+	g_perf.total_late += uint64_t(g_perf.late);
+	fprintf(g_perf.f, "%.1f,%llu,%.2f,%.3f,%.3f,%.3f,%.2f,%d,%.3f,%.1f,%llu,%.4f,%.0f,%.0f,%.0f,%.2f\n",
+		now - g_perf.start, (unsigned long long)g_perf.frames, g_perf.frames / std::max(1e-3, span), g_perf.core_sum / n,
+		g_perf.core_max, g_perf.present_sum / n, g_perf.frame_max, g_perf.late, shader_ms,
+		ps5audio::Queued() * 1000.0 / ps5audio::kRate, (unsigned long long)(under - g_perf.underruns0),
+		g.adj_n ? g.adj_sum / double(g.adj_n) : 1.0, g_perf.cdda * 100.0 / n, g_perf.cdread * 100.0 / n,
+		g_perf.pcm * 100.0 / n, drift);
+	fflush(g_perf.f);
+	g_perf.rows++;
+	g_perf.underruns0 = under;
+	g_perf.frames = 0;
+	g_perf.core_sum = g_perf.core_max = g_perf.present_sum = g_perf.frame_max = 0;
+	g_perf.late = g_perf.cdda = g_perf.cdread = g_perf.pcm = 0;
+	g_perf.next = now + 1.0;
+}
+
+void PerfStop()
+{
+	if (!g_perf.f)
+		return;
+	const double secs = Now() - g_perf.start;
+	OrbisLog("[perf] %.0f s, %llu frames: core %.2f ms a frame on average, %.2f ms at worst; %llu late frames; "
+			 "sound/picture drift %.1f to %.1f ms",
+		secs, (unsigned long long)g_perf.total_frames,
+		g_perf.total_frames ? g_perf.total_core / double(g_perf.total_frames) : 0.0, g_perf.worst_core,
+		(unsigned long long)g_perf.total_late, g_perf.rows ? g_perf.drift_min : 0.0, g_perf.rows ? g_perf.drift_max : 0.0);
+	fclose(g_perf.f);
+	g_perf.f = nullptr;
+}
+
 void FlushAudio()
 {
 	const size_t frames = g.in.size() / 2;
 	if (frames == 0)
 		return;
+	if (!g.turbo && !g.rewinding)
+		g_perf.audio_frames += double(frames); // what the core made, for the sound/picture drift
 	const fe::Settings& cfg = fe::Config();
 	if (!cfg.audio || g.mute || !ps5audio::Available())
 	{
@@ -644,16 +790,28 @@ bool CopyFile(const std::string& from, const std::string& to)
 	return ReadFile(from, data) && WriteFileAtomic(to, data.data(), data.size());
 }
 
-void BackupOnce(const std::string& path, bool* done)
+// *done is set only once the copy is really there (or there was nothing to copy): a failed copy is tried again at
+// the next write, and said on the screen once. Returns whether the file may be written over: false while the copy
+// of it couldn't be made (the caller then writes beside it, never over it).
+bool BackupOnce(const std::string& path, bool* done)
 {
 	if (*done)
-		return;
-	*done = true;
-	if (FileExists(path))
+		return true;
+	if (!FileExists(path))
 	{
-		const bool ok = CopyFile(path, path + ".bak");
-		OrbisLog("[emu] kept the save as it was: %s.bak (%s)", path.c_str(), ok ? "ok" : "failed");
+		*done = true;
+		return true;
 	}
+	const bool ok = CopyFile(path, path + ".bak");
+	OrbisLog("[emu] kept the save as it was: %s.bak (%s)", path.c_str(), ok ? "ok" : "failed");
+	if (ok)
+		*done = true;
+	else if (!g.sram_backup_warned)
+	{
+		g.sram_backup_warned = true;
+		emu::Osd("Could not back up the save: the new one is kept beside it (.srm.new)");
+	}
+	return ok;
 }
 
 // Writes the battery save when it changed (or when `force`).
@@ -675,11 +833,12 @@ void SaveSram(bool force)
 		if (blank)
 			return;
 	}
-	BackupOnce(SramPath(), &g.sram_backed_up);
-	const bool ok = WriteFileAtomic(SramPath(), mem, size);
+	// over the file only once its backup is there; otherwise beside it, the file left as it was
+	const std::string target = BackupOnce(SramPath(), &g.sram_backed_up) ? SramPath() : SramPath() + ".new";
+	const bool ok = WriteFileAtomic(target, mem, size);
 	if (ok)
 		g.sram_hash = h; // a failed write is tried again 3 s later and when the game closes
-	OrbisLog("[emu] battery save -> %s (%s)", SramPath().c_str(), ok ? "ok" : "failed");
+	OrbisLog("[emu] battery save -> %s (%s)", target.c_str(), ok ? "ok" : "failed");
 }
 
 // The Sega CD's backup RAM and RAM cartridge, every 3 s when they changed (the core writes them only on unload).
@@ -687,8 +846,13 @@ void SaveBram()
 {
 	const int r = fe_bram_flush();
 	if (r)
-		OrbisLog("[emu] Sega CD backup RAM -> %s%s%s", (r & 1) ? "internal " : "", (r & 2) ? "cartridge " : "",
-			(r & 4) ? "(a write failed)" : "(ok)");
+		OrbisLog("[emu] Sega CD backup RAM -> %s%s%s%s", (r & 1) ? "internal " : "", (r & 2) ? "cartridge " : "",
+			(r & 4) ? "(a write failed)" : "(ok)", (r & 8) ? ", beside the file (.new): its backup failed" : "");
+	if ((r & 8) && !g.bram_backup_warned)
+	{
+		g.bram_backup_warned = true;
+		emu::Osd("Could not back up the Sega CD saves: the new ones are kept beside them (.brm.new)");
+	}
 }
 
 // The Sega CD BIOS, checked before loading a disc (Genesis Plus GX picks the one of the disc's region).
@@ -879,7 +1043,7 @@ bool LoadGame(const std::string& path, std::string* error)
 		// the core keeps the game's path and the paths it builds from it in 256-byte buffers
 		OrbisLog("[emu] could not start %s: the path is %zu characters long", path.c_str(), path.size());
 		if (error)
-			*error = "The path of " + file + " is too long (over 254 characters): move it to a shorter folder.";
+			*error = Fmt(T("The path of %s is too long (over 254 characters): move it to a shorter folder."), file.c_str());
 		return false;
 	}
 	std::string ext = ExtOf(path);
@@ -896,7 +1060,7 @@ bool LoadGame(const std::string& path, std::string* error)
 		{
 			OrbisLog("[emu] could not start %s: no game inside the zip", path.c_str());
 			if (error)
-				*error = "There is no game Genesis Plus GX PS5 knows inside " + file + ".";
+				*error = Fmt(T("There is no game Genesis Plus GX PS5 knows inside %s."), file.c_str());
 			g.path.clear();
 			return false;
 		}
@@ -914,7 +1078,7 @@ bool LoadGame(const std::string& path, std::string* error)
 			OrbisLog("[emu] missing firmware: Sega CD BIOS (checked before loading)");
 			OrbisLog("[emu] could not start %s: missing the Sega CD BIOS", path.c_str());
 			if (error)
-				*error = "Sega CD games need the BIOS: " + bios + ". Copy it to " + g.sys_dir + "/ and try again.";
+				*error = Fmt(T("Sega CD games need the BIOS: %s. Copy it to %s/ and try again."), bios.c_str(), g.sys_dir.c_str());
 			g.path.clear();
 			return false;
 		}
@@ -949,11 +1113,11 @@ bool LoadGame(const std::string& path, std::string* error)
 		if (error)
 		{
 			if (g.system == fe::System::SegaCd)
-				*error = "Genesis Plus GX could not start " + file +
-					". Sega CD games need the BIOS of their region in " + g.sys_dir +
-					": bios_CD_U.bin (USA), bios_CD_E.bin (Europe), bios_CD_J.bin (Japan).";
+				*error = Fmt(T("Genesis Plus GX could not start %s. Sega CD games need the BIOS of their region in %s: "
+							   "bios_CD_U.bin (USA), bios_CD_E.bin (Europe), bios_CD_J.bin (Japan)."),
+					file.c_str(), g.sys_dir.c_str());
 			else
-				*error = "Genesis Plus GX could not load " + file + ".";
+				*error = Fmt(T("Genesis Plus GX could not load %s."), file.c_str());
 		}
 		g.path.clear();
 		g.rom.clear();
@@ -985,6 +1149,8 @@ bool LoadGame(const std::string& path, std::string* error)
 	g.shader_ms_n = 0;
 	g.shader_warned = false;
 	g.sram_backed_up = false;
+	g.sram_backup_warned = false;
+	g.bram_backup_warned = false;
 	g.frames = 0;
 	g.fps_frames = 0;
 	g.fps_since = Now();
@@ -997,6 +1163,7 @@ bool LoadGame(const std::string& path, std::string* error)
 	MigrateSaves();
 	LoadSram();
 	fe_bram_start();
+	PerfStart();
 	OrbisLog("[emu] running \"%s\" (%s), %.3f fps, %.0f Hz, aspect %.4f, state size %zu", g.name.c_str(),
 		SystemName().c_str(), g.fps, g.sample_rate, g.core_aspect, retro_serialize_size());
 	return true;
@@ -1007,10 +1174,11 @@ void CloseGame()
 	if (!g.loaded)
 		return;
 	GENPLUS_STAGE(Emu, "close game");
+	PerfStop();
 	SaveSram(false);
 	SaveBram();
 	fe_bram_stop();
-	retro_unload_game(); // the core writes the Sega CD backup RAM here (again, if it changed since)
+	retro_unload_game(); // (its own Sega CD backup RAM write is off: fe_bram_stop)
 	g.loaded = false;
 	g.frame.clear();
 	g.rom.clear();
@@ -1047,21 +1215,93 @@ void Resume()
 
 void Osd(const std::string& text)
 {
-	g.osd = text;
+	g.osd = T(text.c_str());
 	g.osd_until = Now() + 2.5;
 }
 
-// A state written over another one keeps the other as <state>.prev: the new state is written in full first
-// (<state>.part, flushed), then the old one becomes .prev and the new one takes its name.
-bool WriteState(const std::string& path, const std::vector<uint8_t>& data)
+// A state file is the core's state followed by a 16-byte trailer: "GPXS", the trailer's version (1), the state's
+// size and its CRC-32 (zlib's), little-endian. A load checks all four, so a state cut short, padded, or changed
+// anywhere inside is refused, not only one of the wrong size. States saved before 1.9 have no trailer: they are
+// still loaded when their size is exactly the core's (as 1.8 did), and said to be unchecked in the log.
+constexpr uint32_t kStateMagic = 0x53585047; // "GPXS"
+constexpr size_t kStateTrailer = 16;
+
+void AddTrailer(std::vector<uint8_t>& data)
 {
+	const uint32_t size = uint32_t(data.size());
+	const uint32_t crc = uint32_t(crc32(0L, data.data(), uInt(data.size())));
+	const uint32_t t[4] = {kStateMagic, 1, size, crc};
+	for (uint32_t v : t)
+		for (int i = 0; i < 4; i++)
+			data.push_back(uint8_t(v >> (8 * i)));
+}
+
+uint32_t Le32(const uint8_t* p)
+{
+	return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;
+}
+
+enum class StateCheck
+{
+	Good, // the trailer and its CRC match
+	Legacy, // no trailer, the core's size: a state of 1.8 or older
+	Damaged, // a trailer that doesn't match, or no trailer and the wrong size
+};
+
+// Checks `data` as a state file for a core whose states are `want` bytes; on success it is cut to the state alone.
+StateCheck CheckState(std::vector<uint8_t>& data, size_t want, std::string& why)
+{
+	if (data.size() == want + kStateTrailer)
+	{
+		const uint8_t* t = data.data() + want;
+		if (Le32(t) != kStateMagic || Le32(t + 4) != 1 || Le32(t + 8) != want)
+		{
+			why = "its trailer is not a Genesis Plus GX PS5 one";
+			return StateCheck::Damaged;
+		}
+		const uint32_t crc = uint32_t(crc32(0L, data.data(), uInt(want)));
+		if (crc != Le32(t + 12))
+		{
+			char buf[96];
+			snprintf(buf, sizeof(buf), "CRC-32 %08x, the file says %08x", crc, Le32(t + 12));
+			why = buf;
+			return StateCheck::Damaged;
+		}
+		data.resize(want);
+		return StateCheck::Good;
+	}
+	if (data.size() == want)
+	{
+		// a trailer-less file of the core's size: an older state, unless it ends like a trailer of another size
+		return StateCheck::Legacy;
+	}
+	char buf[96];
+	snprintf(buf, sizeof(buf), "%zu bytes, the core's states are %zu (+%zu)", data.size(), want, kStateTrailer);
+	why = buf;
+	return StateCheck::Damaged;
+}
+
+// A state written over another one keeps the other as <state>.prev: the new state is written in full first
+// (<state>.part, flushed and read back by WriteFileAtomic), then the old one becomes .prev, then the new one takes its name. If the
+// old one can't be kept, nothing is replaced: the slot keeps the state it had, and the save is reported failed.
+bool WriteState(const std::string& path, std::vector<uint8_t> data)
+{
+	AddTrailer(data);
 	const std::string part = path + ".part";
-	if (!WriteFileAtomic(part, data.data(), data.size()))
+	if (!WriteFileAtomic(part, data.data(), data.size())) // flushed and read back
 		return false;
 	if (FileExists(path) && rename(path.c_str(), (path + ".prev").c_str()) != 0)
-		OrbisLog("[emu] could not keep the previous state of %s", path.c_str());
+	{
+		OrbisLog("[emu] could not keep the previous state of %s (errno %d): the slot is left as it was", path.c_str(),
+			errno);
+		remove(part.c_str());
+		return false;
+	}
 	if (rename(part.c_str(), path.c_str()) != 0)
 	{
+		// the old state is .prev now: put it back, so the slot is as it was
+		OrbisLog("[emu] could not put the new state in place (errno %d): the slot is left as it was", errno);
+		rename((path + ".prev").c_str(), path.c_str());
 		remove(part.c_str());
 		return false;
 	}
@@ -1073,21 +1313,31 @@ bool LoadStateFile(const std::string& path, const char* what, int slot)
 	std::vector<uint8_t> data;
 	if (!ReadFile(path, data) || data.empty())
 	{
-		Osd(std::string(what) + " of slot " + std::to_string(slot) + " is empty");
+		Osd(Fmt(T(strcmp(what, "The state") ? "The previous state of slot %d is empty" : "The state of slot %d is empty"), slot));
 		return false;
 	}
-	// a state of the wrong size is damaged, or from another core version: refused, the game goes on as it was
+	// a damaged state, or one from another core version, is refused: the game goes on as it was
 	const size_t want = retro_serialize_size();
-	if (data.size() != want)
+	std::string why;
+	const StateCheck check = CheckState(data, want, why);
+	if (check == StateCheck::Damaged)
 	{
-		OrbisLog("[emu] load state %d (%s): %zu bytes, the core's states are %zu: refused", slot, path.c_str(),
-			data.size(), want);
+		OrbisLog("[emu] load state %d (%s): %s: refused", slot, path.c_str(), why.c_str());
 		Osd("This state is damaged or from another version: not loaded");
 		return false;
 	}
-	const bool ok = retro_unserialize(data.data(), data.size());
-	OrbisLog("[emu] load state %d%s: %s", slot, strstr(path.c_str(), ".prev") ? " (previous)" : "", ok ? "ok" : "failed");
-	Osd(ok ? std::string(what) + " of slot " + std::to_string(slot) + " loaded" : "Could not load the state");
+	// the game as it is now, to go back to if the core refuses the state half-way
+	std::vector<uint8_t> before(want);
+	const bool have_before = retro_serialize(before.data(), want);
+	bool ok = retro_unserialize(data.data(), data.size());
+	if (!ok && have_before)
+		retro_unserialize(before.data(), want);
+	OrbisLog("[emu] load state %d%s: %s%s", slot, strstr(path.c_str(), ".prev") ? " (previous)" : "", ok ? "ok" : "failed",
+		check == StateCheck::Legacy ? " (an older state without a checksum)" : " (checksum ok)");
+	if (ok)
+		Osd(Fmt(T(strcmp(what, "The state") ? "The previous state of slot %d loaded" : "The state of slot %d loaded"), slot));
+	else
+		Osd("Could not load the state");
 	if (ok)
 		RewindClear();
 	return ok;
@@ -1099,9 +1349,12 @@ bool SaveState(int slot)
 		return false;
 	const size_t size = retro_serialize_size();
 	std::vector<uint8_t> data(size);
-	bool ok = size > 0 && retro_serialize(data.data(), size) && WriteState(StatePath(slot), data);
+	bool ok = size > 0 && retro_serialize(data.data(), size) && WriteState(StatePath(slot), std::move(data));
 	OrbisLog("[emu] save state %d: %s (%zu bytes)", slot, ok ? "ok" : "failed", size);
-	Osd(ok ? "State saved to slot " + std::to_string(slot) : "Could not save the state");
+	if (ok)
+		Osd(Fmt(T("State saved to slot %d"), slot));
+	else
+		Osd("Could not save the state");
 	return ok;
 }
 
@@ -1144,7 +1397,7 @@ void PowerCycle()
 	if (!LoadGame(path, &error))
 	{
 		OrbisLog("[emu] power cycle: %s", error.c_str());
-		ProsperoNotify("Genesis Plus GX PS5: the game could not be started again. %s", error.c_str());
+		ProsperoNotify(T("Genesis Plus GX PS5: the game could not be started again. %s"), error.c_str());
 	}
 }
 
@@ -1184,7 +1437,7 @@ FrameResult RunFrame()
 		else if (pressed & (SCE_PAD_BUTTON_LEFT | SCE_PAD_BUTTON_RIGHT))
 		{
 			cfg.state_slot = (pressed & SCE_PAD_BUTTON_RIGHT) ? cfg.state_slot % 10 + 1 : (cfg.state_slot + 8) % 10 + 1;
-			Osd("State slot " + std::to_string(cfg.state_slot) + (StateExists(cfg.state_slot) ? " (used)" : " (empty)"));
+			Osd(Fmt(T(StateExists(cfg.state_slot) ? "State slot %d (used)" : "State slot %d (empty)"), cfg.state_slot));
 			OrbisLog("[emu] state slot %d", cfg.state_slot);
 			cfg.Save();
 		}
@@ -1205,6 +1458,7 @@ FrameResult RunFrame()
 
 	// -- emulate
 	GENPLUS_STAGE(Emu, "retro_run");
+	double core_ms = 0, present_ms = 0;
 	if (g.rewinding)
 	{
 		if (!g.rewind.empty())
@@ -1225,7 +1479,11 @@ FrameResult RunFrame()
 		for (int i = 0; i < runs; i++)
 		{
 			g.mute = g.turbo;
+			const double t0 = Now();
 			retro_run();
+			core_ms += (Now() - t0) * 1000.0;
+			if (!g.turbo)
+				g_perf.emu_frames += 1.0;
 			g.frames++;
 			g.fps_frames++;
 			if (cfg.rewind && ++g.rewind_tick >= kRewindEvery)
@@ -1250,8 +1508,10 @@ FrameResult RunFrame()
 	if (g.new_frame || (!g.osd.empty() && now < g.osd_until + 0.1) || cfg.show_fps)
 	{
 		g.new_frame = false;
+		const double t_pic = Now();
 		ps5video::Rect r = DrawLast();
 		ShowOverlays(&r);
+		present_ms = (Now() - t_pic) * 1000.0; // the picture's preparation (a CPU shader included), not the vsync wait
 		// 60 Hz games wait for the flip: the display paces them
 		ps5video::Present(r.x, r.y, r.w, r.h, !pal && !g.turbo);
 	}
@@ -1290,6 +1550,7 @@ FrameResult RunFrame()
 		// the shader's time per frame, every 2 s; when the game also runs slow, say once which setting helps
 		g.next_shader_check = now + 2.0;
 		const double ms = ps5video::TakeShaderMs();
+		g.last_shader_ms = ms;
 		if (ms > 0)
 		{
 			g.shader_ms_sum += ms;
@@ -1301,9 +1562,8 @@ FrameResult RunFrame()
 		{
 			g.shader_warned = true;
 			OrbisLog("[emu] the shader %s takes %.1f ms a frame and the game runs at %.1f fps: suggested a lighter one",
-				ps5crt::Name(ps5crt::Shader(cfg.shader)), ms, g.fps_shown);
-			Osd(std::string(ps5crt::Name(ps5crt::Shader(cfg.shader))) +
-				" is too heavy here: choose a lighter shader (Settings, Shader)");
+				ps5video::ShaderName(cfg.shader), ms, g.fps_shown);
+			Osd(Fmt(T("%s is too heavy here: choose a lighter shader (Settings, Shader)"), ps5video::ShaderName(cfg.shader)));
 		}
 	}
 	if (now >= g.next_stats)
@@ -1326,6 +1586,7 @@ FrameResult RunFrame()
 		g.queued_min = 1 << 30;
 		g.queued_max = 0;
 	}
+	PerfFrame(core_ms, present_ms, g.last_shader_ms);
 	return FrameResult::Continue;
 }
 } // namespace emu

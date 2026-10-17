@@ -1117,6 +1117,165 @@ expect "[ $rc = 0 ] && [ ! -e $G ] && grep -q '^shader=0$' $T/root/genplus-ps5.i
 nosan "$T"
 fi
 
+if want 34; then
+echo "== 34. save protection: no backup, no overwrite; a state kept or not replaced; checksums"
+# the battery save can't be backed up (its .bak is a folder): the new save goes beside it, the old one untouched
+T=$(newroot t34)
+$ROM "$T/root/roms/save.md" sram >/dev/null
+rc=$(run "$T" "0:0;$(QUITAT 100)" "" "$T/root/roms/save.md")
+S=$T/root/saves/MegaDrive/save.srm
+before=$(md5sum < $S)
+mkdir -p "$S.bak/x"
+rc=$(run "$T" "0:0;20:$CROSS;$(QUITAT 100)" "" "$T/root/roms/save.md")
+expect "[ \"\$(md5sum < $S)\" = '$before' ] && [ -f $S.new ] && python3 -c 'import sys; sys.exit(0 if 0x42 not in open(\"$S.new\",\"rb\").read() else 1)'" "battery save: no backup -> the file is left alone, the new one is .srm.new"
+nosan "$T"
+# the Sega CD RAM cart, the same
+T=$(newroot t34b)
+mkdir -p "$T/root/bios"
+$ROM "$T/root/bios/bios_CD_U.bin" cdbios >/dev/null
+$CD "$T/root/roms/Test (USA).cue" >/dev/null
+rc=$(run "$T" "0:0;$(QUITAT 200)" "" "$T/root/roms/Test (USA).cue")
+C=$T/root/saves/cart.brm
+mkdir -p "$C.bak/x"
+rc=$(run "$T" "0:0;20:$CROSS;$(QUITAT 200)" "" "$T/root/roms/Test (USA).cue")
+expect "python3 -c 'import sys; sys.exit(0 if open(\"$C\",\"rb\").read()[0] == 0x42 and open(\"$C.new\",\"rb\").read()[0] == 0xFF else 1)'" "RAM cart: no backup -> cart.brm left alone (the core's own write at unload too), the new one is .new"
+nosan "$T"
+# a state whose old one can't be kept as .prev: nothing replaced
+T=$(newroot t34c)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+rc=$(run "$T" "0:0;100:$L2UP;105:0;$(QUITAT 150)" "" "$T/root/roms/test.md")
+ST=$T/root/states/MegaDrive/test.state1
+before=$(md5sum < $ST)
+mkdir -p "$ST.prev/x"
+rc=$(run "$T" "0:0;100:$L2UP;105:0;$(QUITAT 150)" "" "$T/root/roms/test.md")
+expect "[ \"\$(md5sum < $ST)\" = '$before' ] && [ ! -e $ST.part ] && grep -q 'could not keep the previous state.*left as it was' $T/root/logs/boot.log && grep -q 'save state 1: failed' $T/root/logs/boot.log" "state: the old one can't be kept -> the slot is left as it was, the save says failed"
+rm -rf "$ST.prev"
+# a state changed inside (same size): its CRC-32 refuses it
+python3 - "$ST" <<'PY'
+import sys
+p = sys.argv[1]; d = bytearray(open(p, 'rb').read()); d[1000] ^= 0x55; open(p, 'wb').write(d)
+PY
+rc=$(run "$T" "0:0;100:$L2DOWN;105:0;$(QUITAT 150)" "140" "$T/root/roms/test.md")
+expect "grep -q 'load state 1 .*CRC-32 [0-9a-f]*, the file says [0-9a-f]*: refused' $T/root/logs/boot.log && $CHECK $T/dump/flip00140.ppm 960 540 red >/dev/null" "state: one byte changed -> refused by its CRC-32, the game goes on"
+# a state of 1.8 (no trailer, the core's size): still loads
+rc=$(run "$T" "0:0;100:$L2UP;105:0;$(QUITAT 150)" "" "$T/root/roms/test.md")
+python3 - "$ST" <<'PY'
+import sys
+p = sys.argv[1]; d = open(p, 'rb').read(); assert d[-16:-12] == b'GPXS'; open(p, 'wb').write(d[:-16])
+PY
+rc=$(run "$T" "0:0;100:$L2DOWN;105:0;$(QUITAT 150)" "" "$T/root/roms/test.md")
+expect "grep -q 'load state 1: ok (an older state without a checksum)' $T/root/logs/boot.log" "state: a 1.8 state (no checksum) still loads"
+rc=$(run "$T" "0:0;100:$L2UP;105:0;120:$L2DOWN;125:0;$(QUITAT 150)" "" "$T/root/roms/test.md")
+expect "grep -q 'load state 1: ok (checksum ok)' $T/root/logs/boot.log" "state: a new state loads with its checksum checked"
+nosan "$T"
+# 200 save/load cycles in one session, every one checked
+T=$(newroot t34d)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+pad="0:0"
+for i in $(seq 0 199); do f=$((100 + i * 12)); pad="$pad;$f:$L2UP;$((f + 3)):0;$((f + 6)):$L2DOWN;$((f + 9)):0"; done
+rc=$(MAXFLIPS=9000 run "$T" "$pad;$(QUITAT 2600)" "2590" "$T/root/roms/test.md")
+expect "[ $rc = 0 ] && [ \$(grep -c 'load state 1: ok (checksum ok)' $T/root/logs/boot.log) = 200 ] && $CHECK $T/dump/flip02590.ppm 960 540 red >/dev/null" "200 save/load cycles: all 200 checked and loaded, the game still runs"
+nosan "$T"
+fi
+
+if want 35; then
+echo "== 35. languages: English by default; Spanish, Portuguese (Brazil), French and German translated"
+expect "python3 $PWD/tests/check_i18n.py $PWD/frontend/fe_i18n.cpp >/dev/null" "every translation has its five languages and the English format specifiers"
+for L in 1 2 3 4; do
+	T=$(newroot t35_$L)
+	echo "language=$L" >>"$T/root/genplus-ps5.ini"
+	$ROM "$T/root/roms/Alpha (USA).md" ntsc >/dev/null
+	# the settings screen scrolled through, then a game's pause menu
+	pad="0:0;20:$TRIANGLE;22:0"; f=30
+	for i in $(seq 1 48); do pad="$pad;$f:$DOWN;$((f + 2)):0"; f=$((f + 6)); done
+	pad="$pad;$((f + 4)):$CIRCLE;$((f + 6)):0;$((f + 20)):$CROSS;$((f + 22)):0"; f=$((f + 120))
+	pad="$pad;$f:$L3R3;$((f + 2)):0"; f=$((f + 10))
+	for i in $(seq 1 11); do pad="$pad;$f:$DOWN;$((f + 2)):0"; f=$((f + 8)); done
+	pad="$pad;$((f + 10)):$UP;$((f + 12)):0;$((f + 20)):$CROSS;$((f + 22)):0"
+	rm -f $T/missing.txt
+	rc=$(GENPLUS_HOST_I18N_MISSING=$T/missing.txt run "$T" "$pad" "")
+	# what was shown untranslated: only names (the game's, the chips', the buttons') and texts already translated
+	python3 - $T/missing.txt $PWD/frontend/fe_i18n.cpp > $T/untranslated.txt <<'PY'
+import re, sys
+src = open(sys.argv[2], encoding='utf-8').read()
+translated = set(re.findall(r'"((?:[^"\\]|\\.)*)"', src))
+spec = re.compile(r'%(?:%|[-+ #0]*\d*(?:\.\d+)?(?:hh|h|ll|l|z)?[diouxXeEfgGcsp])')
+# a text printed from a translated format: the format as a pattern
+formats = [re.compile('^' + ''.join('.*' if spec.fullmatch(part) else re.escape(part)
+                                    for part in re.split('(' + spec.pattern + ')', f)) + '$')
+           for f in translated if '%' in f]
+names = {'Alpha (USA)', 'A', 'X', 'Y', 'Z', 'Mode', 'L1', 'R1', 'OPTIONS', 'MAME YM2612', 'English', 'Español',
+         'Português (Brasil)', 'Français', 'Deutsch', 'Off', 'S-Video', 'RGB', '4:3', '16:9', 'GPU', 'CPU'}
+for line in open(sys.argv[1], encoding='utf-8'):
+    t = line.rstrip('\n')
+    if t in translated or t in names or not re.search('[A-Za-z]{2}', t) or re.fullmatch(r'[\d%. ]+', t):
+        continue
+    if any(f.match(t) for f in formats):
+        continue
+    if re.search(r'Mega Drive {3}MD {3}', t) or t.startswith('↣') or t.endswith(' 1.8') or re.search(r'\(\w+ \d\)$', t):
+        continue
+    print(t)
+PY
+	expect "[ $rc = 0 ] && [ ! -s $T/untranslated.txt ]" "$(sed -n 1p $T/root/genplus-ps5.ini >/dev/null; echo language $L): every menu text shown is translated ($(head -c 200 $T/untranslated.txt | tr '\n' '|'))"
+	nosan "$T"
+done
+# English stays the default: no setting, English on the screen (the texts pass through as they are)
+T=$(newroot t35en)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+rc=$(GENPLUS_HOST_I18N_MISSING=$T/missing.txt run "$T" "0:0;$(QUITAT 100)" "" "$T/root/roms/test.md")
+expect "[ $rc = 0 ] && [ ! -s $T/missing.txt ] && grep -q '^language=0$' $T/root/genplus-ps5.ini" "English by default (language=0): nothing is looked up"
+fi
+
+if want 36; then
+echo "== 36. the GPU renderer (Vulkan, here on lavapipe): the picture, the shaders, the menus over the game"
+T=$(newroot t36)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+rc=$(GENPLUS_HOST_GPU=1 run "$T" "0:0;100:$CROSS;140:0;$(QUITAT 200)" "90,130,205" "$T/root/roms/test.md")
+expect "[ $rc = 0 ] && grep -q 'renderer: GPU' $T/root/logs/boot.log" "the GPU renderer starts"
+expect "$RECT $T/dump/flip00090.ppm $T/root/logs/boot.log red >/dev/null && $CHECK $T/dump/flip00130.ppm 960 540 green >/dev/null" "the picture where the log says, Cross -> green"
+expect "python3 -c \"import sys; d=open('$T/dump/flip00205.ppm','rb').read().split(b'\\n',3); w=int(d[1].split()[0]); p=d[3]; r=p[(540*w+300)*3]; sys.exit(0 if 40 < r < 80 else 1)\"" "the pause menu over the game: the game at a quarter behind it, as on the CPU (premultiplied surface)"
+expect "[ ! -e $T/root/logs/gpu-starting ]" "the start marker is removed once a frame is on screen"
+nosan "$T"
+# a start that died while the GPU was being set up: the next one uses the CPU
+T=$(newroot t36b)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+mkdir -p $T/root/logs && touch $T/root/logs/gpu-starting
+rc=$(GENPLUS_HOST_GPU=1 run "$T" "0:0;$(QUITAT 100)" "90" "$T/root/roms/test.md")
+expect "[ $rc = 0 ] && grep -q \"the last start with the GPU didn't reach the screen: this one uses the CPU\" $T/root/logs/boot.log && $CHECK $T/dump/flip00090.ppm 960 540 red >/dev/null" "after a failed GPU start the CPU draws, and the game runs"
+# every GPU shader draws the game (single- and multi-pass: Guest Advanced, Royale, ScaleFX, the Mega Bezel...)
+for s in $(seq 1 26); do
+	T=$(newroot t36s$s)
+	echo "shader=$s" >>"$T/root/genplus-ps5.ini"
+	$ROM "$T/root/roms/test.md" ntsc >/dev/null
+	# (the Mega Bezel's 30 passes run at about 1 frame a second on lavapipe, a CPU: its run stops at frame 40)
+	if [ $s -ge 25 ]; then mf=40; at=35; quit=""; else mf=400; at=90; quit=";$(QUITAT 100)"; fi
+	rc=$(GENPLUS_HOST_GPU=1 MAXFLIPS=$mf run "$T" "0:0$quit" "$at" "$T/root/roms/test.md")
+	name=$(grep -o 'shader [^:]*: [0-9]* pass' $T/root/logs/boot.log | head -1)
+	expect "{ [ $rc = 0 ] || [ $mf = 40 ]; } && [ -n \"$name\" ] && python3 -c \"import sys; d=open('$T/dump/flip000$at.ppm','rb').read().split(b'\\n',3); w=int(d[1].split()[0]); p=d[3]; sys.exit(0 if max(p[(y*w+960)*3] for y in range(440,640)) > 60 else 1)\"" "GPU $name: draws the game"
+	expect "! grep -q 'runtime error\|AddressSanitizer' $T/out.txt" "GPU shader $s: no sanitizer reports"
+done
+fi
+
+if want 37; then
+echo "== 37. the performance log: a row a second, CD audio seen, the sound/picture drift flat"
+T=$(newroot t37)
+echo "perf_log=1" >>"$T/root/genplus-ps5.ini"
+$ROM "$T/root/roms/mdp.md" mdplus >/dev/null
+$CD "$T/root/roms/mdp.cue" --loop >/dev/null
+rc=$(run "$T" "0:0;$(QUITAT 1300)" "" "$T/root/roms/mdp.md")
+P=$T/root/logs/perf-MegaDrive-mdp.csv
+expect "[ $rc = 0 ] && [ -f $P ] && [ \$(grep -c '^[0-9]' $P) -ge 15 ]" "logs/perf-MegaDrive-mdp.csv: a row a second ($(grep -c '^[0-9]' $P 2>/dev/null) rows)"
+expect "python3 - $P <<'PY'
+import csv, sys
+rows = [r for r in csv.DictReader(l for l in open(sys.argv[1]) if not l.startswith('#'))]
+cd = [float(r['cd_audio_pct']) for r in rows[2:]]
+drift = [float(r['av_drift_ms']) for r in rows]
+sys.exit(0 if min(cd) > 90 and max(drift) - min(drift) < 5 else 1)
+PY" "CD audio seen playing; the sound/picture drift stays within 5 ms over the run"
+expect "grep -q '\[perf\] [0-9]* s, [0-9]* frames: core' $T/root/logs/boot.log" "a summary in boot.log when the game closes"
+nosan "$T"
+fi
+
 echo
 echo "passed $PASS, failed $FAIL  (work dir $WORK)"
 [ $FAIL = 0 ]

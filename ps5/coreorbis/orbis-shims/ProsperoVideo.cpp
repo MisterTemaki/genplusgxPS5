@@ -17,6 +17,7 @@
 
 #include "OrbisPaths.h"
 #include "ProsperoCrt.h"
+#include "ProsperoGpu.h"
 #include "ProsperoSce.h"
 
 #include <immintrin.h>
@@ -27,8 +28,10 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <string>
 #include <vector>
 
 namespace ps5video
@@ -94,6 +97,8 @@ size_t TiledBufferSize(uint32_t width, uint32_t height)
 struct State
 {
 	bool ok = false;
+	bool gpu = false; // the GPU draws the picture (ProsperoGpu.cpp); the surface is then premultiplied RGBA
+	bool gpu_marker = false; // the "GPU starting" marker is still there (removed at the first frame on screen)
 	int handle = -1;
 	SceKernelEqueue flip_queue = nullptr;
 	intptr_t phys = 0; // direct memory (0 when the buffers are flexible memory)
@@ -337,6 +342,65 @@ void SetOutputSize(int w, int h)
 }
 } // namespace
 
+namespace
+{
+std::string GpuMarker()
+{
+	return OrbisRoot() + "/logs/gpu-starting";
+}
+
+// The renderer: Settings, SYSTEM, Renderer (renderer=1 GPU, the default; 0 CPU) -- read here, before the settings
+// are, since the video comes up first. A start that died while the GPU was being set up (its marker is still
+// there) is followed by one with the CPU, so a GPU problem can't keep the app from opening.
+bool WantGpu()
+{
+#ifdef __PROSPERO__
+	int renderer = 1;
+	if (FILE* f = fopen((OrbisRoot() + "/genplus-ps5.ini").c_str(), "r"))
+	{
+		char line[256];
+		while (fgets(line, sizeof(line), f))
+			if (!strncmp(line, "renderer=", 9))
+				renderer = atoi(line + 9);
+		fclose(f);
+	}
+	if (renderer == 0)
+	{
+		OrbisLog("[video] renderer: CPU (the setting)");
+		return false;
+	}
+#else
+	const char* e = getenv("GENPLUS_HOST_GPU");
+	if (!e || !*e || *e == '0')
+		return false;
+#endif
+	if (access(GpuMarker().c_str(), F_OK) == 0)
+	{
+		unlink(GpuMarker().c_str());
+		OrbisLog("[video] the last start with the GPU didn't reach the screen: this one uses the CPU");
+		return false;
+	}
+	return true;
+}
+} // namespace
+
+bool GpuActive()
+{
+	return g.gpu;
+}
+
+int ShaderCount()
+{
+	return g.gpu ? ps5gpu::ShaderCount() : int(ps5crt::Shader::Count);
+}
+
+const char* ShaderName(int i)
+{
+	if (g.gpu)
+		return ps5gpu::ShaderName(i);
+	return ps5crt::Name(ps5crt::Shader(std::max(0, std::min(i, int(ps5crt::Shader::Count) - 1))));
+}
+
 bool Init()
 {
 	if (g.ok)
@@ -349,6 +413,32 @@ bool Init()
 		return false;
 	}
 	std::fill(g.surface, g.surface + size_t(kWidth) * kHeight, Rgb(0, 0, 0));
+
+	if (WantGpu())
+	{
+		if (FILE* f = fopen(GpuMarker().c_str(), "w"))
+		{
+			fclose(f);
+			g.gpu_marker = true;
+		}
+#ifdef __PROSPERO__
+		const bool gpu = ps5gpu::Init(kWidth, kHeight, false, 0, 0);
+#else
+		const bool gpu = ps5gpu::Init(kWidth, kHeight, true, kWidth, kHeight);
+#endif
+		if (gpu)
+		{
+			g.gpu = true;
+			g.ok = true;
+			OrbisLog("[video] renderer: GPU (%s), output %dx%d", ps5gpu::DeviceName(), ps5gpu::OutWidth(),
+				ps5gpu::OutHeight());
+			Present(0, 0, 0, 0, true);
+			return true;
+		}
+		unlink(GpuMarker().c_str());
+		g.gpu_marker = false;
+		OrbisLog("[video] renderer: the GPU couldn't be set up, the CPU draws the picture");
+	}
 	for (uint32_t y = 0; y < kTileH; y++)
 		g.yoff[y] = TileOffset(0, y);
 
@@ -415,6 +505,11 @@ bool Init()
 
 void Shutdown()
 {
+	if (g.gpu)
+	{
+		ps5gpu::Shutdown();
+		g.gpu = false;
+	}
 	if (g.handle >= 0)
 	{
 		while (g.flips_in_flight > 0)
@@ -444,6 +539,16 @@ void Present(int x, int y, int w, int h, bool wait_vsync)
 {
 	if (!g.ok)
 		return;
+	if (g.gpu)
+	{
+		const ps5gpu::Rect d = (w <= 0 || h <= 0) ? ps5gpu::Rect{0, 0, kWidth, kHeight} : ps5gpu::Rect{x, y, w, h};
+		if (ps5gpu::Present(g.surface, d, wait_vsync) && g.gpu_marker)
+		{
+			unlink(GpuMarker().c_str());
+			g.gpu_marker = false;
+		}
+		return;
+	}
 	// The buffer about to be written may still be on screen until its last flip completes.
 	while (g.flips_in_flight > 0)
 		WaitOneFlip();
@@ -483,8 +588,12 @@ void DarkenRect(int x, int y, int w, int h)
 	for (int j = r.y; j < r.y + r.h; j++)
 	{
 		uint32_t* p = g.surface + size_t(j) * kWidth + r.x;
-		for (int i = 0; i < r.w; i++)
-			p[i] = ((p[i] >> 1) & 0x007f7f7fu) | 0xff000000u;
+		if (g.gpu) // premultiplied: half the colour and half the transparency (the game behind at half too)
+			for (int i = 0; i < r.w; i++)
+				p[i] = ((p[i] >> 1) & 0x7f7f7f7fu) + 0x80000000u;
+		else
+			for (int i = 0; i < r.w; i++)
+				p[i] = ((p[i] >> 1) & 0x007f7f7fu) | 0xff000000u;
 	}
 }
 
@@ -616,8 +725,8 @@ void Setup(int w, int h, int base_h, double aspect, Scale scale, bool smooth, bo
 	}
 	FillRect(0, 0, kWidth, kHeight, Rgb(0, 0, 0));
 	if (shader > 0)
-		OrbisLog("[video] picture %dx%d (%d lines, aspect %.4f, %s, shader %s) -> %d,%d %dx%d", w, h, base_h, aspect,
-			ScaleName(scale), ps5crt::Name(ps5crt::Shader(shader)), d.x, d.y, d.w, d.h);
+		OrbisLog("[video] picture %dx%d (%d lines, aspect %.4f, %s, shader %s%s) -> %d,%d %dx%d", w, h, base_h, aspect,
+			ScaleName(scale), ShaderName(shader), g.gpu ? ", GPU" : "", d.x, d.y, d.w, d.h);
 	else
 		OrbisLog("[video] picture %dx%d (%d lines, aspect %.4f, %s%s%s) -> %d,%d %dx%d", w, h, base_h, aspect,
 			ScaleName(scale), lerp ? ", smooth" : "", scanlines ? ", scanlines" : "", d.x, d.y, d.w, d.h);
@@ -647,6 +756,8 @@ void InvalidateFrame()
 
 double TakeShaderMs()
 {
+	if (g.gpu)
+		return ps5gpu::TakeShaderMs();
 	const double ms = s_shader_frames ? s_shader_ms / s_shader_frames : 0.0;
 	s_shader_ms = 0;
 	s_shader_frames = 0;
@@ -671,6 +782,19 @@ Rect DrawFrame(const uint32_t* argb, int w, int h, int base_h, double aspect, Sc
 
 	const Rect& d = s_geom.dst;
 	s_frame_no++;
+	if (g.gpu)
+	{
+		// the GPU draws the picture under the surface: here the surface is made transparent over it (all of it for a
+		// shader that draws a bezel around the game)
+		const bool full = ps5gpu::ShaderFullscreen(shader);
+		const Rect t = full ? Rect{0, 0, kWidth, kHeight} : d;
+		for (int y = t.y; y < t.y + t.h; y++)
+			memset(g.surface + size_t(y) * kWidth + t.x, 0, size_t(t.w) * 4);
+		ps5gpu::SetGame(argb, w, h, ps5gpu::Rect{d.x, d.y, d.w, d.h}, shader, smooth, scanlines);
+		return (cleared || full) ? Rect{0, 0, kWidth, kHeight} : d;
+	}
+	if (shader >= int(ps5crt::Shader::Count))
+		shader = int(ps5crt::Shader::EasymodeStyle); // a GPU-only shader, with the CPU drawing
 	if (shader > 0 && shader < int(ps5crt::Shader::Count))
 	{
 		timespec t0, t1;
@@ -751,7 +875,15 @@ void BlendOverlay(const uint32_t* argb, int w, int h, const uint8_t* row_used)
 			if (a == 0)
 				continue;
 			const uint32_t src = ArgbToSurface(c) & 0x00ffffffu;
-			out[x] = a >= 255 ? (src | 0xff000000u) : (Lerp(out[x], src, a + (a >> 7)) | 0xff000000u);
+			if (g.gpu && a < 255)
+			{
+				// premultiplied: colour and transparency both blended
+				const uint32_t wa = a + (a >> 7);
+				const uint32_t da = out[x] >> 24;
+				out[x] = Lerp(out[x], src, wa) | ((a + ((da * (256 - wa)) >> 8)) << 24);
+			}
+			else
+				out[x] = a >= 255 ? (src | 0xff000000u) : (Lerp(out[x], src, a + (a >> 7)) | 0xff000000u);
 		}
 	}
 }

@@ -1,0 +1,61 @@
+shaders = 13
+
+shader0 = "lut.slang"
+filter_linear0 = true
+textures = "SamplerLutNtsc;SamplerLutTrinitron;"
+SamplerLutNtsc = lut/ntsc-lut.png
+SamplerLutNtsc_linear = true
+SamplerLutTrinitron = lut/trinitron-lut.png
+SamplerLutTrinitron_linear = true
+
+shader1 = "ntsc-pass1-horizontal.slang"
+filter_linear1 = false // required: sample source nearest neighbor (avoids blurriness)
+scale_type_x1 = source
+scale_type_y1 = source
+scale_x1 = 4.0 // up-scale in horizontal direction
+scale_y1 = 1.0
+
+shader2 = "ntsc-pass2-horizontal.slang"
+filter_linear2 = true // required: sample ntsc-1-output linear (compensates artifacts)
+scale_type_x2 = source
+scale_type_y2 = source
+scale_x2 = 0.25 // down-scale in horizontal direction
+scale_y2 = 1.0
+
+shader3 = "ntsc-pass1-vertical.slang"
+filter_linear3 = false // required: sample source nearest neighbor (avoids blurriness)
+scale_type_x3 = source
+scale_type_y3 = source
+scale_x3 = 1.0
+scale_y3 = 4.0 // up-scale in vertical direction
+
+shader4 = "ntsc-pass2-vertical.slang"
+filter_linear4 = true // required: sample ntsc-1-output linear (compensates artifacts)
+scale_type_x4 = source
+scale_type_y4 = source
+scale_x4 = 1.0
+scale_y4 = 0.25 // down-scale in vertical direction
+
+shader5 = "offset.slang"
+filter_linear5 = true // required: sample ntsc-2-output linear (factional offset)
+
+shader6 = "deconverge.slang"
+filter_linear6 = true // required: sample offset-output linear (factional de-converge)
+
+shader7 = "phosphor.slang"
+filter_linear7 = true
+
+shader8 = "sharp-blur-horizontal.slang"
+filter_linear8 = true
+
+shader9 = "sharp-blur-vertical.slang"
+filter_linear9 = true
+
+shader10 = "halation-blur-horizontal.slang"
+filter_linear10 = true
+
+shader11 = "halation-blur-vertical.slang"
+filter_linear11 = true
+
+shader12 = "crt-yah.slang"
+filter_linear12 = true // required: sample blur-output linear

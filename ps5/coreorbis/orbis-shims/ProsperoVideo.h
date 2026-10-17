@@ -15,6 +15,11 @@ constexpr int kHeight = 1080;
 
 bool Init();
 void Shutdown();
+// The GPU draws the picture (ProsperoGpu.h): the surface is then premultiplied RGBA laid over it.
+bool GpuActive();
+// The shaders of the renderer in use: the CPU's (ProsperoCrt.h) or the GPU's (slang presets); 0 is "Off".
+int ShaderCount();
+const char* ShaderName(int i);
 
 uint32_t* Surface(); // kWidth * kHeight pixels, pitch kWidth
 

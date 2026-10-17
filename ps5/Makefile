@@ -25,8 +25,10 @@
 PS5_PAYLOAD_SDK ?= /opt/ps5-payload-sdk
 PS5_HOST ?= ps5
 PS5_PORT ?= 9021
-VERSION ?= 1.8
+VERSION ?= 1.9
 CORE_VERSION := 1.7.4
+# the GPU's shader tables, generated from shaders/presets.txt (see "shaders:" below)
+SLANG_CPP := build/gen/slang_presets.cpp
 TITLE_ID ?= PPSA99921
 # where the app looks for its updates (Settings, SYSTEM, Updates): this repository's GitHub releases
 UPDATE_REPO ?= MisterTemaki/genplusgxPS5
@@ -52,7 +54,7 @@ CORE_C_SRC := $(sort $(foreach d,$(CORE_DIRS),$(patsubst $(ROOT)/%,%,$(wildcard 
 		compat/fopen_utf8.c compat/compat_strl.c encodings/encoding_utf.c vfs/vfs_implementation.c) \
 	libretro/libretro.c libretro/scrc32.c
 CORE_SRC :=
-CORE_DEFS := -DLSB_FIRST -DBYTE_ORDER=LITTLE_ENDIAN -DHAVE_ZLIB -DMAXROMSIZE=33554432 -DUSE_LIBTREMOR -DUSE_LIBCHDR \
+CORE_DEFS := -DZSTD_TRACE=0 -DLSB_FIRST -DBYTE_ORDER=LITTLE_ENDIAN -DHAVE_ZLIB -DMAXROMSIZE=33554432 -DUSE_LIBTREMOR -DUSE_LIBCHDR \
 	-DHAVE_LROUND -DHAVE_STDINT_H -DZ7_ST -DZSTD_DISABLE_ASM -DHAVE_SYS_PARAM_H -DUSE_16BPP_RENDERING \
 	-DFRONTEND_SUPPORTS_RGB565 -D__LIBRETRO__ -DUSE_LIBRETRO_VFS -DM68K_OVERCLOCK_SHIFT=20 -DZ80_OVERCLOCK_SHIFT=20 \
 	-DHAVE_YM3438_CORE -DHAVE_OPLL_CORE '-DINLINE=static inline'
@@ -62,8 +64,9 @@ EMU_SRC := coreorbis/main-boot.cpp \
 	coreorbis/orbis-shims/orbis_paths.cpp coreorbis/orbis-shims/ProsperoNotify.cpp \
 	coreorbis/orbis-shims/ProsperoVideo.cpp coreorbis/orbis-shims/ProsperoAudio.cpp \
 	coreorbis/orbis-shims/ProsperoInput.cpp coreorbis/orbis-shims/ProsperoJailbreak.cpp \
-	coreorbis/orbis-shims/ProsperoCrash.cpp coreorbis/orbis-shims/ProsperoCrt.cpp coreorbis/orbis-shims/ProsperoUpdate.cpp \
-	frontend/fe_emu.cpp frontend/fe_menu.cpp frontend/fe_settings.cpp frontend/fe_text.cpp \
+	coreorbis/orbis-shims/ProsperoCrash.cpp coreorbis/orbis-shims/ProsperoCrt.cpp coreorbis/orbis-shims/ProsperoGpu.cpp \
+	coreorbis/orbis-shims/ProsperoUpdate.cpp \
+	frontend/fe_emu.cpp frontend/fe_menu.cpp frontend/fe_settings.cpp frontend/fe_i18n.cpp frontend/fe_text.cpp \
 	frontend/fe_games.cpp frontend/fe_http.cpp frontend/fe_covers.cpp frontend/fe_shelf.cpp \
 	frontend/fe_prefetch.cpp frontend/fe_coverfetch.cpp frontend/fe_coverworker.cpp
 # minizip (zlib licence) for games inside a .zip, built as C with the core's zlib
@@ -107,6 +110,18 @@ GAMEDB_DEFS := -DGAMEDB_TSV='"$(abspath frontend/data/nointro.tsv)"'
 # the helper payload is installer_main.cpp without the install step
 %/port/installer/helper_main.o: EXTRA_FLAGS = -DGENPLUS_HELPER_ONLY
 
+# ---------------- the GPU (optional) ----------------
+# PS5_VULKAN=<a PS5_Vulkan checkout> (github.com/mihawk-99/PS5_Vulkan, with tools/setup-native-dependencies.sh and
+# tools/build-radv.sh release run in it) builds the app with RADV inside: the GPU draws the picture and runs the
+# slang shaders. Without it the app is the CPU-only build of 1.8. Use that checkout's payload SDK fork too
+# (PS5_PAYLOAD_SDK=$(PS5_VULKAN)/.deps/native/ps5-payload-sdk): RADV is built against it.
+PS5_VULKAN ?=
+ifneq ($(PS5_VULKAN),)
+RADV_DIR ?= $(PS5_VULKAN)/.deps/native/radv-release
+RADV_ARCHIVE ?= $(RADV_DIR)/lib/libvulkan_radeon.ps5.a
+PS5_GPU_DEFS := -DGENPLUS_GPU -isystem $(RADV_DIR)/include
+endif
+
 # ---------------- PS5 ----------------
 PS5_CC  := $(PS5_PAYLOAD_SDK)/bin/prospero-clang
 PS5_CXX := $(PS5_PAYLOAD_SDK)/bin/prospero-clang++
@@ -148,6 +163,7 @@ $(PS5_OUT)/bridge/%.o: %.c frontend/fe_bram.h
 $(PS5_OUT)/port/%.o: %.cpp coreorbis/include-orbis/*.h coreorbis/orbis-shims/*.h frontend/*.h
 	@mkdir -p $(dir $@)
 	$(PS5_CXX) -std=c++17 $(PS5_OPT) $(DEFS) $(INCS) $(PORT_WARN) $(EXTRA_FLAGS) -c -o $@ $<
+$(PS5_OUT)/port/coreorbis/orbis-shims/ProsperoGpu.o: EXTRA_FLAGS = $(PS5_GPU_DEFS)
 
 $(PS5_OUT)/port/installer/helper_main.o: installer/installer_main.cpp coreorbis/include-orbis/*.h coreorbis/orbis-shims/*.h
 	@mkdir -p $(dir $@)
@@ -244,6 +260,7 @@ build/app/app_crt.o build/app/app_cpp_runtime.o: build/app/%.o: $(NATIVE)/toolin
 		-c -o $@ $<
 
 EBOOT_OBJS = build/app/app_crt.o build/app/app_cpp_runtime.o $(PS5_CORE_OBJ) $(PS5_EMU_OBJ) $(PS5_OUT)/helper_data.o
+ifeq ($(PS5_VULKAN),)
 build/app/genplus-pie.elf: $(EBOOT_OBJS) $(NATIVE)/tooling/native/ps5-pie.ld $(NATIVE)/tooling/native/ehframe.ld \
 		$(NATIVE)/tooling/native/app-symbols.map $(NATIVE)/tooling/native/localize.map
 	$(LLD) -m elf_x86_64 -pie -z max-page-size=0x4000 --hash-style=gnu \
@@ -252,9 +269,37 @@ build/app/genplus-pie.elf: $(EBOOT_OBJS) $(NATIVE)/tooling/native/ps5-pie.ld $(N
 		-e _start --no-dynamic-linker -o $@ $(EBOOT_OBJS) \
 		--as-needed $(APP_STUBS) -L $(SDK_LIB) \
 		$(SDK_LIB)/libc++.a $(SDK_LIB)/libc++abi.a $(SDK_LIB)/libunwind.a $(SDK_LIB)/libc.a -lpthread
+EBOOT_EXTRA_STUBS =
+else
+# With RADV: PS5_Vulkan's recipe (tools/radv_link_args.sh), its AGC import stubs, and the shader tables. RADV's
+# archive carries zlib 1.3.1 (its shader cache's), the same release as libchdr's copy: that copy is left out, and
+# so is libretro's scrc32.c (its crc32 is zlib's, which RADV's archive defines).
+EBOOT_OBJS := $(filter-out $(PS5_OUT)/core/$(CHD)/deps/zlib-1.3.1/% $(PS5_OUT)/core/libretro/scrc32.o,$(EBOOT_OBJS)) \
+	$(PS5_OUT)/slang_presets.o
+AGC_STUBS := build/app/stubs/libSceAgc.so build/app/stubs/libSceAgcDriver.so
+build/app/stubs/libSceAgc.so: $(PS5_VULKAN)/vendor/ps5/sdk/stubs/agc_canary_link_stub.c
+build/app/stubs/libSceAgcDriver.so: $(PS5_VULKAN)/vendor/ps5/sdk/stubs/agc_driver_canary_link_stub.c
+$(AGC_STUBS):
+	@mkdir -p $(dir $@)
+	$(PS5_CC) -std=c11 -O2 -fPIC -c -o $@.o $<
+	$(PS5_PAYLOAD_SDK)/bin/prospero-lld --shared -soname $(basename $(notdir $@)).prx -o $@ $@.o
+build/app/radv-link.args: tools/radv_link_args.sh $(RADV_ARCHIVE)
+	@mkdir -p $(dir $@)
+	bash tools/radv_link_args.sh $(abspath $(PS5_VULKAN)) $(abspath $(PS5_PAYLOAD_SDK)) $(abspath $(RADV_ARCHIVE)) > $@
+$(PS5_OUT)/slang_presets.o: $(SLANG_CPP) coreorbis/orbis-shims/ProsperoSlang.h
+	@mkdir -p $(dir $@)
+	$(PS5_CXX) -std=c++17 -O0 -fPIC -Icoreorbis/orbis-shims -c -o $@ $<
+build/app/genplus-pie.elf: $(EBOOT_OBJS) $(AGC_STUBS) build/app/radv-link.args $(NATIVE)/tooling/native/app-symbols.map \
+		$(NATIVE)/tooling/native/localize.map
+	$(PS5_PAYLOAD_SDK)/bin/prospero-lld --eh-frame-hdr --no-dynamic-linker -z nodynamic-undefined-weak --version-script $(NATIVE)/tooling/native/app-symbols.map \
+		--version-script $(NATIVE)/tooling/native/localize.map --exclude-libs=ALL \
+		-e _start -o $@ $(EBOOT_OBJS) $(AGC_STUBS) $$(cat build/app/radv-link.args) \
+		--as-needed $(APP_STUBS)
+EBOOT_EXTRA_STUBS = $(foreach s,$(AGC_STUBS),--stub $(s))
+endif
 
 build/app/eboot.elf: build/app/genplus-pie.elf $(NATIVE_TOOL)
-	$(NATIVE_TOOL) link --in $< --out $@ --stub-dir $(SDK_LIB) --module-sdk 0x02000009 \
+	$(NATIVE_TOOL) link --in $< --out $@ --stub-dir $(SDK_LIB) $(EBOOT_EXTRA_STUBS) --module-sdk 0x02000009 \
 		--companion-sdk 0x08050001 --file-name eboot.elf
 	python3 tools/prepare_console_elf.py --input $@ --output build/app/eboot-console-ready.elf
 
@@ -345,11 +390,23 @@ $(HOST_OUT)/genplus-ps5-helper: $(HOST_HELPER_OBJ)
 $(HOST_OUT)/genplus-ps5-installer: $(HOST_INSTALLER_OBJ) $(HOST_OUT)/install_data.o
 	$(HOST_CXX) $(HOST_SAN) -o $@ $^ -lpthread
 
-$(HOST_OUT)/genplus-ps5-host: $(HOST_CORE_OBJ) $(HOST_EMU_OBJ) $(HOST_OUT)/helper_data.o
-	$(HOST_CXX) $(HOST_SAN) -o $@ $^ -lpthread -lm
+# the shader tables: data only, no sanitizer, no optimisation (a large file)
+$(HOST_OUT)/slang_presets.o: $(SLANG_CPP) coreorbis/orbis-shims/ProsperoSlang.h
+	@mkdir -p $(dir $@)
+	$(HOST_CXX) -std=c++17 -O0 -Icoreorbis/orbis-shims -c -o $@ $<
+
+$(HOST_OUT)/genplus-ps5-host: $(HOST_CORE_OBJ) $(HOST_EMU_OBJ) $(HOST_OUT)/helper_data.o $(HOST_OUT)/slang_presets.o
+	$(HOST_CXX) $(HOST_SAN) -o $@ $^ -lpthread -lm -lvulkan
 
 test: host
 	bash tests/run-tests.sh
+
+# The GPU's shaders: shaders/presets.txt (RetroArch slang presets, in shaders/slang/) compiled to SPIR-V tables
+# with their reflection and textures (tools/slang_compile.py, which needs glslangValidator).
+$(SLANG_CPP): shaders/presets.txt tools/slang_compile.py shaders/plain.slang shaders/ui.slang
+	@mkdir -p $(dir $@)
+	python3 tools/slang_compile.py $@ --list shaders/presets.txt
+shaders: $(SLANG_CPP)
 
 # the CRT shaders' drawing time on this computer, built with the PS5's flags (tools/shader_bench.cpp)
 shader-bench: $(HOST_OUT)/shader-bench
@@ -364,5 +421,5 @@ $(HOST_OUT)/shader-bench: tools/shader_bench.cpp coreorbis/orbis-shims/ProsperoC
 clean:
 	rm -rf build
 
-.PHONY: shader-bench ps5 ps5-core host-core host test send strip app dist clean
+.PHONY: shaders shader-bench ps5 ps5-core host-core host test send strip app dist clean
 .SECONDARY:

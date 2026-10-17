@@ -5,6 +5,7 @@
 
 #include "fe_covers.h"
 #include "fe_games.h"
+#include "fe_i18n.h"
 #include "fe_menu.h"
 #include "fe_prefetch.h"
 #include "fe_settings.h"
@@ -487,7 +488,7 @@ struct Repeat
 
 void CenterText(int y, const std::string& s, int scale, uint32_t color)
 {
-	const std::string fit = FitText(s, scale, W - 200);
+	const std::string fit = FitText(T(s.c_str()), scale, W - 200);
 	DrawText((W - TextWidth(fit.c_str(), scale)) / 2, y, fit.c_str(), scale, color);
 }
 
@@ -500,8 +501,8 @@ bool Confirm(const char* question)
 	const int bw = 900, bh = 240, bx = (W - bw) / 2, by = (H - bh) / 2;
 	ps5video::FillRect(bx - 3, by - 3, bw + 6, bh + 6, Rgb(150, 125, 255));
 	ps5video::FillRect(bx, by, bw, bh, Rgb(26, 24, 48));
-	DrawText(bx + 50, by + 50, question, 5, Rgb(240, 240, 250));
-	DrawText(bx + 50, by + 160, (std::string(icon::Cross) + " Yes       " + icon::Circle + " No").c_str(), 3, Rgb(170, 160, 210));
+	DrawText(bx + 50, by + 50, FitText(T(question), 5, bw - 100).c_str(), 5, Rgb(240, 240, 250));
+	DrawText(bx + 50, by + 160, (std::string(icon::Cross) + " " + T("Yes") + "       " + icon::Circle + " " + T("No")).c_str(), 3, Rgb(170, 160, 210));
 	ps5video::Present(0, 0, 0, 0, true);
 	for (;;)
 	{
@@ -638,9 +639,9 @@ std::string Shelf()
 		drawn = now;
 		char text[96];
 		if (stage == 0)
-			snprintf(text, sizeof(text), "Looking for games... %zu found", done);
+			snprintf(text, sizeof(text), T("Looking for games... %zu found"), done);
 		else
-			snprintf(text, sizeof(text), "Identifying games... %d%% (%zu of %zu)", total ? int(done * 100 / total) : 0, done, total);
+			snprintf(text, sizeof(text), T("Identifying games... %d%% (%zu of %zu)"), total ? int(done * 100 / total) : 0, done, total);
 		LoadingProgress(text, stage == 0 ? -1.0f : total ? float(done) / float(total) : 0.f);
 	});
 	bool same = games.size() == st.all.size();
@@ -896,7 +897,7 @@ std::string Shelf()
 		DrawText(84, 150, (std::string(icon::GitHub) + " " + kAuthorGitHub).c_str(), 3, Rgb(160, 152, 200));
 		if (tabs.size() > 1)
 		{
-			const std::string label = std::string(icon::DpadUpDown) + "  " + FamilyName(tabs[size_t(tab)]);
+			const std::string label = std::string(icon::DpadUpDown) + "  " + T(FamilyName(tabs[size_t(tab)]));
 			const bool flash = now - tab_since < 1.2;
 			CenterText(flash ? 52 : 60, label, flash ? 5 : 4, flash ? Rgb(245, 240, 255) : Rgb(200, 190, 240));
 			if (flash)
@@ -920,7 +921,7 @@ std::string Shelf()
 			if (g.on_usb)
 				sub += "   USB";
 			if (sel_tex && !sel_tex->real)
-				sub += "   no cover";
+				sub += std::string("   ") + T("no cover");
 			CenterText(880, sub, 3, Rgb(175, 170, 205));
 		}
 		else
@@ -938,29 +939,30 @@ std::string Shelf()
 		if (st.covers.ToDownload() > 0 && !st.covers.Offline() && cfg.covers_download)
 		{
 			char s[96];
-			snprintf(s, sizeof(s), "Downloading covers... %d left", st.covers.ToDownload());
+			snprintf(s, sizeof(s), T("Downloading covers... %d left"), st.covers.ToDownload());
 			DrawText(W - 80 - TextWidth(s, 3), 112, s, 3, Rgb(170, 160, 210));
 		}
 		else if (st.covers.BackgroundLeft() > 0 && !st.covers.BackgroundOffline() && cfg.covers_download)
 		{
 			char s[96];
-			snprintf(s, sizeof(s), "Downloading covers in the background... %d left", st.covers.BackgroundLeft());
+			snprintf(s, sizeof(s), T("Downloading covers in the background... %d left"), st.covers.BackgroundLeft());
 			DrawText(W - 80 - TextWidth(s, 3), 112, s, 3, Rgb(170, 160, 210));
 		}
 		else if ((st.covers.Offline() || (st.covers.BackgroundLeft() > 0 && st.covers.BackgroundOffline())) &&
 				 cfg.covers_download)
 		{
-			const char* s = "Offline: covers next time";
+			const char* s = T("Offline: covers next time");
 			DrawText(W - 80 - TextWidth(s, 3), 112, s, 3, Rgb(170, 160, 210));
 		}
 		// hints
 		ps5video::DarkenRect(0, H - 78, W, 78);
 		const std::string sp = "      ";
 		const std::string hint = n > 0
-			? std::string(icon::Cross) + " Play" + sp + icon::DpadLeftRight + " Browse" + sp + icon::DpadUpDown + " System" +
-				sp + icon::L1 + " " + icon::R1 + " Skip 10" + sp + icon::Triangle + " Settings" + sp + icon::Square +
-				" Get cover" + sp + icon::Options + " Quit"
-			: std::string(icon::DpadUpDown) + " System" + sp + icon::Triangle + " Settings" + sp + icon::Options + " Quit";
+			? std::string(icon::Cross) + " " + T("Play") + sp + icon::DpadLeftRight + " " + T("Browse") + sp + icon::DpadUpDown +
+				" " + T("System") + sp + icon::L1 + " " + icon::R1 + " " + T("Skip 10") + sp + icon::Triangle + " " +
+				T("Settings") + sp + icon::Square + " " + T("Get cover") + sp + icon::Options + " " + T("Quit")
+			: std::string(icon::DpadUpDown) + " " + T("System") + sp + icon::Triangle + " " + T("Settings") + sp +
+				icon::Options + " " + T("Quit");
 		DrawText((W - TextWidth(hint.c_str(), 3)) / 2, H - 60, hint.c_str(), 3, Rgb(205, 200, 228));
 
 		ps5video::Present(0, 0, 0, 0, true);

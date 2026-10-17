@@ -1,0 +1,30 @@
+# Genesis Plus GX PS5: the GPU's shaders, in menu order (ps5/tools/slang_compile.py compiles them: make shaders).
+# name = preset (.slangp or .slang), relative to this folder; the first two are the port's own and not in the menu.
+__plain = plain.slang
+__ui = ui.slang
+crt-easymode = slang/crt/crt-easymode.slangp
+crt-lottes = slang/crt/crt-lottes.slangp
+crt-lottes-fast = slang/crt/crt-lottes-fast.slangp
+crt-1tap = slang/crt/crt-1tap.slangp
+crt-2tap = slang/crt/crt-2tap.slangp
+crt-hyllian-fast = slang/crt/crt-hyllian-fast.slangp
+crt-nobody = slang/crt/crt-nobody.slangp
+newpixie-mini = slang/crt/newpixie-mini.slangp
+crt-blurPi-sharp = slang/crt/crt-blurPi-sharp.slangp
+crt-blurPi-soft = slang/crt/crt-blurPi-soft.slangp
+monoCRT = slang/crt/monoCRT.slangp
+crt-guest-advanced = slang/crt/crt-guest-advanced.slangp
+crt-guest-advanced-fast = slang/crt/crt-guest-advanced-fast.slangp
+crt-guest-advanced-ntsc = slang/crt/crt-guest-advanced-ntsc.slangp
+crt-royale = slang/crt/crt-royale.slangp
+crt-geom = slang/crt/crt-geom.slangp
+crt-easymode-halation = slang/crt/crt-easymode-halation.slangp
+crt-hyllian = slang/crt/crt-hyllian.slangp
+crt-aperture = slang/crt/crt-aperture.slangp
+crt-pi = slang/crt/crt-pi.slangp
+crt-consumer = slang/crt/crt-consumer.slangp
+crt-yah = slang/crt/crt-yah.slangp
+zfast-crt = slang/crt/zfast-crt-geo.slangp
+ScaleFX = slang/edge-smoothing/scalefx/scalefx.slangp
+Mega Bezel (Potato) = slang/bezel/Mega_Bezel/Presets/MBZ__5__POTATO.slangp@HSM_INTRO_WHEN_TO_SHOW=0|fullscreen
+Mega Bezel (Standard) = slang/bezel/Mega_Bezel/Presets/MBZ__3__STD.slangp@HSM_INTRO_WHEN_TO_SHOW=0|fullscreen

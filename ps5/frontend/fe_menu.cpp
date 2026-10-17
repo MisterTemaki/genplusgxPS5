@@ -8,6 +8,7 @@
 #include "fe_menu.h"
 
 #include "fe_emu.h"
+#include "fe_i18n.h"
 #include "fe_settings.h"
 #include "fe_text.h"
 
@@ -20,6 +21,7 @@
 #include "ProsperoVideo.h"
 
 #include <algorithm>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -31,6 +33,18 @@ namespace fe
 namespace
 {
 using ps5video::Rgb;
+
+// printf into a std::string (the translated formats)
+std::string Fmt(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+std::string Fmt(const char* fmt, ...)
+{
+	char buf[512];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+	return buf;
+}
 constexpr int W = ps5video::kWidth;
 constexpr int H = ps5video::kHeight;
 
@@ -116,7 +130,7 @@ void Header(const char* subtitle)
 	const char* ver = "Genesis Plus GX " GENPLUS_CORE_VERSION " - PS5 " GENPLUS_PS5_VERSION;
 	DrawText(W - 80 - TextWidth(ver, 2), 40, ver, 2, kDim);
 	if (subtitle && *subtitle)
-		DrawText(84, 104, FitText(subtitle, 3, W - 168).c_str(), 3, kDim);
+		DrawText(84, 104, FitText(T(subtitle), 3, W - 168).c_str(), 3, kDim);
 }
 
 void Footer(const std::string& help)
@@ -150,24 +164,25 @@ void DrawOptionBox(const std::string& title, const std::vector<Row>& rows, int s
 		ps5video::FillRect(bx - 4, by - 4, bw + 8, bh + 8, kAccent);
 	ps5video::FillRect(bx, by, bw, bh, kPanel);
 	ps5video::FillRect(bx, by + 86, bw, 3, kAccent);
-	DrawText(bx + 40, by + 24, FitText(title, 5, bw - 80).c_str(), 5, kAccent);
+	DrawText(bx + 40, by + 24, FitText(T(title.c_str()), 5, bw - 80).c_str(), 5, kAccent);
 	for (int i = 0; i < visible; i++)
 	{
 		const Row& row = rows[size_t(top + i)];
 		const int y = by + 110 + i * row_h;
 		if (row.header)
 		{
-			DrawText(bx + 40, y + 6, row.label.c_str(), 2, kAccent);
+			DrawText(bx + 40, y + 6, T(row.label.c_str()), 2, kAccent);
 			ps5video::FillRect(bx + 40, y + 34, bw - 80, 1, kSel);
 			continue;
 		}
 		if (top + i == sel)
 			ps5video::FillRect(bx + 16, y - 6, bw - 32, row_h, kSel);
 		const uint32_t col = row.enabled ? kText : kDim;
-		DrawText(bx + 40, y, row.label.c_str(), scale, col);
+		DrawText(bx + 40, y, FitText(T(row.label.c_str()), scale, bw * 3 / 5).c_str(), scale, col);
 		if (!row.value.empty())
 		{
-			const std::string v = (top + i == sel ? "< " + row.value + " >" : row.value);
+			const std::string tv = T(row.value.c_str());
+			const std::string v = (top + i == sel ? "< " + tv + " >" : tv);
 			DrawText(bx + bw - 40 - TextWidth(v.c_str(), scale), y, v.c_str(), scale, top + i == sel ? kText : kAccent);
 		}
 	}
@@ -230,6 +245,9 @@ enum SettingRow
 	H_LIBRARY,
 	S_COVERS,
 	H_SYSTEM,
+	S_LANGUAGE,
+	S_RENDERER,
+	S_PERFLOG,
 	S_DEBUGLOGS,
 	S_UPDATES,
 	S_COUNT
@@ -267,13 +285,13 @@ std::string UpdateValue()
 		case update::Phase::Checking: return "Checking...";
 		case update::Phase::UpToDate: return "Up to date";
 		case update::Phase::Available:
-			snprintf(buf, sizeof(buf), "Install %s (%.1f MB)", st.latest.c_str(), st.size / 1048576.0);
+			snprintf(buf, sizeof(buf), T("Install %s (%.1f MB)"), st.latest.c_str(), st.size / 1048576.0);
 			return buf;
 		case update::Phase::Downloading:
-			snprintf(buf, sizeof(buf), "Downloading %d%%", st.total ? int(st.done * 100 / st.total) : 0);
+			snprintf(buf, sizeof(buf), T("Downloading %d%%"), st.total ? int(st.done * 100 / st.total) : 0);
 			return buf;
 		case update::Phase::Installing:
-			snprintf(buf, sizeof(buf), "Installing %d/%d", int(st.done), int(st.total));
+			snprintf(buf, sizeof(buf), T("Installing %d/%d"), int(st.done), int(st.total));
 			return buf;
 		case update::Phase::Done: return "Installed: restart";
 		case update::Phase::Failed: return "Failed: try again";
@@ -317,7 +335,7 @@ Row SettingRowFor(int s)
 	switch (s)
 	{
 		case H_VIDEO: return {"VIDEO", "", true, true};
-		case S_SHADER: return {"Shader", ps5crt::Name(ps5crt::Shader(c.shader))};
+		case S_SHADER: return {ps5video::GpuActive() ? "Shader (GPU)" : "Shader", ps5video::ShaderName(std::min(c.shader, ps5video::ShaderCount() - 1))};
 		case S_SCALE: return {"Screen size", ps5video::ScaleName(ps5video::Scale(c.scale))};
 		case S_ASPECT: return {"Aspect ratio", emu::kAspects[c.aspect % emu::kAspectCount].name};
 		case S_NTSC: return {"NTSC filter (Blargg)", emu::kNtscFilters[c.ntsc % emu::kNtscFilterCount].name};
@@ -348,14 +366,24 @@ Row SettingRowFor(int s)
 		case H_LIBRARY: return {"LIBRARY", "", true, true};
 		case S_COVERS: return {"Download covers", OnOff(c.covers_download)};
 		case H_SYSTEM: return {"SYSTEM", "", true, true};
+		case S_LANGUAGE: return {"Language", LanguageName(c.language)};
+		case S_RENDERER:
+		{
+			// takes effect at the next start; the value says so while it differs from the one running
+			const char* want = c.renderer ? "GPU" : "CPU";
+			if (bool(c.renderer) != ps5video::GpuActive())
+				return {"Renderer", Fmt(T("%s (after a restart)"), want)};
+			return {"Renderer", want};
+		}
+		case S_PERFLOG: return {"Performance log", OnOff(c.perf_log)};
 		case S_DEBUGLOGS: return {"Debug logs", OnOff(c.debug_logs)};
-		case S_UPDATES: return {"Updates (this is " GENPLUS_PS5_VERSION ")", UpdateValue()};
+		case S_UPDATES: return {Fmt(T("Updates (this is %s)"), GENPLUS_PS5_VERSION), UpdateValue()};
 		default:
 			if (s >= S_BTN_FIRST && s <= S_BTN_LAST)
 			{
 				const int i = s - S_BTN_FIRST;
 				const int b = c.buttons[i];
-				return {std::string("Button ") + emu::kConsoleButtons[i].name,
+				return {Fmt(T("Button %s"), T(emu::kConsoleButtons[i].name)),
 					emu::kPs5Buttons[b >= 0 && b < emu::kPs5ButtonCount ? b : emu::kPs5ButtonCount - 1].name};
 			}
 			return {"", ""};
@@ -372,7 +400,7 @@ void ChangeSetting(int s, int dir)
 	Settings& c = Config();
 	switch (s)
 	{
-		case S_SHADER: c.shader = Cycle(c.shader, dir, int(ps5crt::Shader::Count)); break;
+		case S_SHADER: c.shader = Cycle(std::min(c.shader, ps5video::ShaderCount() - 1), dir, ps5video::ShaderCount()); break;
 		case S_SCALE: c.scale = Cycle(c.scale, dir, int(ps5video::Scale::Count)); break;
 		case S_ASPECT: c.aspect = Cycle(c.aspect, dir, emu::kAspectCount); break;
 		case S_NTSC: c.ntsc = Cycle(c.ntsc, dir, emu::kNtscFilterCount); break;
@@ -398,6 +426,9 @@ void ChangeSetting(int s, int dir)
 		case S_SPRITES: c.no_sprite_limit = !c.no_sprite_limit; break;
 		case S_ADDON: c.add_on = Cycle(c.add_on, dir, emu::kAddOnCount); break;
 		case S_COVERS: c.covers_download = !c.covers_download; break;
+		case S_LANGUAGE: c.language = Cycle(c.language, dir, int(Language::Count)); break;
+		case S_RENDERER: c.renderer = c.renderer ? 0 : 1; break;
+		case S_PERFLOG: c.perf_log = !c.perf_log; break;
 		case S_DEBUGLOGS:
 			c.debug_logs = !c.debug_logs;
 			OrbisLogSetEnabled(c.debug_logs); // at once: the line saying so is the last (or first) one written
@@ -448,13 +479,13 @@ void SettingsScreen(bool over_game)
 		PollUpdate(false);
 		const std::vector<Row> rows = SettingRows();
 		Background(over_game);
-		DrawOptionBox(GameHasOwnSettings() ? "Settings: " + emu::GameName() : std::string("Settings"), rows, sel, over_game);
+		DrawOptionBox(GameHasOwnSettings() ? Fmt(T("Settings: %s"), emu::GameName().c_str()) : std::string("Settings"), rows, sel, over_game);
 		if (sel == S_UPDATES && g_upd.st.phase == update::Phase::Failed && !g_upd.st.error.empty())
 			DrawText(80, H - 130, FitText(g_upd.st.error, 2, W - 160).c_str(), 2, kAccent);
 		else if (sel == S_UPDATES && !g_upd.helper)
-			DrawText(80, H - 130, "Updates are downloaded by the helper: send the payload, then open Settings again.", 2, kDim);
+			DrawText(80, H - 130, T("Updates are downloaded by the helper: send the payload, then open Settings again."), 2, kDim);
 		if (!over_game)
-			Footer(std::string(icon::Cross) + " Change     " + icon::DpadLeftRight + " Adjust     " + icon::Circle + " Back");
+			Footer(std::string(icon::Cross) + " " + T("Change") + "     " + icon::DpadLeftRight + " " + T("Adjust") + "     " + icon::Circle + " " + T("Back"));
 		Present();
 		const Nav n = nav.Read();
 		if (n.up)
@@ -537,13 +568,13 @@ PauseAction PauseMenu()
 		char buf[64];
 		std::vector<Row> rows(I_COUNT);
 		rows[I_RESUME] = {"Resume", ""};
-		snprintf(buf, sizeof(buf), "Save state (slot %d)", cfg.state_slot);
+		snprintf(buf, sizeof(buf), T("Save state (slot %d)"), cfg.state_slot);
 		rows[I_SAVE] = {buf, ""};
-		snprintf(buf, sizeof(buf), "Load state (slot %d)", cfg.state_slot);
+		snprintf(buf, sizeof(buf), T("Load state (slot %d)"), cfg.state_slot);
 		rows[I_LOAD] = {buf, "", emu::StateExists(cfg.state_slot)};
-		snprintf(buf, sizeof(buf), "%d%s", cfg.state_slot, emu::StateExists(cfg.state_slot) ? " (used)" : " (empty)");
+		snprintf(buf, sizeof(buf), T(emu::StateExists(cfg.state_slot) ? "%d (used)" : "%d (empty)"), cfg.state_slot);
 		rows[I_SLOT] = {"State slot", buf};
-		snprintf(buf, sizeof(buf), "Load the previous state (slot %d)", cfg.state_slot);
+		snprintf(buf, sizeof(buf), T("Load the previous state (slot %d)"), cfg.state_slot);
 		rows[I_UNDO] = {buf, "", emu::PreviousStateExists(cfg.state_slot)};
 		rows[I_SETTINGS] = {GameHasOwnSettings() ? "Settings (this game's)" : "Settings", ""};
 		rows[I_OWN] = {"Settings for this game", GameHasOwnSettings() ? "Its own" : "The global ones"};
@@ -559,9 +590,10 @@ PauseAction PauseMenu()
 			DrawText(W / 2 + 560 - TextWidth(sys.c_str(), 2) - 40, (H - (120 + I_COUNT * 46 + 30)) / 2 + 40, sys.c_str(), 2, kDim);
 		if (!toast.empty() && Now() < toast_until)
 		{
-			const int tw = TextWidth(toast.c_str(), 3);
+			const char* tt = T(toast.c_str());
+			const int tw = TextWidth(tt, 3);
 			ps5video::FillRect((W - tw) / 2 - 30, H - 110, tw + 60, 70, kSel);
-			DrawText((W - tw) / 2, H - 90, toast.c_str(), 3, kText);
+			DrawText((W - tw) / 2, H - 90, tt, 3, kText);
 		}
 		Present();
 
@@ -634,7 +666,7 @@ void MessageBox(const std::string& title, const std::string& text)
 {
 	NavReader nav;
 	const int bw = 1400;
-	const std::vector<std::string> lines = Wrap(text, 3, bw - 80);
+	const std::vector<std::string> lines = Wrap(T(text.c_str()), 3, bw - 80);
 	const int bh = 220 + int(lines.size()) * 44;
 	for (;;)
 	{
@@ -642,14 +674,14 @@ void MessageBox(const std::string& title, const std::string& text)
 		const int bx = (W - bw) / 2, by = (H - bh) / 2;
 		ps5video::FillRect(bx - 4, by - 4, bw + 8, bh + 8, kAccent);
 		ps5video::FillRect(bx, by, bw, bh, kPanel);
-		DrawText(bx + 40, by + 30, FitText(title, 5, bw - 80).c_str(), 5, kAccent);
+		DrawText(bx + 40, by + 30, FitText(T(title.c_str()), 5, bw - 80).c_str(), 5, kAccent);
 		int y = by + 120;
 		for (const std::string& l : lines)
 		{
 			DrawText(bx + 40, y, l.c_str(), 3, kText);
 			y += 44;
 		}
-		DrawText(bx + 40, by + bh - 70, (std::string(icon::Cross) + " OK").c_str(), 3, kDim);
+		DrawText(bx + 40, by + bh - 70, (std::string(icon::Cross) + " " + T("OK")).c_str(), 3, kDim);
 		Present();
 		const Nav n = nav.Read();
 		if (n.ok || n.back || n.options)

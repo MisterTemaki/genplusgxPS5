@@ -25,6 +25,7 @@
 
 #include "fe_covers.h"
 #include "fe_emu.h"
+#include "fe_i18n.h"
 #include "fe_menu.h"
 #include "fe_prefetch.h"
 #include "fe_settings.h"
@@ -76,7 +77,7 @@ bool PlayGame(const std::string& rom, bool from_command_line)
 	std::string error;
 	if (!emu::LoadGame(rom, &error))
 	{
-		ProsperoNotify("Genesis Plus GX PS5: could not start %s", rom.substr(rom.find_last_of('/') + 1).c_str());
+		ProsperoNotify(fe::T("Genesis Plus GX PS5: could not start %s"), rom.substr(rom.find_last_of('/') + 1).c_str());
 		fe::MessageBox("Could not start the game", error);
 		return !from_command_line;
 	}
@@ -220,8 +221,11 @@ int Run(int argc, char** argv)
 	if (!have_data)
 	{
 		// the jailbreak didn't happen: say so on the screen (the pad works, this is the title in front)
-		fe::MessageBox("Genesis Plus GX PS5 has no access to /data",
-			"Send GenesisPlusGXPS5-v" GENPLUS_PS5_VERSION ".elf with the Payload Manager (it unlocks the app), then open Genesis Plus GX PS5 again.");
+		char text[512];
+		snprintf(text, sizeof(text),
+			fe::T("Send GenesisPlusGXPS5-v%s.elf with the Payload Manager (it unlocks the app), then open Genesis Plus GX PS5 again."),
+			GENPLUS_PS5_VERSION);
+		fe::MessageBox("Genesis Plus GX PS5 has no access to /data", text);
 		ps5input::Shutdown();
 		ps5audio::Shutdown();
 		ps5video::Shutdown();
