@@ -18,6 +18,9 @@ PauseAction PauseMenu();
 // The settings screen (Triangle on the shelf, or from the pause menu).
 void SettingsMenu();
 
+// Settings > Network shares: the SMB and NFS shares games are read from (fe_netscreen.cpp, from Snes9x PS5).
+void NetworkMenu();
+
 // Shows a message box until Cross / Circle is pressed (errors such as a game that won't start).
 void MessageBox(const std::string& title, const std::string& text);
 } // namespace fe

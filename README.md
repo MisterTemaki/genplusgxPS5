@@ -310,10 +310,14 @@ changed, register it again once: select **Genesis Plus GX PS5** on the home scre
 The start screen is a 3D shelf of game covers, like PS5SX2's and Snes9x PS5's, with the author's line under the
 wordmark: **github.com/MisterTemaki**.
 
-- **All your games at once:** the shelf gathers the games in `/data/genplus/roms` (its system folders) and on USB
-  drives (`genplus/roms`), subfolders included, sorted by name. Each game's line says its system and region.
-- **One system at a time:** **Up / Down** switch between "All games" and each system that has games (Mega Drive,
-  Sega CD, Master System -- SG-1000 included -- and Game Gear). The shelf remembers the last one.
+- **All your games, in tabs:** the shelf gathers the games in `/data/genplus/roms` (its system folders), on USB
+  drives (`genplus/roms`) and on network shares, subfolders included, sorted by name. Each game's line says its
+  system and region. A bar at the top keeps them apart, as PSFlycast's library (and Snes9x PS5's) does:
+  **Internal** (the console's drive), **USB** (only while a game is on a USB drive) and **Network** (games on a
+  share, see [Network shares](#network-shares-smb-and-nfs)). **L1 / R1** go round the tabs; each tab keeps its
+  place, and the shelf opens on the tab you used last.
+- **One system at a time:** inside a tab, **Up / Down** switch between "All games" and each system that has games
+  there (Mega Drive, Sega CD, Master System -- SG-1000 included -- and Game Gear). The shelf remembers the last one.
 - **Official names:** a game is identified by its file name or, when that doesn't match, by the ROM's CRC32,
   looked up in a table of 6,118 entries built into the app (No-Intro, from libretro-database, for Mega Drive,
   Master System, Game Gear and SG-1000; Redump names for the Sega CD).
@@ -390,10 +394,11 @@ column with bilinear filtering, mipmaps and anti-aliased edges, split across sev
 |---|---|
 | Left / Right (D-pad or stick) | change game (hold to speed up) |
 | Up / Down | change system (All games, Mega Drive, Sega CD, ...) |
-| L1 / R1 | skip 10 games |
+| L1 / R1 | next / previous tab (Internal, USB, Network) |
+| L2 / R2 | skip 10 games |
 | Cross | play |
 | Triangle | settings |
-| Square | download this game's cover again (the cover it has stays until the new one has arrived) |
+| Square | download this game's cover again (the cover it has stays until the new one has arrived); on the Network tab: scan the shares again |
 | OPTIONS | quit Genesis Plus GX PS5 (asks first) |
 
 **In a game:** by default, buttons by position, as RetroArch maps them for Genesis Plus GX -- the Mega Drive's
@@ -668,6 +673,51 @@ It is the tool for the checks a real console is needed for: **FMV** (Silpheed, N
 flat, `underruns` not growing), **the shaders' cost on the PS5** (`shader_ms`), and **stability over hours** (leave
 a game running: the summary line gives the whole session). Send the CSV with `boot.log` when reporting.
 
+## Network shares (SMB and NFS)
+
+Games can be read from a Windows, Samba, NAS or router share instead of a drive (Snes9x PS5's network shares, by
+[thatboialex](https://github.com/thatboialex)). Add one on the console: **Settings (Triangle on the shelf) >
+LIBRARY > Network shares > Add a share**. Pick SMB or NFS, type the server's IP address, the share (or export) and,
+if it needs them, a user name and password with the on-screen keyboard (D-pad and Cross; Square deletes, Triangle
+is a space, L1 / R1 move the cursor, L2 is Shift, R2 the symbols page, OPTIONS is Done). **Test connection** says
+what is in the folder, or why it cannot be reached, before you save. Open a share in the list to change or remove
+it. (The row is not in the settings opened from the pause menu: changing the shares reconnects them, and the game
+may be reading from one.)
+
+The screen keeps its shares in `/data/genplus/shares.txt` (the first run writes it with examples). You can edit the
+file instead, one address per line (up to 8); the screen changes only the line you edit and keeps your comments:
+
+```
+smb://192.168.1.50/games/sega
+smb://jason@192.168.1.50/games/sega?password=secret
+nfs://192.168.1.50/export/sega
+```
+
+Use the server's IP address. Inside a user name, password or folder, write `& = % # @ ; / ? ` and spaces as `%XX`
+(`p@ss` is `p%40ss`). The password sits in this file in plain text (it is never written to a log or shown).
+
+- The share's games appear on the **Network** tab as soon as it has connected; the other tabs do not wait for it.
+  While a share is connecting, or cannot be reached, the tab says so (and why, in a sentence), and with no share
+  set up it points to Settings > Network shares. **Square** on the tab scans again: it forgets the folder
+  listings and connects the shares that were down once more. The system folders work there too
+  (`MegaDrive/`, `SegaCD/`...), and Up / Down pick a system inside the tab.
+- Network games are first named from their file names; a background pass then reads each cartridge once to name it
+  by checksum (a `.zip`: only its directory, which also says its system), and the answer is remembered in
+  `covers/crc-cache.txt`. A cover for a game named late is fetched when it is. Until a zip on a share has been
+  looked into, its folder's name gives its system (`GameGear/`, `Master System`...), else it is listed with the
+  Mega Drive games.
+- A share is read-only. Saves, states, the Sega CD backup RAM, covers and settings stay on the console.
+- **Cartridges** are read into memory when they start. **Sega CD discs** (`.cue` + `.bin`, `.chd`, `.iso`) are not
+  copied to the console: the core reads the disc from the share while the game runs, through a cache of 512 KiB
+  blocks that reads ahead of it (the CD audio of MD+ / MSU-MD discs too). On a wired or good Wi-Fi network that is
+  seamless; on a slow link, a jump to a part of the disc that is not cached yet makes the game wait for it (a short
+  pause; `[net] ... waited for <file> in realtime` in the log). The BIOS stays in `/data/genplus/bios`.
+- If a share cannot be reached, a notification says why (no answer, wrong password, share not found...) and the
+  same sentence is in `/data/genplus/logs/boot.log` (`[net]`). A share lost while a game runs is announced once;
+  the game goes on with what it has.
+- SMB uses libsmb2 and NFS uses libnfs; both are LGPL-2.1-or-later and sit in `ps5/third_party/` with their licence
+  notices.
+
 ## MD+ and MSU-MD (CD music in Mega Drive games)
 
 Genesis Plus GX plays Mega Drive games patched to stream **CD-quality music** from audio tracks, as the
@@ -893,8 +943,20 @@ The build has three stages:
   - `fe_i18n.cpp`: the five languages (`tests/check_i18n.py` checks them);
   - `fe_chdcache.cpp`: a `.chd`'s blocks decompressed ahead on a thread of their own (`chd_read` wrapped at link
     time);
+  - `fe_netscreen.cpp`, `fe_osk.cpp`, `fe_ui.cpp`: Settings > Network shares, its on-screen keyboard and the screens'
+    common drawing; `fe_tabs.h`: the shelf's storage tabs;
   - `third_party/`: minizip (unzip.c, ioapi.c), as in Snes9x; Mbed TLS 3.6.7 (`mbedtls/`, its `include/` and
     `library/` as released).
+- **`ps5/netfs/`**: network shares as folders (from Snes9x PS5): `shares.txt` (`netfs_share.cpp`, `netfs_edit.cpp`),
+  the connections and their watchdog (`netfs_core.cpp`), folder listings and file blocks with read-ahead
+  (`netfs_cache.cpp`), the libc calls for `/smb/...` and `/nfs/...` paths (`netfs_vfs.cpp`, `netfs_wrap.cpp`: the
+  link's `--wrap` list, so the core, libchdr and minizip read a share like a drive), the SMB and NFS backends
+  (`backend_smb.cpp`, `backend_nfs.cpp`) and the console's socket and resolver shims (`netfs_shims_ps5.cpp`).
+  **`ps5/third_party/libsmb2/`**, **`ps5/third_party/libnfs/`**: the two libraries, as Snes9x PS5 carries them.
+  On the host, `ps5/host/netfs_dirbackend.cpp` turns a share into a local folder (`GENPLUS_HOST_NETFS_DIR`); netfs's
+  own tests are `test-netfs` (an in-memory share), `make test-nfs` (the NFS backend on a mock and on loopback
+  sockets), `make test-nfs-server` (a real unfsd), `smb-test` (a real Samba, skipped without `smbd`) and
+  `make test-tabs`.
 - **`ps5/third_party/glslang/`**: glslang 15.1.0's compiler and SPIR-V back end (no HLSL, no SPIRV-Tools), with
   its two generated headers.
 - **`ps5/proto/native/`**: ps5-native-app-boilerplate's tools (BlackBearReloaded, GPL-3.0), taken from PS5SX2
@@ -915,7 +977,9 @@ The build has three stages:
   FIFOs, `.cue` sheets, long zip names and paths, the CRC cache, covers kept offline, downloads after a tab change),
   the debug logs setting (off: nothing written by the app or the helper), and the helper's HTTPS (a local
   server with a test certificate authority: a certificate from another authority or for another name refused,
-  chunked answers, redirects, the connection kept).
+  chunked answers, redirects, the connection kept), and the network shares (a local folder standing in for the
+  share: a cartridge started from it, Sega CD discs and MD+ CD audio streamed from it, a slow link, the background
+  CRC pass, the Network shares screen typed with its keyboard, the storage tabs, their translations).
 
 ## License and credits
 
@@ -946,6 +1010,17 @@ The build has three stages:
   `app_cpp_runtime.cpp`, `ps5-pie.ld` and the `libc.prx` generator, via PS5SX2 and PS5_Vulkan (mihawk-99).
 - The VideoOut tiling and setup follow the SDK's SDL2 port (zlib license).
 - **minizip** (Gilles Vollant): zlib license.
+- **libsmb2** (Ronnie Sahlberg and contributors, [github.com/sahlberg/libsmb2](https://github.com/sahlberg/libsmb2))
+  and **libnfs** (Ronnie Sahlberg and contributors, [github.com/sahlberg/libnfs](https://github.com/sahlberg/libnfs)):
+  LGPL-2.1-or-later, linked statically into the app for the network shares. Their full source, with the port's few
+  changes (`ps5/third_party/libnfs/PATCHES.md`, `ps5/third_party/libsmb2/README.snes9xps5`), is in this repository
+  and in each release's source zip, together with everything needed to rebuild and relink the app with a modified
+  version. libsmb2 also contains code under other terms: "derived from the RSA Data Security, Inc. MD4
+  Message-Digest Algorithm", public-domain AES and MD5, and the RFC 4634 SHA/HMAC code (its notices are in the
+  files); libnfs's generated RPC code is under its BSD licence.
+- **The network share code** (`ps5/netfs/`, the Network shares screen, the on-screen keyboard) and the shelf's
+  storage tabs come from Snes9x PS5, where they are by [thatboialex](https://github.com/thatboialex) (pull request
+  #3).
 - **Mbed TLS** 3.6.7 ([github.com/Mbed-TLS/mbedtls](https://github.com/Mbed-TLS/mbedtls), the Mbed TLS
   contributors): Apache-2.0 (`ps5/frontend/third_party/mbedtls/LICENSE`).
 - **Mozilla's CA certificate list** (`ps5/frontend/data/cacert.pem`, as packaged by

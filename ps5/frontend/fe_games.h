@@ -14,8 +14,10 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -70,7 +72,9 @@ struct GameInfo
 	std::string title; // what the shelf shows
 	std::string region; // "USA", "Europe"... from the name's tags
 	bool on_usb = false;
+	bool on_network = false; // on a share (/smb/..., /nfs/...): named without reading the ROM (netfs)
 	bool name_by_crc = false; // the name came from the CRC (not the file name)
+	bool crc_pending = false; // on a share, named from its file name only so far: NetNaming reads its CRC
 };
 
 // The table built into the app.
@@ -90,7 +94,32 @@ std::string Region(const std::string& nointro);
 
 // The ROM's CRC32s: of the whole file, and without its header (= whole when it has none). For a .zip, of the ROM
 // inside; *inner_ext gets that ROM's extension. False if it can't be read (a disc image: named by file name).
-bool RomCrc32(const std::string& path, uint32_t* whole, uint32_t* body, std::string* inner_ext = nullptr);
+// cancel (when given): stops the read when it turns true (false is returned).
+bool RomCrc32(const std::string& path, uint32_t* whole, uint32_t* body, std::string* inner_ext = nullptr,
+	const std::atomic<bool>* cancel = nullptr);
+
+// The folders to look for games in: OrbisRomRoots() plus the network shares that are connected (in memory, no I/O).
+std::vector<std::string> RomRoots();
+
+// Names the games on shares by their ROM's CRC, in the background (Snes9x PS5's design, by thatboialex). A scan does
+// not read network ROMs (it would make a big library crawl); this does, one at a time, only for the games with
+// crc_pending (a zip: its directory, which also gives its system), and remembers each CRC in crc-cache.txt, so the
+// next ScanGames names them. Add() starts or extends the pass; it stops by itself when a game starts
+// (netfs_realtime) and when Stop() or the destructor is called (leaving the shelf).
+class NetNaming
+{
+public:
+	NetNaming();
+	~NetNaming();
+	void Add(const std::vector<GameInfo>& games);
+	void Stop();
+	int Resolved() const; // ROMs read so far (named or not)
+	bool Busy() const;
+
+private:
+	struct Impl;
+	std::unique_ptr<Impl> m_i;
+};
 
 // The system of a .zip: the extension of the first ROM inside. False if none.
 bool ArchiveSystem(const std::string& path, System* out);

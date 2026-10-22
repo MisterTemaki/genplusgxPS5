@@ -161,6 +161,8 @@ bool Settings::LoadFrom(const std::string& path)
 			debug_logs = n != 0;
 		else if (key == "shelf_family")
 			shelf_family = Clamp(n, 0, 64);
+		else if (key == "last_tab")
+			last_tab = Clamp(n, 0, 2);
 		else if (key == "last_rom")
 			last_rom = val;
 	}
@@ -229,6 +231,7 @@ bool Settings::SaveTo(const std::string& path, bool game_keys_only) const
 		fprintf(f, "perf_log=%d\n", perf_log ? 1 : 0);
 		fprintf(f, "debug_logs=%d\n", debug_logs ? 1 : 0);
 		fprintf(f, "shelf_family=%d\n", shelf_family);
+		fprintf(f, "last_tab=%d\n", last_tab);
 		fprintf(f, "last_rom=%s\n", last_rom.c_str());
 	}
 	bool ok = ferror(f) == 0;

@@ -46,6 +46,7 @@ struct Settings
 	bool perf_log = false;       // logs/perf-<system>-<game>.csv, a row a second in a game (fe_emu.cpp, Perf)
 	bool debug_logs = false;     // boot.log and the others in /data/genplus/logs (OrbisLogSetEnabled)
 	int shelf_family = 0; // fe::Family the shelf shows
+	int last_tab = 0; // the shelf's storage tab (fe_tabs.h): 0 Internal, 1 USB, 2 Network
 	std::string last_rom; // the shelf puts the selection on this game
 
 	void Load();

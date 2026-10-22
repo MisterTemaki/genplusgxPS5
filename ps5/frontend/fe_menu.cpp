@@ -21,6 +21,8 @@
 #include "ProsperoSce.h"
 #include "ProsperoVideo.h"
 
+#include "netfs.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdarg>
@@ -247,6 +249,7 @@ enum SettingRow
 	S_BTN_DEFAULT,
 	H_LIBRARY,
 	S_COVERS,
+	S_NETWORK, // Network shares: a screen of its own (fe_netscreen.cpp); not over a game (its files may be on a share)
 	H_SYSTEM,
 	S_LANGUAGE,
 	S_RENDERER,
@@ -331,6 +334,18 @@ void UpdateAction()
 	PollUpdate(true);
 }
 
+// The Network shares row: how many shares are set up, and how many of them are connected.
+std::string NetworkSummary()
+{
+	const std::vector<NetfsShareInfo> shares = netfs_shares();
+	if (shares.empty())
+		return "None";
+	int ready = 0;
+	for (const NetfsShareInfo& i : shares)
+		ready += i.state == NetfsState::Ready;
+	return Fmt(T("%d of %d connected"), ready, int(shares.size()));
+}
+
 Row SettingRowFor(int s)
 {
 	const Settings& c = Config();
@@ -375,6 +390,7 @@ Row SettingRowFor(int s)
 		case S_BTN_DEFAULT: return {"Default button layout", ""};
 		case H_LIBRARY: return {"LIBRARY", "", true, true};
 		case S_COVERS: return {"Download covers", OnOff(c.covers_download)};
+		case S_NETWORK: return {"Network shares", NetworkSummary()};
 		case H_SYSTEM: return {"SYSTEM", "", true, true};
 		case S_LANGUAGE: return {"Language", LanguageName(c.language)};
 		case S_RENDERER:
@@ -466,6 +482,8 @@ std::vector<Row> SettingRows(std::vector<int>& ids)
 	{
 		if (s == S_SHADERPARAMS && !ps5video::GpuActive())
 			continue;
+		if (s == S_NETWORK && emu::GameLoaded())
+			continue; // changing the shares reconnects them: not while a game may be reading from one
 		rows.push_back(SettingRowFor(s));
 		ids.push_back(s);
 	}
@@ -518,6 +536,14 @@ void SettingsScreen(bool over_game)
 		{
 			if (n.ok)
 				UpdateAction();
+		}
+		else if (id == S_NETWORK)
+		{
+			if (n.ok)
+			{
+				NetworkMenu();
+				nav = NavReader();
+			}
 		}
 		else if (id == S_SHADERPARAMS)
 		{
