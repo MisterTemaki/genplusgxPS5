@@ -1979,6 +1979,20 @@ sed -i 's/^border=1/border=2/' "$T/root/genplus-ps5.ini"
 rc=$(bordercase "Langrisser 2 English.md")
 expect "grep -q '\[border\] Langrisser 2 English -> MegaDrive/default.png (system default.png)' $T/root/logs/boot.log" "Default frame: the game's own border is not looked for"
 nosan "$T"
+# a Game Gear game in a zip on a share: the border is picked before the game runs, by the system the loader found inside the zip
+# (the zip is not opened again for it), and nothing is read from the share for it while the game runs
+T=$(newroot t61z)
+mkdir -p "$T/share/misc"
+$ROM "$T/gg.gg" >/dev/null
+python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w'); z.write(sys.argv[2],'Pocket.gg'); z.close()" "$T/share/misc/pocket.zip" "$T/gg.gg"
+mkborder "$T/root/borders/GameGear/pocket.png" 274 0 1646 1080
+mkborder "$T/root/borders/MegaDrive/pocket.png"
+printf 'border=1\nborder_download=0\n' >>"$T/root/genplus-ps5.ini"
+echo "smb://10.0.0.5/games" >"$T/root/shares.txt"
+rc=$(GENPLUS_HOST_REALTIME=1 MAXFLIPS=900 GENPLUS_HOST_NETFS_DIR="$T/share" run "$T" "0:0;150:$CROSS;152:0;$(QUITAT 300)" "")
+expect "[ $rc = 0 ] && grep -q 'loading /smb/10.0.0.5/games/misc/pocket.zip' $T/root/logs/boot.log && grep -q '\[border\] pocket -> GameGear/pocket.png (own file): window [0-9]*,0 [0-9]*x1080' $T/root/logs/boot.log" "a Game Gear zip on a share gets its GameGear border (the loader's system), not the Mega Drive one"
+expect "! grep -q 'in realtime' $T/root/logs/boot.log && [ \$(grep -n 'border\] pocket ->' $T/root/logs/boot.log | head -1 | cut -d: -f1) -lt \$(grep -n 'running \"' $T/root/logs/boot.log | head -1 | cut -d: -f1) ]" "it is picked before the game runs, and nothing waits for the share while it runs"
+nosan "$T"
 fi
 
 if want 62; then
@@ -2010,7 +2024,8 @@ mkborder "$T/root/borders/MegaDrive/test.png"
 echo "border=2" >>"$T/root/genplus-ps5.ini"
 rc=$(run "$T" "0:0;$(QUITAT 120)" "90" "$T/root/roms/test.md")
 expect "[ $rc = 0 ] && $CHECK $T/dump/flip00090.ppm 30 540 $def_frame 3 >/dev/null && $CHECK $T/dump/flip00090.ppm 960 540 red >/dev/null && grep -q 'built-in (built-in)' $T/root/logs/boot.log" "border=2: the built-in frame around the picture"
-# d. the window follows the Screen size: Integer scale cuts it to 4x the 224-line picture (896 lines); Stretch makes it 16:9
+# d. the window follows the Screen size: Integer scale cuts it to 4x the 224-line picture (896 lines); Stretch makes it 16:9 (the
+# border is picked for the core's 192-line size at load and refitted to the first frame's 224 lines)
 for mode in "1 896" "2 963"; do
 	set -- $mode
 	T=$(newroot t62d$1)
@@ -2018,7 +2033,7 @@ for mode in "1 896" "2 963"; do
 	mkborder "$T/root/borders/MegaDrive/test.png"
 	printf 'border=1\nscale=%s\n' "$1" >>"$T/root/genplus-ps5.ini"
 	rc=$(run "$T" "0:0;$(QUITAT 120)" "90" "$T/root/roms/test.md")
-	expect "[ $rc = 0 ] && grep -q '\[border\] test -> MegaDrive/test.png (own file): window [0-9]*,[0-9]* [0-9]*x$2' $T/root/logs/boot.log && $BORDERCHK $T/dump/flip00090.ppm $T/root/logs/boot.log blue red fills >/dev/null" "scale=$1: the window is $2 lines tall and the picture fills it"
+	expect "[ $rc = 0 ] && grep -Eq '\[border\] (test -> MegaDrive/test.png \(own file\)|MegaDrive/test.png refitted): window [0-9]*,[0-9]* [0-9]*x$2' $T/root/logs/boot.log && $BORDERCHK $T/dump/flip00090.ppm $T/root/logs/boot.log blue red fills >/dev/null" "scale=$1: the window is $2 lines tall and the picture fills it"
 done
 # e. a Game Gear game in a Game Gear bezel (The Bezel Project's window: 274,0 1372x1080): the handheld's 4:3 picture, full height
 T=$(newroot t62e)
@@ -2046,6 +2061,21 @@ rc=$(run "$T" "$pad;$(QUITAT $((t + 90)))" "50,$((t + 70))" "$T/root/roms/test.m
 expect "[ $rc = 0 ] && grep -q '^border=1$' $T/root/genplus-ps5.ini" "the pause menu's Settings > Border sets Auto (border=1, saved)"
 expect "$CHECK $T/dump/flip00050.ppm 100 540 0 0 0 >/dev/null" "before: no border"
 expect "$BORDERCHK $T/dump/flip$(printf %05d $((t + 70))).ppm $T/root/logs/boot.log blue red fills >/dev/null" "after Resume the game's border is there, without restarting the game"
+nosan "$T"
+# i. the pause menu's Settings, Screen size (Down once), Right: Integer scale. The picture's new shape refits the border chosen
+# at load (from its decoded copy): it is not picked again
+T=$(newroot t62i)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+mkborder "$T/root/borders/MegaDrive/test.png"
+echo "border=1" >>"$T/root/genplus-ps5.ini"
+pad="0:0;60:$L3R3;65:0"; t=80
+for i in 1 2 3 4 5; do pad="$pad;$t:$DOWN;$((t + 2)):0"; t=$((t + 6)); done
+pad="$pad;$t:$CROSS;$((t + 2)):0;$((t + 10)):$DOWN;$((t + 12)):0"; t=$((t + 20))
+pad="$pad;$t:$RIGHT;$((t + 1)):0;$((t + 10)):$CIRCLE;$((t + 12)):0;$((t + 20)):$CIRCLE;$((t + 22)):0"
+rc=$(run "$T" "$pad;$(QUITAT $((t + 90)))" "50,$((t + 70))" "$T/root/roms/test.md")
+expect "[ $rc = 0 ] && grep -q '^scale=1$' $T/root/genplus-ps5.ini" "the pause menu's Settings > Screen size sets Integer scale"
+expect "[ \$(grep -c '\[border\] test -> MegaDrive/test.png (own file)' $T/root/logs/boot.log) = 1 ] && grep -q '\[border\] MegaDrive/test.png refitted: window [0-9]*,[0-9]* [0-9]*x896' $T/root/logs/boot.log" "the border is picked once; the new shape refits it (4x the 224 lines)"
+expect "$BORDERCHK $T/dump/flip$(printf %05d $((t + 70))).ppm $T/root/logs/boot.log blue red fills >/dev/null" "after Resume the picture fills the refitted window"
 nosan "$T"
 # h. the GPU renderer (lavapipe): the border on the surface over the GPU's picture, plain and through a GPU shader
 for s in 0 1; do

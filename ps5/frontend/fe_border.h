@@ -41,16 +41,22 @@
 namespace fe
 {
 struct GameInfo;
+enum class System : uint8_t;
 }
 
 namespace fe::border
 {
 // Picks and loads the border for the game that was just loaded (its ROM path), fitted to `shape`, or clears it when the
 // setting is Off. Calls ps5video::SetBorder. Never throws, never fails the game: a problem is one OrbisLog line.
-void Select(const std::string& rom_path, const Shape& shape);
-// The Border setting or the picture's shape changed while a game is loaded: re-pick (and re-fit) for the same game. A
-// no-op with no game, and while the setting and the shape are the ones already applied (fe_emu calls it every frame and
-// at every settings change: it compares a few numbers). A shape within half a percent of the last is the same shape.
+// system: the one the loader found (a zip's from the ROM inside), so a zip on a share is not opened again here; null: from
+// the path (DescribeGame). The game is described once, here (with Border Off: at the first setting that wants a border, which
+// reads nothing on a share when `system` was given): call it before netfs_set_realtime(true).
+void Select(const std::string& rom_path, const Shape& shape, const System* system = nullptr);
+// The Border setting or the picture's shape changed while a game is loaded. A new setting picks again for the same game
+// (the pack on /data; the game as Select described it). A new shape only refits the picture already chosen (kept decoded):
+// no folder is listed, no file read, nothing on a share touched. A no-op with no game, and while the setting and the shape
+// are the ones already applied (fe_emu calls it every frame and at every settings change: it compares a few numbers). A
+// shape within half a percent of the last is the same shape.
 void Reselect(const Shape& shape);
 // The game was closed.
 void Release();
@@ -61,6 +67,8 @@ struct Pick
 	std::shared_ptr<const ps5video::Border> border; // null: none
 	std::string source; // "own file", "matched", "bezel name", "system default.png", "default.png", "built-in", "off", ""
 	std::string file; // the picture's file name inside the pack ("MegaDrive/Sonic The Hedgehog (USA, Europe).png")
+	std::shared_ptr<const Image> art; // with a border: the picture as decoded, before fitting (a new shape refits it)
+	ps5video::Rect art_window = {}; // and its window as found or given, before fitting
 };
 // pack: the borders folder; setting: 1 Auto or 2 Default frame (0 is the caller's: no border); game: named as ScanGames does;
 // shape: what the window is fitted to (the default, not valid, keeps the art as drawn).

@@ -705,7 +705,7 @@ bool UsableBorder(const Border& b)
 {
 	const Rect& w = b.window;
 	return b.backdrop.size() == size_t(kWidth) * kHeight && w.w > 0 && w.h > 0 && w.x >= 0 && w.y >= 0 &&
-		   w.x + w.w <= kWidth && w.y + w.h <= kHeight;
+		   w.w <= kWidth - w.x && w.h <= kHeight - w.y; // differences: a sum could overflow
 }
 
 // The rim of a border over the picture rectangle d (the rim pixels outside it are in the backdrop already). The rim is
