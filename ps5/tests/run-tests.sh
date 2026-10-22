@@ -507,8 +507,8 @@ rc=$(GENPLUS_HOST_QUIT_AFTER=3 run "$T" "0:0" "" "$T/root/roms/test.md")
 expect "grep -q 'controllers: Auto (the game.s) pad, Team Player (Sega)' $T/root/logs/boot.log" "Team Player plugged in"
 T=$(newroot t20d)
 $ROM "$T/root/roms/Alpha (USA).md" ntsc >/dev/null
-# (1.8: the "CD add-on" row after "Sprite limit": one more Down)
-rc=$(run "$T" "0:0;30:$TRIANGLE;32:0;40:$DOWN;42:0;46:$DOWN;48:0;52:$DOWN;54:0;58:$DOWN;60:0;64:$DOWN;66:0;70:$DOWN;72:0;76:$DOWN;78:0;82:$DOWN;84:0;88:$DOWN;90:0;94:$DOWN;96:0;100:$DOWN;102:0;106:$DOWN;108:0;112:$DOWN;114:0;118:$DOWN;120:0;124:$DOWN;126:0;130:$DOWN;132:0;136:$DOWN;138:0;142:$DOWN;144:0;148:$RIGHT;150:0;154:$RIGHT;156:0;160:$DOWN;162:0;166:$RIGHT;168:0;172:$DOWN;174:0;178:$RIGHT;180:0;188:$CIRCLE;190:0;198:$OPTIONS;200:0;206:$CROSS;208:0" "184")
+# (1.8: the "CD add-on" row after "Sprite limit": one more Down; 2.1: the "Border" row after "Aspect ratio": one more, at 35)
+rc=$(run "$T" "0:0;30:$TRIANGLE;32:0;35:$DOWN;37:0;40:$DOWN;42:0;46:$DOWN;48:0;52:$DOWN;54:0;58:$DOWN;60:0;64:$DOWN;66:0;70:$DOWN;72:0;76:$DOWN;78:0;82:$DOWN;84:0;88:$DOWN;90:0;94:$DOWN;96:0;100:$DOWN;102:0;106:$DOWN;108:0;112:$DOWN;114:0;118:$DOWN;120:0;124:$DOWN;126:0;130:$DOWN;132:0;136:$DOWN;138:0;142:$DOWN;144:0;148:$RIGHT;150:0;154:$RIGHT;156:0;160:$DOWN;162:0;166:$RIGHT;168:0;172:$DOWN;174:0;178:$RIGHT;180:0;188:$CIRCLE;190:0;198:$OPTIONS;200:0;206:$CROSS;208:0" "184")
 expect "[ $rc = 0 ]" "settings screen: exit code 0 (got $rc)"
 expect "grep -q '^pad_type=2$' $T/root/genplus-ps5.ini && grep -q '^multitap=1$' $T/root/genplus-ps5.ini" "the settings screen set a 6-button pad and the 4 Way Play"
 expect "grep -q '^btn_a=3$' $T/root/genplus-ps5.ini" "the settings screen moved A to Triangle"
@@ -1915,6 +1915,251 @@ for L in 1 2 3 4; do
 	expect "[ $rc = 0 ] && [ -f $T/dump/flip00140.ppm ] && ! grep -q -e 'cheat' -e 'Cheat' -e '\.cht' -e 'Back' -e 'FTP' $T/missing.txt" "language $L: the empty cheat manager is translated ($(grep -i -e cheat -e cht -e Back $T/missing.txt | head -3 | tr '\n' '|'))"
 	nosan "$T"
 done
+fi
+
+# ---------------- 2.1: borders around the picture and more covers (Snes9x PS5 2.7's, pull request #3 by thatboialex) ----------------
+BORDERCHK="python3 $PWD/tests/check_border.py"
+mkborder() { # file [x0 y0 x1 y1]: a 1920x1080 blue border with a clear window (261,21 1398x1038 unless given)
+	mkdir -p "$(dirname "$1")"
+	python3 -c "
+import sys
+from PIL import Image
+im = Image.new('RGBA', (1920, 1080), (0, 0, 255, 255))
+im.paste((0, 0, 0, 0), tuple(int(v) for v in sys.argv[2:6]))
+im.save(sys.argv[1])" "$1" ${2:-261} ${3:-21} ${4:-1659} ${5:-1059}
+}
+
+if want 60; then
+echo "== 60. unit tests: the cover and border matcher, the border pack, the border in the renderer (CPU and GPU surface), the helper's two download lanes"
+for t in titlematch-test border-pack-test border-render-test download-worker-test; do
+	if [ ! -x build/host/$t ]; then bad "$t is built (make unit-tests)"; continue; fi
+	ASAN_OPTIONS=detect_leaks=1 timeout 600 build/host/$t >$WORK/$t.txt 2>&1
+	rc=$?
+	expect "[ $rc = 0 ] && ! grep -q 'runtime error\|AddressSanitizer\|^FAIL' $WORK/$t.txt" "$t: $(grep -E 'checks,|all checks' $WORK/$t.txt | tail -1)"
+done
+fi
+
+if want 61; then
+echo "== 61. border packs: a game finds its border (own file name, the cover matcher), its system's default.png, default.png, the built-in frame"
+T=$(newroot t61)
+B=$T/root/borders
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+$ROM "$T/root/roms/Langrisser 2 English.md" ntsc >/dev/null
+$ROM "$T/root/roms/Unknown Game.md" ntsc >/dev/null
+bordercase() { run "$T" "0:0;$(QUITAT 60)" "" "$T/root/roms/$1"; }
+rc=$(bordercase "test.md")
+expect "[ $rc = 0 ] && ! grep -q '\[border\]' $T/root/logs/boot.log" "Border Off (the default): the pack is not read, nothing is logged"
+echo "border=1" >>"$T/root/genplus-ps5.ini"
+echo "border_download=0" >>"$T/root/genplus-ps5.ini"
+mkborder "$B/MegaDrive/Langrisser II (Japan).png" 300 60 1600 1020
+rc=$(bordercase "Langrisser 2 English.md")
+expect "[ $rc = 0 ] && grep -q '\[border\] Langrisser 2 English -> MegaDrive/Langrisser II (Japan).png (matched): window' $T/root/logs/boot.log" "a translation, named its own way, finds the Japanese game's border through the cover matcher"
+rc=$(bordercase "Unknown Game.md")
+expect "[ $rc = 0 ] && grep -q '\[border\] Unknown Game -> built-in (built-in): window' $T/root/logs/boot.log" "a game with no border and no default.png: the frame built into the app"
+mkborder "$B/default.png" 200 40 1700 1040
+rc=$(bordercase "Unknown Game.md")
+expect "grep -q '\[border\] Unknown Game -> default.png (default.png)' $T/root/logs/boot.log" "then default.png"
+mkborder "$B/MegaDrive/default.png"
+rc=$(bordercase "Unknown Game.md")
+expect "grep -q '\[border\] Unknown Game -> MegaDrive/default.png (system default.png)' $T/root/logs/boot.log" "then the system's own MegaDrive/default.png"
+mkborder "$B/MegaDrive/test.png"
+echo "window=100,100,900,600" >"$B/MegaDrive/test.ini"
+rc=$(bordercase "test.md")
+expect "grep -q '\[border\] test -> MegaDrive/test.png (own file): window' $T/root/logs/boot.log" "MegaDrive/<ROM name>.png wins, and its .ini gives the window"
+echo "off=1" >"$B/MegaDrive/test.ini"
+rc=$(bordercase "test.md")
+expect "grep -q '\[border\] test: none, an .ini says off=1' $T/root/logs/boot.log" "off=1 in the .ini: no border for that game"
+rm "$B/MegaDrive/test.ini"
+echo "garbage" >"$B/MegaDrive/test.png"
+rc=$(bordercase "test.md")
+expect "grep -q '\[border\] MegaDrive/test.png: not a PNG' $T/root/logs/boot.log && grep -q 'test -> MegaDrive/default.png' $T/root/logs/boot.log" "a broken file is logged and skipped"
+sed -i 's/^border=1/border=2/' "$T/root/genplus-ps5.ini"
+rc=$(bordercase "Langrisser 2 English.md")
+expect "grep -q '\[border\] Langrisser 2 English -> MegaDrive/default.png (system default.png)' $T/root/logs/boot.log" "Default frame: the game's own border is not looked for"
+nosan "$T"
+fi
+
+if want 62; then
+echo "== 62. borders drawn: Off changes nothing; Auto draws the game's border (CPU and GPU, with shaders); the pause menu darkens both; the window follows the picture; the Border row"
+# a. Off: black around the picture whatever is in borders/
+T=$(newroot t62a)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+mkborder "$T/root/borders/MegaDrive/test.png"
+rc=$(run "$T" "0:0;$(QUITAT 120)" "90" "$T/root/roms/test.md")
+expect "[ $rc = 0 ] && $RECT $T/dump/flip00090.ppm $T/root/logs/boot.log red >/dev/null && ! grep -q '\[border\]' $T/root/logs/boot.log" "Border Off: the picture with black around it, as before"
+# b. Auto: the border around the picture, the picture fills the window fitted to its shape; the pause menu darkens both; Resume
+T=$(newroot t62b)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+mkborder "$T/root/borders/MegaDrive/test.png"
+echo "border=1" >>"$T/root/genplus-ps5.ini"
+rc=$(run "$T" "0:0;60:$L3R3;65:0;100:$CIRCLE;102:0;$(QUITAT 160)" "50,90,130" "$T/root/roms/test.md")
+expect "[ $rc = 0 ] && $BORDERCHK $T/dump/flip00050.ppm $T/root/logs/boot.log blue red fills >/dev/null" "Border Auto: the game's border around the window, the picture filling it"
+expect "$CHECK $T/dump/flip00090.ppm 100 540 0 0 63 >/dev/null && $CHECK $T/dump/flip00090.ppm 300 540 63 0 0 12 >/dev/null" "the pause menu darkens the border and the picture together"
+expect "$BORDERCHK $T/dump/flip00130.ppm $T/root/logs/boot.log blue red fills >/dev/null" "Resume: the border and the picture are back"
+nosan "$T"
+# c. Default frame: the built-in one, even with a border of the game's own
+def_frame=$(python3 -c "
+from PIL import Image
+r, g, b, a = Image.open('frontend/assets/borders/default.png').convert('RGBA').getpixel((30, 540))
+print(r * a // 255, g * a // 255, b * a // 255)")
+T=$(newroot t62c)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+mkborder "$T/root/borders/MegaDrive/test.png"
+echo "border=2" >>"$T/root/genplus-ps5.ini"
+rc=$(run "$T" "0:0;$(QUITAT 120)" "90" "$T/root/roms/test.md")
+expect "[ $rc = 0 ] && $CHECK $T/dump/flip00090.ppm 30 540 $def_frame 3 >/dev/null && $CHECK $T/dump/flip00090.ppm 960 540 red >/dev/null && grep -q 'built-in (built-in)' $T/root/logs/boot.log" "border=2: the built-in frame around the picture"
+# d. the window follows the Screen size: Integer scale cuts it to 4x the 224-line picture (896 lines); Stretch makes it 16:9
+for mode in "1 896" "2 963"; do
+	set -- $mode
+	T=$(newroot t62d$1)
+	$ROM "$T/root/roms/test.md" ntsc >/dev/null
+	mkborder "$T/root/borders/MegaDrive/test.png"
+	printf 'border=1\nscale=%s\n' "$1" >>"$T/root/genplus-ps5.ini"
+	rc=$(run "$T" "0:0;$(QUITAT 120)" "90" "$T/root/roms/test.md")
+	expect "[ $rc = 0 ] && grep -q '\[border\] test -> MegaDrive/test.png (own file): window [0-9]*,[0-9]* [0-9]*x$2' $T/root/logs/boot.log && $BORDERCHK $T/dump/flip00090.ppm $T/root/logs/boot.log blue red fills >/dev/null" "scale=$1: the window is $2 lines tall and the picture fills it"
+done
+# e. a Game Gear game in a Game Gear bezel (The Bezel Project's window: 274,0 1372x1080): the handheld's 4:3 picture, full height
+T=$(newroot t62e)
+$ROM "$T/root/roms/handheld.gg" >/dev/null
+mkborder "$T/root/borders/GameGear/handheld.png" 274 0 1646 1080
+echo "border=1" >>"$T/root/genplus-ps5.ini"
+rc=$(run "$T" "0:0;$(QUITAT 120)" "90" "$T/root/roms/handheld.gg")
+expect "[ $rc = 0 ] && grep -q '\[border\] handheld -> GameGear/handheld.png (own file): window [0-9]*,0 [0-9]*x1080' $T/root/logs/boot.log && $BORDERCHK $T/dump/flip00090.ppm $T/root/logs/boot.log blue red fills >/dev/null" "Game Gear: its border's window is the handheld's screen, fitted to its picture, which fills it"
+nosan "$T"
+# f. the Border row: Settings from the shelf (Shader, Screen size, Aspect ratio, Border: Down three times), Right twice
+T=$(newroot t62f)
+$ROM "$T/root/roms/Alpha (USA).md" ntsc >/dev/null
+rc=$(run "$T" "0:0;30:$TRIANGLE;32:0;40:$DOWN;42:0;46:$DOWN;48:0;52:$DOWN;54:0;58:$RIGHT;60:0;64:$RIGHT;66:0;72:$CIRCLE;74:0;82:$OPTIONS;84:0;92:$CROSS;94:0" "")
+expect "[ $rc = 0 ] && grep -q '^border=2$' $T/root/genplus-ps5.ini" "Settings > Border: Right twice is Default frame (border=2)"
+# g. the pause menu's Settings (Down five times), Border (Down three), Right: Auto at once, without restarting the game
+T=$(newroot t62g)
+$ROM "$T/root/roms/test.md" ntsc >/dev/null
+mkborder "$T/root/borders/MegaDrive/test.png"
+pad="0:0;60:$L3R3;65:0"; t=80
+for i in 1 2 3 4 5; do pad="$pad;$t:$DOWN;$((t + 2)):0"; t=$((t + 6)); done
+pad="$pad;$t:$CROSS;$((t + 2)):0"; t=$((t + 10))
+for i in 1 2 3; do pad="$pad;$t:$DOWN;$((t + 2)):0"; t=$((t + 6)); done
+pad="$pad;$t:$RIGHT;$((t + 1)):0;$((t + 10)):$CIRCLE;$((t + 12)):0;$((t + 20)):$CIRCLE;$((t + 22)):0"
+rc=$(run "$T" "$pad;$(QUITAT $((t + 90)))" "50,$((t + 70))" "$T/root/roms/test.md")
+expect "[ $rc = 0 ] && grep -q '^border=1$' $T/root/genplus-ps5.ini" "the pause menu's Settings > Border sets Auto (border=1, saved)"
+expect "$CHECK $T/dump/flip00050.ppm 100 540 0 0 0 >/dev/null" "before: no border"
+expect "$BORDERCHK $T/dump/flip$(printf %05d $((t + 70))).ppm $T/root/logs/boot.log blue red fills >/dev/null" "after Resume the game's border is there, without restarting the game"
+nosan "$T"
+# h. the GPU renderer (lavapipe): the border on the surface over the GPU's picture, plain and through a GPU shader
+for s in 0 1; do
+	T=$(newroot t62h$s)
+	$ROM "$T/root/roms/test.md" ntsc >/dev/null
+	mkborder "$T/root/borders/MegaDrive/test.png"
+	printf 'border=1\nshader=%s\n' $s >>"$T/root/genplus-ps5.ini"
+	rc=$(GENPLUS_HOST_GPU_SYNC_BUILD=1 GENPLUS_HOST_GPU=1 run "$T" "0:0;$(QUITAT 60)" "50,66" "$T/root/roms/test.md")
+	if [ $s = 0 ]; then pic=red; else pic=other; fi
+	expect "[ $rc = 0 ] && grep -q 'renderer: GPU' $T/root/logs/boot.log && $CHECK $T/dump/flip00050.ppm 100 540 blue >/dev/null && python3 -c \"import sys; d=open('$T/dump/flip00050.ppm','rb').read().split(b'\\n',3); w=int(d[1].split()[0]); p=d[3]; sys.exit(0 if max(p[(y*w+960)*3] for y in range(440,640)) > 60 else 1)\"" "GPU, shader=$s: the border around the window, the game in it"
+	expect "$CHECK $T/dump/flip00066.ppm 100 540 0 0 63 >/dev/null" "GPU, shader=$s: the pause menu darkens the border too"
+	nosan "$T"
+done
+fi
+
+if want 63; then
+echo "== 63. border downloads: Auto asks the helper for the game's border, it lands in borders/<system> and goes up while the game runs; Settings, Download all borders"
+stop_helpers
+T=$(newroot t63a)
+SRV=$T/srv/GameBezels
+mkborder "$SRV/Sonic The Hedgehog 2 (World).png"
+$ROM "$T/root/roms/Sonic the Hedgehog 2.md" ntsc >/dev/null
+echo "border=1" >>"$T/root/genplus-ps5.ini"
+PORT=18163
+SERVER_DELAY=1 python3 tests/https_server.py "$T/srv" $PORT >/dev/null 2>&1 &
+SRVPID=$!
+GENPLUS_PS5_ROOT=$T/root ASAN_OPTIONS=detect_leaks=0 timeout 120 "$HELPER" >"$T/helper.txt" 2>&1 &
+waitfor "$T/root/logs/helper.log" "listening" || sleep 1
+export GENPLUS_BORDER_URL="http://127.0.0.1:$PORT/GameBezels/"
+rc=$(OFFLINE= GENPLUS_HOST_REALTIME=1 run "$T" "0:0;$(QUITAT 400)" "30,380" "$T/root/roms/Sonic the Hedgehog 2.md")
+unset GENPLUS_BORDER_URL
+expect "[ $rc = 0 ]" "exit code 0 (got $rc)"
+expect "grep -q '\[border\] Sonic the Hedgehog 2: asking the helper for MegaDrive/Sonic The Hedgehog 2 (World).png' $T/root/logs/boot.log" "Auto, no border in the pack: the app asks the helper for The Bezel Project's name for the game"
+expect "grep -q '\[borders\] MegaDrive/Sonic The Hedgehog 2 (World).png -> 200' $T/root/logs/helper.log && cmp -s '$T/root/borders/MegaDrive/Sonic The Hedgehog 2 (World).png' '$SRV/Sonic The Hedgehog 2 (World).png'" "the helper downloaded it into borders/MegaDrive/"
+expect "$CHECK $T/dump/flip00030.ppm 30 540 $def_frame 3 >/dev/null" "the game started with the built-in frame"
+expect "grep -q '\[border\] Sonic the Hedgehog 2 -> MegaDrive/Sonic The Hedgehog 2 (World).png (downloaded): window' $T/root/logs/boot.log && $BORDERCHK $T/dump/flip00380.ppm $T/root/logs/boot.log blue red fills >/dev/null" "the downloaded border goes up while the game runs"
+expect "grep -q '^0 1 idle' $T/root/borders/progress.txt" "borders/progress.txt: nothing left, 1 fetched"
+nosan "$T"
+kill $SRVPID 2>/dev/null
+stop_helpers
+rm -f "$T/root/borders/priority.txt"
+rc=$(run "$T" "0:0;$(QUITAT 60)" "" "$T/root/roms/Sonic the Hedgehog 2.md")
+expect "[ $rc = 0 ] && grep -q '\[border\] Sonic the Hedgehog 2 -> MegaDrive/Sonic The Hedgehog 2 (World).png (matched)' $T/root/logs/boot.log && ! grep -q 'asking the helper' $T/root/logs/boot.log" "the next start finds the downloaded border in the pack and asks for nothing"
+# border_download=0: Auto never asks
+T=$(newroot t63b)
+$ROM "$T/root/roms/Sonic the Hedgehog 2.md" ntsc >/dev/null
+printf 'border=1\nborder_download=0\n' >>"$T/root/genplus-ps5.ini"
+rc=$(run "$T" "0:0;$(QUITAT 60)" "" "$T/root/roms/Sonic the Hedgehog 2.md")
+expect "[ $rc = 0 ] && ! grep -q 'asking the helper' $T/root/logs/boot.log && [ ! -e $T/root/borders/priority.txt ] && grep -q '^border_download=0$' $T/root/genplus-ps5.ini" "border_download=0: the helper is not asked (and the setting is kept)"
+# Settings > Download all borders (LIBRARY, below Download covers: Up seven times from the top wraps to it), in Spanish: two ROMs of one
+# game, a Japanese translation, a Game Gear game and one without a border
+T=$(newroot t63c)
+$ROM "$T/root/roms/Sonic The Hedgehog 2 (World).md" ntsc >/dev/null
+$ROM "$T/root/roms/Sonic the Hedgehog 2.md" ntsc >/dev/null
+$ROM "$T/root/roms/Langrisser 2 English.md" ntsc >/dev/null
+$ROM "$T/root/roms/Sonic The Hedgehog (Japan, USA) (En).gg" >/dev/null
+$ROM "$T/root/roms/Totally Unknown Homebrew.md" ntsc >/dev/null
+echo "language=1" >>"$T/root/genplus-ps5.ini"
+pad="0:0;30:$TRIANGLE;32:0"; t=40
+for i in 1 2 3 4 5 6 7; do pad="$pad;$t:$UP;$((t + 2)):0"; t=$((t + 6)); done
+export GENPLUS_BORDER_URL="http://127.0.0.1:$PORT/GameBezels/"
+rc=$(GENPLUS_HOST_I18N_MISSING=$T/missing.txt run "$T" "$pad;$t:$CROSS;$((t + 2)):0;$((t + 30)):$CIRCLE;$((t + 32)):0;$((t + 40)):$OPTIONS;$((t + 42)):0;$((t + 50)):$CROSS;$((t + 52)):0" "")
+unset GENPLUS_BORDER_URL
+expect "[ $rc = 0 ] && grep -q '\[border\] user asked for the borders of the library: 3 to download' $T/root/logs/boot.log" "Download all borders: three pictures (two ROMs share one, the translation and the Game Gear game have their own, the homebrew none)"
+expect "[ \$(wc -l <$T/root/borders/wanted.txt) = 3 ] && grep -q '^MegaDrive/Sonic The Hedgehog 2 (World).png.http://127.0.0.1:$PORT/GameBezels/Sonic%20The%20Hedgehog%202%20%28World%29.png\$' $T/root/borders/wanted.txt && grep -q '^MegaDrive/Langrisser II (Japan).png' $T/root/borders/wanted.txt && grep -q '^GameGear/Sonic The Hedgehog (Japan, USA) (En).png' $T/root/borders/wanted.txt" "borders/wanted.txt lists them for the helper, each in its system's folder"
+expect "! grep -q 'border\|Border\|queued\|fetch' $T/missing.txt" "the rows and their values are translated ($(head -c 200 $T/missing.txt | tr '\n' '|'))"
+nosan "$T"
+fi
+
+if want 64; then
+echo "== 64. more covers: renamed and translated ROMs, a dump No-Intro lacks (its CRC), a ROM header's title, an online database's art"
+stop_helpers # the app downloads them itself here (no helper: as in group 10)
+T=$(newroot t64)
+MDREPO=Sega_-_Mega_Drive_-_Genesis; GGREPO=Sega_-_Game_Gear
+mkdir -p "$T/srv/$MDREPO/Named_Boxarts" "$T/srv/$GGREPO/Named_Boxarts" "$T/srv/db"
+python3 - "$T/srv" <<'PY'
+import sys
+from PIL import Image
+srv = sys.argv[1]
+for name, colour in (("Langrisser II (Japan)", (255, 0, 0)), ("Advanced Busterhawk Gleylancer (Japan)", (0, 255, 0)), ("Bare Knuckle II - Shitou e no Requiem ~ Streets of Rage II (Japan, Europe)", (0, 0, 255)), ("Bare Knuckle II - Shitou e no Requiem ~ Streets of Rage II (Japan, Europe) (En,Ja)", (0, 0, 255))):
+    Image.new('RGB', (512, 357), colour).save('%s/Sega_-_Mega_Drive_-_Genesis/Named_Boxarts/%s.png' % (srv, name))
+Image.new('RGB', (512, 357), (255, 255, 0)).save(srv + '/Sega_-_Game_Gear/Named_Boxarts/Phantasy Star Gaiden (Japan).png')
+Image.new('RGB', (512, 357), (255, 0, 255)).save(srv + '/db/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', format='PNG')
+PY
+mkdir -p "$T/root/roms"
+$ROM "$T/root/roms/Langrisser 2 (English).md" ntsc >/dev/null
+$ROM "$T/root/roms/glancer-eng.md" ntsc >/dev/null
+python3 tests/forge_crc.py "$T/root/roms/glancer-eng.md" $(grep -P "^md\t[0-9A-F]{8}\tAdvanced Busterhawk Gley Lancer \(Japan\)\[tr en" frontend/data/extra-crc.tsv | head -1 | cut -f2) >/dev/null
+$ROM "$T/root/roms/psg.gg" >/dev/null
+python3 tests/forge_crc.py "$T/root/roms/psg.gg" 1667748B >/dev/null
+# a ROM whose file name and CRC say nothing: the title in its header (domestic, Japan)
+$ROM "$T/root/roms/mystery.md" ntsc >/dev/null
+python3 - "$T/root/roms/mystery.md" <<'PY'
+import sys
+p = sys.argv[1]; d = bytearray(open(p, 'rb').read())
+def put(at, s): d[at:at + len(s)] = s.encode()
+put(0x100, 'SEGA MEGA DRIVE '); put(0x120, 'BARE KNUCKLE II'.ljust(48)); put(0x150, 'STREETS OF RAGE II'.ljust(48)); put(0x1F0, 'J  ')
+open(p, 'wb').write(d)
+PY
+$ROM "$T/root/roms/My Homebrew Thing.md" ntsc >/dev/null
+printf '# test table\nmd\tMy Homebrew Thing\thAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\t00000000\n' >"$T/dbart.tsv"
+PORT=18164
+(cd "$T/srv" && exec python3 -m http.server $PORT --bind 127.0.0.1 >/dev/null 2>&1) &
+SRVPID=$!
+sleep 1
+rc=$(OFFLINE= COVER_URL="http://127.0.0.1:$PORT/\${repo}/Named_Boxarts/\${name}.png" GENPLUS_HOST_DBART=$T/dbart.tsv \
+	GENPLUS_DBART_HASHEOUS="http://127.0.0.1:$PORT/db/" GENPLUS_HOST_REALTIME=1 run "$T" "0:0;300:$OPTIONS;302:0;310:$CROSS;312:0" "")
+kill $SRVPID 2>/dev/null
+C=$T/root/covers
+expect "[ $rc = 0 ]" "exit code 0 (got $rc)"
+expect "cmp -s '$C/MegaDrive/Langrisser II (Japan).png' '$T/srv/$MDREPO/Named_Boxarts/Langrisser II (Japan).png'" "a translation named its own way gets the Japanese game's cover"
+expect "grep -q 'glancer-eng.md \[md\] -> \"\" (dump: Advanced Busterhawk Gley Lancer' $T/root/logs/boot.log && [ -f '$C/MegaDrive/Advanced Busterhawk Gleylancer (Japan).png' ]" "a dump No-Intro lacks: the extra table names its CRC, and the cover follows"
+expect "[ -f '$C/GameGear/Phantasy Star Gaiden (Japan).png' ]" "a Game Gear translation by its CRC: the Game Gear cover"
+expect "grep -q 'mystery.md \[md\] -> \"\" (header: BARE KNUCKLE II)' $T/root/logs/boot.log && ls '$C/MegaDrive/Bare Knuckle II - Shitou e no Requiem ~ Streets of Rage II (Japan, Europe)'*.png >/dev/null 2>&1" "a ROM nothing names: its header's title finds the cover"
+expect "grep -q 'a database has art for My Homebrew Thing' $T/root/logs/boot.log && cmp -s '$C/MegaDrive/My Homebrew Thing.png' '$T/srv/db/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'" "a game libretro-thumbnails lacks: the online database's art, after libretro's 404"
+nosan "$T"
 fi
 
 echo

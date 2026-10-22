@@ -20,4 +20,7 @@ namespace fe
 std::string Shelf();
 // Stops the cover downloads before the payload exits.
 void ShelfShutdown();
+// Settings, Download all borders: borders/wanted.txt for the helper, with The Bezel Project's border of every game of the
+// library that has none yet (fe_borderfetch.h). Returns how many.
+int DownloadBorders();
 } // namespace fe

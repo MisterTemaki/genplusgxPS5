@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 #include "fe_covers.h"
+#include "fe_titlematch.h"
+#include "fe_artmatch.h"
 
 #include "fe_coverworker.h"
 #include "fe_text.h"
@@ -21,6 +23,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <mutex>
+#include <unordered_map>
+#include <unordered_set>
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_STATIC
@@ -36,10 +41,106 @@
 #define STB_IMAGE_RESIZE_STATIC
 #include "third_party/stb_image_resize2.h"
 
+#ifndef COVER_INDEX_TXT
+#error COVER_INDEX_TXT must name the built-in index of the box art libretro-thumbnails has
+#endif
+#define GENPLUS_COVER_INCBIN(sym, path)                                                                          \
+	__asm__(".section .rodata\n"                                                                               \
+			".balign 16\n"                                                                                     \
+			".global " #sym "_begin\n" #sym "_begin:\n"                                                        \
+			".incbin \"" path "\"\n"                                                                           \
+			".global " #sym "_end\n" #sym "_end:\n"                                                            \
+			".previous\n");                                                                                    \
+	extern "C" const char sym##_begin[];                                                                       \
+	extern "C" const char sym##_end[];
+GENPLUS_COVER_INCBIN(genplus_cover_index, COVER_INDEX_TXT)
+
 namespace fe
 {
 namespace
 {
+// ---- the cover matcher (Snes9x PS5 2.7, pull request #3 by thatboialex): renamed and fan-translated ROMs ----
+// data/cover-index.txt (tools/make_cover_index.py): libretro-thumbnails' box art names, a "#@ <system>" line before each
+// system's
+struct BoxIndex
+{
+	std::vector<std::string> names[size_t(System::Count)];
+	std::unordered_set<std::string> sets[size_t(System::Count)];
+	BoxIndex()
+	{
+		int cur = -1;
+		for (const char* p = genplus_cover_index_begin; p < genplus_cover_index_end;)
+		{
+			const char* nl = static_cast<const char*>(memchr(p, '\n', size_t(genplus_cover_index_end - p)));
+			if (!nl)
+				break;
+			const std::string line(p, size_t(nl - p));
+			p = nl + 1;
+			if (line.compare(0, 3, "#@ ") == 0)
+			{
+				const std::string id = line.substr(3, line.find(' ', 3) - 3);
+				cur = -1;
+				for (int i = 0; i < int(System::Count); i++)
+					if (id == Info(System(i)).id)
+						cur = i;
+				continue;
+			}
+			if (line.empty() || line[0] == '#' || cur < 0)
+				continue;
+			names[cur].push_back(line);
+			sets[cur].insert(line);
+		}
+	}
+};
+
+const BoxIndex& Boxes()
+{
+	static const BoxIndex index;
+	return index;
+}
+
+size_t SysIndex(System s)
+{
+	return size_t(s) < size_t(System::Count) ? size_t(s) : 0;
+}
+
+bool HasNumber(const std::string& name)
+{
+	for (const std::string& w : artmatch::Tokens(artmatch::Parse(name).title))
+		if (artmatch::IsDigits(w))
+			return true;
+	return false;
+}
+
+// The entry of `names` that is this game's art: its No-Intro name, the extra CRC table's name for its dump, close in
+// spelling (unless the numbers disagree), the same words, then the title in its header. "" when none fits.
+std::string MatchArtName(const std::vector<std::string>& names, const titles::Index& index, const artmatch::Index& words,
+	const GameInfo& game, bool usa_on_tie = false)
+{
+	const std::string requested = game.nointro.empty() ? game.file_base : game.nointro;
+	auto exact = std::find(names.begin(), names.end(), requested);
+	if (exact != names.end())
+		return *exact; // revisions and git symlinks kept as they are
+	// What the ROM's CRC is called in the extra table (a fan translation, a hack): the database knows this very file.
+	std::string result;
+	if (!game.crc_name.empty())
+		result = artmatch::Resolve(words, game.crc_name, "", usa_on_tie);
+	// Close in spelling, unless the numbers disagree ("Sonic 3" is not "Sonic 2"), or the name has a number the art lacks
+	// ("Langrisser 2" is one letter from "Langrisser", but not that game: the word matcher below decides).
+	if (result.empty())
+	{
+		result = titles::Best(index, requested);
+		if (artmatch::NumbersConflict(requested, result) || (HasNumber(requested) && !HasNumber(result)))
+			result.clear();
+	}
+	// A renamed or fan-translated ROM: the same words as an art name, then the title inside the ROM itself.
+	if (result.empty())
+		result = artmatch::Resolve(words, requested, "", usa_on_tie);
+	if (result.empty() && !game.header_title.empty())
+		result = artmatch::ResolveHeader(words, game.header_title, game.header_japan, usa_on_tie);
+	return result;
+}
+
 constexpr int kLoadRadius = 12; // textures kept around the selection
 constexpr long kMissingRetrySeconds = 30L * 24 * 3600;
 
@@ -125,12 +226,25 @@ bool Exists(const std::string& path)
 	return stat(path.c_str(), &st) == 0;
 }
 
-bool RecentlyMissing(const std::string& marker)
+// <name>.missing holds the addresses that gave a 404: a game whose addresses changed since (the cover matcher found
+// another name, a database has its art) is asked again at once.
+bool RecentlyMissing(const std::string& marker, const std::string& url)
 {
 	struct stat st = {};
-	if (stat(marker.c_str(), &st) != 0)
+	if (stat(marker.c_str(), &st) != 0 || time(nullptr) - st.st_mtime >= kMissingRetrySeconds)
 		return false;
-	return time(nullptr) - st.st_mtime < kMissingRetrySeconds;
+	FILE* f = fopen(marker.c_str(), "r");
+	if (!f)
+		return false;
+	std::string old;
+	char buf[4096];
+	size_t n;
+	while ((n = fread(buf, 1, sizeof(buf), f)) > 0 && old.size() < 65536)
+		old.append(buf, n);
+	fclose(f);
+	while (!old.empty() && (old.back() == '\n' || old.back() == '\r'))
+		old.pop_back();
+	return old == url;
 }
 
 uint32_t Pack(int r, int g, int b)
@@ -316,16 +430,103 @@ bool ShelfDownloads()
 	return g_shelf_downloads;
 }
 
+std::string CoverNameFor(const GameInfo& game)
+{
+	const size_t sys = SysIndex(game.system);
+	const BoxIndex& boxes = Boxes();
+	if (!game.nointro.empty() && boxes.sets[sys].count(game.nointro))
+		return game.nointro; // the usual case: libretro-thumbnails has it under its No-Intro name
+	const std::string key = std::to_string(sys) + "|" + game.nointro + "|" + game.file_base + "|" + game.crc_name + "|" +
+							game.header_title + "|" + std::to_string(game.crc);
+	static std::mutex mutex;
+	static std::unordered_map<std::string, std::string> cache;
+	{
+		std::lock_guard<std::mutex> guard(mutex);
+		const auto it = cache.find(key);
+		if (it != cache.end())
+			return it->second;
+	}
+	const std::vector<std::string>& names = boxes.names[sys];
+	std::string best = names.empty() ? std::string() :
+		MatchArtName(names, titles::IndexOf(names), artmatch::IndexOf(names), game);
+	if (!best.empty() && best != game.nointro)
+		OrbisLog("[covers] matched art: %s -> %s", (game.nointro.empty() ? game.file_base : game.nointro).c_str(), best.c_str());
+	if (best.empty())
+		best = game.nointro; // the name it has (a 404, or a database's art below)
+	if (best.empty() && !gamedb::DatabaseCoverUrls(game).empty())
+		best = game.file_base; // nothing names it, but a database has its art: kept under the ROM's own name
+	{
+		std::lock_guard<std::mutex> guard(mutex);
+		cache.emplace(key, best);
+	}
+	return best;
+}
+
+struct PackMatcher::Impl
+{
+	std::vector<std::string> names;
+	titles::Index index;
+	artmatch::Index words;
+	bool usa_on_tie = false;
+};
+
+PackMatcher::PackMatcher(const std::vector<std::string>& names, bool usa_on_tie) : m_i(new Impl)
+{
+	m_i->names = names;
+	m_i->usa_on_tie = usa_on_tie;
+	titles::Build(m_i->index, m_i->names);
+	artmatch::Build(m_i->words, m_i->names);
+}
+
+PackMatcher::~PackMatcher() = default;
+
+std::string PackMatcher::Match(const GameInfo& game) const
+{
+	return MatchArtName(m_i->names, m_i->index, m_i->words, game, m_i->usa_on_tie);
+}
+
+std::string MatchPackName(const std::vector<std::string>& names, const GameInfo& game)
+{
+	// a list that changes between calls: its indexes are made here and thrown away
+	return PackMatcher(names).Match(game);
+}
+
+namespace
+{
+// Where an online database has the box art of a game libretro-thumbnails has none of (fe_dbart.h), or "". Asked once per game.
+std::string DatabaseUrls(const GameInfo& game, const std::string& box)
+{
+	if (Boxes().sets[SysIndex(game.system)].count(box))
+		return "";
+	static std::mutex mutex;
+	static std::unordered_map<std::string, std::string> cache;
+	const std::string key = std::to_string(int(game.system)) + "|" + game.file_base + "|" + game.nointro + "|" +
+							std::to_string(game.crc) + "|" + game.crc_name;
+	std::lock_guard<std::mutex> guard(mutex);
+	auto it = cache.find(key);
+	if (it == cache.end())
+	{
+		it = cache.emplace(key, gamedb::DatabaseCoverUrls(game)).first;
+		if (!it->second.empty())
+			OrbisLog("[covers] a database has art for %s: %s", game.file_base.c_str(), it->second.c_str());
+	}
+	return it->second;
+}
+} // namespace
+
 std::string CoverUrlFor(const GameInfo& g)
 {
+	const std::string box = CoverNameFor(g);
 	std::string url = CoverUrlTemplate();
 	size_t p = url.find("${repo}");
 	if (p != std::string::npos)
 		url.replace(p, 7, Info(g.system).thumbs);
 	p = url.find("${name}");
 	if (p != std::string::npos)
-		url.replace(p, 7, UrlEncode(ThumbnailName(g.nointro)));
-	return url;
+		url.replace(p, 7, UrlEncode(ThumbnailName(box)));
+	// libretro-thumbnails' address first, then the database's
+	const std::string database = DatabaseUrls(g, box);
+	return database.empty() ? url : url + "\t" + database;
 }
 
 std::string OwnCover(const GameInfo& g)
@@ -340,7 +541,8 @@ std::string OwnCover(const GameInfo& g)
 
 std::string CoverFileFor(const GameInfo& g)
 {
-	return std::string(Info(g.system).folder) + "/" + ThumbnailName(g.nointro) + ".png";
+	const std::string name = CoverNameFor(g);
+	return name.empty() ? std::string() : std::string(Info(g.system).folder) + "/" + ThumbnailName(name) + ".png";
 }
 
 std::string WantedListPath()
@@ -354,12 +556,12 @@ std::vector<WantedCover> MissingCovers(const std::vector<GameInfo>& games)
 	const std::string covers = OrbisDir("covers");
 	for (const GameInfo& g : games)
 	{
-		if (g.nointro.empty())
-			continue;
 		const std::string file = CoverFileFor(g);
+		if (file.empty())
+			continue;
 		const std::string cache = covers + "/" + file;
 		if (!Exists(RefetchMarker(cache)) &&
-			(NonEmptyFile(cache) || RecentlyMissing(cache.substr(0, cache.size() - 4) + ".missing")))
+			(NonEmptyFile(cache) || RecentlyMissing(cache.substr(0, cache.size() - 4) + ".missing", CoverUrlFor(g))))
 			continue;
 		const std::string own = OwnCover(g);
 		if (!own.empty() && own != cache)
@@ -387,10 +589,8 @@ void WriteWantedList(const std::vector<WantedCover>& wanted)
 
 std::string CoverService::CachePath(int i) const
 {
-	const GameInfo& g = m_games[size_t(i)];
-	if (g.nointro.empty())
-		return "";
-	return OrbisDir("covers") + "/" + CoverFileFor(g);
+	const std::string file = CoverFileFor(m_games[size_t(i)]);
+	return file.empty() ? std::string() : OrbisDir("covers") + "/" + file;
 }
 
 bool CoverService::NeedsDownload(int i) const
@@ -407,7 +607,7 @@ bool CoverService::NeedsDownload(int i) const
 		return false; // a picture beside the ROM is used before a download
 	if (Exists(RefetchMarker(cache)))
 		return true; // asked for again (Square)
-	return !NonEmptyFile(cache) && !RecentlyMissing(cache.substr(0, cache.size() - 4) + ".missing");
+	return !NonEmptyFile(cache) && !RecentlyMissing(cache.substr(0, cache.size() - 4) + ".missing", CoverUrlFor(g));
 }
 
 void CoverService::Start(const std::vector<GameInfo>& games, bool allow_download, bool background)
@@ -501,12 +701,12 @@ bool CoverService::Download(int i)
 	if (cache.empty())
 		return false;
 	const std::string marker = cache.substr(0, cache.size() - 4) + ".missing";
-	if (m_offline || RecentlyMissing(marker))
-		return false;
 	const std::string url = CoverUrlFor(g);
+	if (m_offline || RecentlyMissing(marker, url))
+		return false;
 	std::vector<uint8_t> data;
 	GENPLUS_STAGE(Cover, "http get cover");
-	const int status = FetchCoverUrl(m_http, url, ThumbnailName(g.nointro), data);
+	const int status = FetchCoverUrl(m_http, url, ThumbnailName(CoverNameFor(g)), data);
 	if (status == 200)
 	{
 		OrbisMkdirs(cache.substr(0, cache.find_last_of('/')));

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "fe_games.h"
+#include "fe_dbart.h"
 
 #include "OrbisPaths.h"
 #include "ProsperoThread.h"
@@ -34,6 +35,9 @@
 	extern "C" const char sym##_end[];
 
 GENPLUS_INCBIN(genplus_gamedb, GAMEDB_TSV)
+// the dumps No-Intro does not list, and the games an online database has a cover of (tools/make_extra_crc.py, make_db_art.py)
+GENPLUS_INCBIN(genplus_extracrc, EXTRACRC_TSV)
+GENPLUS_INCBIN(genplus_dbart, DBART_TSV)
 
 namespace fe
 {
@@ -161,8 +165,45 @@ struct Db
 	std::unordered_map<uint64_t, std::string> by_crc;
 	std::unordered_map<std::string, std::string> exact; // sys + lower-case name -> name
 	std::unordered_map<std::string, std::string> loose; // sys + Key -> best name
+	std::unordered_map<uint64_t, std::string> extra_by_crc; // sys + CRC -> the name of a dump No-Intro does not list
+	dbart::Table covers[size_t(System::Count)]; // per system: games an online database has a cover for
 	Db()
 	{
+		const char* dbart_begin = genplus_dbart_begin;
+		const char* dbart_end = genplus_dbart_end;
+#ifndef __PROSPERO__
+		// the host tests give a table of their own (the built-in one may be empty until tools/make_db_art.py runs)
+		std::string host_dbart;
+		if (const char* path = getenv("GENPLUS_HOST_DBART"))
+			if (FILE* f = fopen(path, "rb"))
+			{
+				char buf[4096];
+				size_t n;
+				while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+					host_dbart.append(buf, n);
+				fclose(f);
+				dbart_begin = host_dbart.data();
+				dbart_end = host_dbart.data() + host_dbart.size();
+			}
+#endif
+		for (int i = 0; i < int(System::Count); i++)
+			dbart::Parse(dbart_begin, dbart_end, kSystems[i].id, covers[i]);
+		// system<TAB>CRC32<TAB>name
+		for (const char* q = genplus_extracrc_begin; q < genplus_extracrc_end;)
+		{
+			const char* nl = static_cast<const char*>(memchr(q, '\n', size_t(genplus_extracrc_end - q)));
+			if (!nl)
+				nl = genplus_extracrc_end;
+			const std::string line(q, size_t(nl - q));
+			q = nl + 1;
+			const size_t t1 = line.find('\t');
+			if (line.empty() || line[0] == '#' || t1 == std::string::npos || line.size() < t1 + 11 || line[t1 + 9] != '\t')
+				continue;
+			for (int i = 0; i < int(System::Count); i++)
+				if (line.compare(0, t1, kSystems[i].id) == 0 && strlen(kSystems[i].id) == t1)
+					extra_by_crc.emplace(CrcKey(System(i), uint32_t(strtoul(line.substr(t1 + 1, 8).c_str(), nullptr, 16))),
+						line.substr(t1 + 10));
+		}
 		const char* p = genplus_gamedb_begin;
 		const char* end = genplus_gamedb_end;
 		while (p < end)
@@ -223,6 +264,16 @@ struct CrcCache
 	{
 		std::lock_guard<std::mutex> g(lock);
 		seen.clear();
+		LoadLocked();
+	}
+	// Reads the file the first time, keeps the scan's list (DescribeGame, a game being loaded).
+	void Ensure()
+	{
+		std::lock_guard<std::mutex> g(lock);
+		LoadLocked();
+	}
+	void LoadLocked()
+	{
 		if (loaded)
 			return;
 		loaded = true;
@@ -523,6 +574,89 @@ void Walk(const std::string& dir, int depth, bool usb, bool net, std::vector<Gam
 	closedir(d);
 }
 
+// A ROM no name or CRC identified keeps its header's title for the cover and border lookup (Snes9x PS5 2.7's HeaderHint).
+// Cached like the CRC (under the path plus "|hdr", with the size and mtime), so each such ROM is opened once:
+// "size\tmtime\tTITLE\tJAPAN" or "...\tnone".
+void LoadHeaderHint(CrcCache& cache, GameInfo& g)
+{
+	struct stat st = {};
+	if (stat(g.path.c_str(), &st) != 0)
+		return;
+	const std::string key = g.path + "|hdr";
+	char stamp[64];
+	snprintf(stamp, sizeof(stamp), "%lld\t%lld\t", (long long)st.st_size, (long long)st.st_mtime);
+	std::string val;
+	bool cached = false;
+	{
+		std::lock_guard<std::mutex> lk(cache.lock); // the network naming pass uses the cache too
+		cache.seen[key] = true;
+		auto it = cache.lines.find(key);
+		if (it != cache.lines.end() && it->second.compare(0, strlen(stamp), stamp) == 0)
+		{
+			val = it->second.substr(strlen(stamp));
+			cached = true;
+		}
+	}
+	if (!cached)
+	{
+		// a ROM on a share is not opened during the scan (that is what makes a network scan slow): no header hint
+		if (g.on_network)
+			return;
+		romheader::Info info;
+		val = ReadRomHeader(g.path, g.system, &info) ? info.title + "\t" + (info.japan() ? "1" : "0") : "none";
+		cache.Put(key, stamp + val);
+	}
+	const size_t tab = val.find('\t');
+	if (tab == std::string::npos)
+		return;
+	g.header_title = val.substr(0, tab);
+	g.header_japan = val.compare(tab + 1, std::string::npos, "1") == 0;
+}
+
+// Names one game, in the order fe_games.h describes: its file name, its CRC, the file name loosely; a ROM none of that
+// names gets what its CRC is called in the extra table and its header's title. ScanGames and DescribeGame (a game being
+// loaded) both come through here, so the shelf, the cover and the border name a game alike.
+void NameGame(CrcCache& cache, GameInfo& g)
+{
+	System found = g.system;
+	g.nointro = gamedb::Exact(g.system, g.file_base, &found);
+	uint32_t whole = 0, body = 0;
+	bool have_crc = false;
+	if (g.nointro.empty())
+	{
+		bool known = false;
+		const bool have = CachedCrc(cache, g.path, &whole, &body, !g.on_network, &known);
+		// a cartridge on a share is named from its file name for now: NetNaming reads its CRC (a disc has none)
+		if (g.on_network && !known && g.system != System::SegaCd)
+			g.crc_pending = true;
+		if (have)
+		{
+			have_crc = true;
+			g.crc = body;
+			g.nointro = gamedb::ByCrc(g.system, whole, &found);
+			if (g.nointro.empty() && body != whole)
+				g.nointro = gamedb::ByCrc(g.system, body, &found);
+			g.name_by_crc = !g.nointro.empty();
+		}
+	}
+	if (g.nointro.empty())
+		g.nointro = gamedb::Loose(g.system, g.file_base, &found);
+	if (!g.nointro.empty())
+		g.system = found;
+	else
+	{
+		if (have_crc)
+		{
+			g.crc_name = gamedb::ByExtraCrc(g.system, whole);
+			if (g.crc_name.empty() && body != whole)
+				g.crc_name = gamedb::ByExtraCrc(g.system, body);
+		}
+		LoadHeaderHint(cache, g);
+	}
+	g.title = g.nointro.empty() ? g.file_base : gamedb::Title(g.nointro);
+	g.region = gamedb::Region(g.nointro);
+}
+
 template <typename F>
 std::string Search(System s, System* found_in, F&& find)
 {
@@ -716,6 +850,31 @@ std::string Title(const std::string& nointro)
 	return t;
 }
 
+std::string ByExtraCrc(System s, uint32_t crc)
+{
+	return Search(s, nullptr, [&](System g) {
+		auto it = D().extra_by_crc.find(CrcKey(g, crc));
+		return it == D().extra_by_crc.end() ? std::string() : it->second;
+	});
+}
+
+std::string DatabaseCoverUrls(const GameInfo& game)
+{
+	// the host tests point both at a local server
+	const char* hasheous = getenv("GENPLUS_DBART_HASHEOUS");
+	const char* thegamesdb = getenv("GENPLUS_DBART_THEGAMESDB");
+	const dbart::Table& t = D().covers[size_t(game.system) < size_t(System::Count) ? size_t(game.system) : 0];
+	const dbart::Row* row = dbart::Find(t, game.crc, game.nointro.empty() ? game.file_base : game.nointro);
+	if (!row && game.nointro != game.file_base)
+		row = dbart::Find(t, 0, game.file_base);
+	if (!row && !game.crc_name.empty())
+		row = dbart::Find(t, 0, game.crc_name);
+	if (!row)
+		return std::string();
+	return dbart::Urls(*row, hasheous && *hasheous ? hasheous : "https://hasheous.org/api/v1/images/",
+		thegamesdb && *thegamesdb ? thegamesdb : "https://cdn.thegamesdb.net/images/original/boxart/front/");
+}
+
 std::string Region(const std::string& nointro)
 {
 	const size_t a = nointro.find(" (");
@@ -787,11 +946,12 @@ bool RomCrc32(const std::string& path, uint32_t* whole, uint32_t* body, std::str
 
 void PrepareFolders()
 {
-	const std::string roms = OrbisDir("roms"), covers = OrbisDir("covers");
+	const std::string roms = OrbisDir("roms"), covers = OrbisDir("covers"), borders = OrbisDir("borders");
 	for (const SystemInfo& s : kSystems)
 	{
 		OrbisMkdirs(roms + "/" + s.folder);
 		OrbisMkdirs(covers + "/" + s.folder);
+		OrbisMkdirs(borders + "/" + s.folder); // the border pack (fe_border.h)
 	}
 	// covers cached by 1.0's first builds: covers/"md - Sonic The Hedgehog (USA, Europe).png" (and .missing)
 	DIR* d = opendir(covers.c_str());
@@ -956,30 +1116,7 @@ std::vector<GameInfo> ScanGames(const ScanProgress& progress)
 	{
 		if (progress)
 			progress(1, identified++, games.size());
-		System found = g.system;
-		g.nointro = gamedb::Exact(g.system, g.file_base, &found);
-		if (g.nointro.empty())
-		{
-			uint32_t whole = 0, body = 0;
-			bool known = false;
-			const bool have = CachedCrc(cache, g.path, &whole, &body, !g.on_network, &known);
-			// a cartridge on a share is named from its file name for now: NetNaming reads its CRC (a disc has none)
-			if (g.on_network && !known && g.system != System::SegaCd)
-				g.crc_pending = true;
-			if (have)
-			{
-				g.nointro = gamedb::ByCrc(g.system, whole, &found);
-				if (g.nointro.empty() && body != whole)
-					g.nointro = gamedb::ByCrc(g.system, body, &found);
-				g.name_by_crc = !g.nointro.empty();
-			}
-		}
-		if (g.nointro.empty())
-			g.nointro = gamedb::Loose(g.system, g.file_base, &found);
-		if (!g.nointro.empty())
-			g.system = found;
-		g.title = g.nointro.empty() ? g.file_base : gamedb::Title(g.nointro);
-		g.region = gamedb::Region(g.nointro);
+		NameGame(cache, g);
 	}
 	cache.Save(true);
 
@@ -997,11 +1134,122 @@ std::vector<GameInfo> ScanGames(const ScanProgress& progress)
 	for (size_t i = 0; i < games.size() && i < kLogged; i++)
 	{
 		const GameInfo& g = games[i];
-		OrbisLog("[games]   %s [%s] -> \"%s\"%s", g.path.c_str(), Info(g.system).id, g.nointro.c_str(),
-			g.name_by_crc ? " (by CRC)" : "");
+		OrbisLog("[games]   %s [%s] -> \"%s\"%s%s%s%s%s", g.path.c_str(), Info(g.system).id, g.nointro.c_str(),
+			g.name_by_crc ? " (by CRC)" : "", g.crc_name.empty() ? "" : " (dump: ", g.crc_name.c_str(), g.crc_name.empty() ? "" : ")",
+			g.header_title.empty() ? "" : (" (header: " + g.header_title + ")").c_str());
 	}
 	if (games.size() > kLogged)
 		OrbisLog("[games]   ... and %zu more", games.size() - kLogged);
 	return games;
+}
+GameInfo DescribeGame(const std::string& path)
+{
+	GameInfo g;
+	g.path = path;
+	const size_t slash = path.find_last_of('/');
+	const std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
+	const std::string ext = ExtOf(name);
+	g.file_base = name.substr(0, name.size() - ext.size());
+	g.ext = ext;
+	g.on_usb = path.rfind("/mnt/", 0) == 0;
+	g.on_network = netfs_is_network_path(path.c_str());
+	if (ext == ".zip")
+	{
+		if (!ArchiveSystem(path, &g.system))
+			g.system = System::Md;
+	}
+	else if (!SystemForExt(ext, &g.system))
+		g.system = System::Md;
+	CrcCache& cache = SharedCrcCache();
+	cache.Ensure();
+	NameGame(cache, g);
+	cache.Save(false); // only what this game added: the scan drops the entries of files that are gone
+	return g;
+}
+
+namespace
+{
+// The first FILE of a .cue sheet, as a path beside it.
+std::string CueFirstTrack(const std::string& cue)
+{
+	FILE* f = fopen(cue.c_str(), "r");
+	if (!f)
+		return "";
+	char line[1024];
+	std::string file;
+	while (file.empty() && fgets(line, sizeof(line), f))
+	{
+		const char* p = line;
+		while (*p == ' ' || *p == '\t')
+			p++;
+		if (strncasecmp(p, "FILE", 4) != 0)
+			continue;
+		p += 4;
+		while (*p == ' ' || *p == '\t')
+			p++;
+		if (*p == '"')
+		{
+			const char* q = strchr(p + 1, '"');
+			if (q)
+				file.assign(p + 1, q);
+		}
+		else
+		{
+			const char* e = p;
+			while (*e && *e != ' ' && *e != '\t' && *e != '\r' && *e != '\n')
+				e++;
+			file.assign(p, e);
+		}
+	}
+	fclose(f);
+	const size_t s = file.find_last_of("/\\");
+	if (s != std::string::npos)
+		file = file.substr(s + 1);
+	return file.empty() ? "" : cue.substr(0, cue.find_last_of('/') + 1) + file;
+}
+} // namespace
+
+bool ReadRomHeader(const std::string& path, System system, romheader::Info* info)
+{
+	const std::string ext = ExtOf(path);
+	if (system == System::SegaCd)
+	{
+		// a disc: its first data track (a .chd is compressed: not read here)
+		const std::string track = ext == ".cue" ? CueFirstTrack(path) : ext == ".iso" ? path : std::string();
+		FILE* f = track.empty() ? nullptr : fopen(track.c_str(), "rb");
+		if (!f)
+			return false;
+		const bool ok = romheader::ReadDisc(
+			[f](uint64_t at, uint8_t* out, size_t n) { return fseek(f, long(at), SEEK_SET) == 0 && fread(out, 1, n, f) == n; }, info);
+		fclose(f);
+		return ok;
+	}
+	if (system != System::Md)
+		return false; // the Master System's, the Game Gear's and the SG-1000's headers have no title
+	if (ext == ".zip")
+	{
+		std::string inner;
+		std::vector<uint8_t> data;
+		if (!ReadFromZip(path, &inner, &data))
+			return false;
+		return romheader::ReadCart(
+			[&data](uint64_t at, uint8_t* out, size_t n) {
+				if (at + n > data.size())
+					return false;
+				memcpy(out, data.data() + at, n);
+				return true;
+			},
+			data.size(), info);
+	}
+	FILE* f = fopen(path.c_str(), "rb");
+	if (!f)
+		return false;
+	fseek(f, 0, SEEK_END);
+	const uint64_t total = uint64_t(ftell(f));
+	const bool ok = romheader::ReadCart(
+		[f](uint64_t at, uint8_t* out, size_t n) { return fseek(f, long(at), SEEK_SET) == 0 && fread(out, 1, n, f) == n; }, total,
+		info);
+	fclose(f);
+	return ok;
 }
 } // namespace fe

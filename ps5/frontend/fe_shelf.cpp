@@ -3,6 +3,7 @@
 
 #include "fe_shelf.h"
 
+#include "fe_borderfetch.h"
 #include "fe_covers.h"
 #include "fe_games.h"
 #include "fe_i18n.h"
@@ -798,6 +799,15 @@ NetView NetStatus(std::map<std::string, double>& since, double now)
 void ShelfShutdown()
 {
 	S().covers.Stop();
+}
+
+int DownloadBorders()
+{
+	const std::string pack = OrbisDir("borders");
+	const std::vector<WantedCover> wanted = border::MissingBorders(pack, S().all);
+	border::WriteWantedBorders(pack, wanted);
+	OrbisLog("[border] user asked for the borders of the library: %zu to download", wanted.size());
+	return int(wanted.size());
 }
 
 std::string Shelf()
