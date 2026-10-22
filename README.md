@@ -74,10 +74,31 @@ Genesis Plus GX PS5 only uses `/data/genplus/`, `/data/homebrew/PPSA99921/` and 
 
 ## Versions
 
-Every release carries its version in the file name: `GenesisPlusGXPS5-v2.0.elf` (GPU build),
-`GenesisPlusGXPS5-v2.0-cpu.elf` (CPU-only build) and `genplus-ps5-v2.0-src.zip`
+Every release carries its version in the file name: `GenesisPlusGXPS5-v2.1.elf` (GPU build),
+`GenesisPlusGXPS5-v2.1-cpu.elf` (CPU-only build) and `genplus-ps5-v2.1-src.zip`
 (`make dist`). When updating, replace the old ELF with the new one in your autoload or Payload Manager. In this
 README, "`GenesisPlusGXPS5.elf`" always means the current release's ELF.
+
+**2.1:** the features Snes9x PS5 2.7 got ([issue #3](https://github.com/MisterTemaki/genplusgxPS5/issues/3)),
+after the design of [thatboialex](https://github.com/thatboialex)'s pull request to Snes9x PS5
+([#3](https://github.com/MisterTemaki/snes9xPS5/pull/3)), and cheats.
+- **Games on network shares (SMB and NFS):** keep your ROMs and Sega CD discs on a NAS or PC and play them from the
+  shelf (Settings, LIBRARY, Network shares, with an on-screen keyboard and Test connection). Cartridges are read
+  whole; discs stream from the share while you play. Saves, states, cheats, BIOS files and covers stay on the
+  console. See [Network shares](#network-shares-smb-and-nfs).
+- **Shelf tabs:** Internal, USB and Network; L1 / R1 switch tabs, Up / Down the system, L2 / R2 skip 10 games.
+- **Borders around the picture:** each game's border from [The Bezel Project](https://github.com/thebezelproject)
+  (Mega Drive, Sega CD, Master System, Game Gear, SG-1000; downloaded on the console with Border on Auto, or all at
+  once with Settings, Download all borders), or a built-in frame. With the CPU and the GPU renderer, under every
+  shader (the Mega Bezel presets draw their own). See [Borders around the picture](#borders-around-the-picture).
+- **More covers:** fan translations, hacks and renamed ROMs find their game's cover (a table of 9,691 extra dumps,
+  the ROM header's title); an online database ([Hasheous](https://hasheous.org)) fills in 1,638 games
+  libretro-thumbnails lacks.
+- **Cheats:** libretro-database `.cht` files (Game Genie and Pro Action Replay codes, for every system), the Cheat
+  manager in the pause menu, and they reload by themselves when the `.cht` file changes. See [Cheats](#cheats).
+- The new screens in the five languages. libsmb2 and libnfs (LGPL-2.1-or-later) are built in, at the upstream code
+  with the security fixes Snes9x PS5 2.7 took (among them CVE-2025-57632 and CVE-2026-110712).
+- **Tests:** TESTCOUNT.
 
 **2.0:** the GPU does more, and the pauses and spikes 1.9 showed on a PS5 are dealt with (checked in the host
 tests; not yet on a console).
@@ -237,7 +258,7 @@ Drive's button names, and the shaders' names are not translated.
 
 1. **Send `GenesisPlusGXPS5.elf`** with PS5 Payload Manager, or from a PC on the same network:
    ```sh
-   nc -q0 PS5_IP 9021 < GenesisPlusGXPS5-v2.0.elf
+   nc -q0 PS5_IP 9021 < GenesisPlusGXPS5-v2.1.elf
    ```
    It installs the app in `/data/homebrew/PPSA99921/` (`eboot.bin`, `sce_module/libc.prx`, `param.json`, the
    icon and the backgrounds), shows **"Genesis Plus GX PS5 2.0 installed. Open it from the Genesis Plus GX PS5
@@ -706,7 +727,7 @@ screen columns, monoCRT has no beam jitter.
 
 ## The GPU renderer
 
-In the GPU build (`GenesisPlusGXPS5-v2.0.elf`), the game's picture is drawn by the PS5's GPU through Vulkan:
+In the GPU build (`GenesisPlusGXPS5-v2.1.elf`), the game's picture is drawn by the PS5's GPU through Vulkan:
 **RADV**, Mesa's driver for AMD GPUs, ported to the PS5 by [PS5_Vulkan](https://github.com/mihawk-99/PS5_Vulkan)
 and [PS5_Mesa](https://github.com/mihawk-99/PS5_Mesa) (mihawk-99), linked into the app; it already runs
 vkQuake, RetroArch's Vulkan cores and Dolphin on consoles. What changes:
@@ -728,7 +749,7 @@ vkQuake, RetroArch's Vulkan cores and Dolphin on consoles. What changes:
 - If the app dies while the GPU is being set up, the next start notices it (`logs/gpu-starting` is still there)
   and uses the CPU for that start.
 - Settings, SYSTEM, **Renderer: CPU** keeps the CPU for good (`renderer=0` in `genplus-ps5.ini`); or install the
-  **CPU-only build** (`GenesisPlusGXPS5-v2.0-cpu.elf`), which has no GPU driver inside at all.
+  **CPU-only build** (`GenesisPlusGXPS5-v2.1-cpu.elf`), which has no GPU driver inside at all.
 - The GPU driver was developed and checked by its author on his consoles (with etaHEN); 1.9's GPU renderer ran
   on a user's PS5 (RADV saw the GPU as NAVI21, 4K at 59.94 Hz, all 26 shaders loaded). Please report `boot.log`,
   `[gpu]` lines included (Debug logs on).

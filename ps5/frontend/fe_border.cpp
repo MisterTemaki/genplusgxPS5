@@ -440,10 +440,22 @@ void Watch(uint64_t gen, std::string pack, std::string file, std::string game_na
 void RequestDownload(const std::string& pack, const GameInfo& game, const Shape& shape)
 {
 	WantedCover want;
-	if (!BorderWanted(pack, game, &want))
-		return;
-	WritePriorityBorders(pack, {want});
-	OrbisLog("[border] %s: asking the helper for %s", game.file_base.c_str(), want.file.c_str());
+	if (BorderWanted(pack, game, &want))
+	{
+		WritePriorityBorders(pack, {want});
+		OrbisLog("[border] %s: asking the helper for %s", game.file_base.c_str(), want.file.c_str());
+	}
+	else
+	{
+		// the download may have landed while this pick was made (after the folder was listed): the watcher puts it up
+		const std::string name = BezelNameFor(game);
+		if (name.empty())
+			return;
+		want.file = std::string(Info(game.system).folder) + "/" + name + ".png";
+		struct stat st = {};
+		if (stat((pack + "/" + want.file).c_str(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0)
+			return;
+	}
 	uint64_t gen;
 	{
 		std::lock_guard<std::mutex> lock(s_lock);

@@ -1244,7 +1244,7 @@ for L in 1 2 3 4; do
 	$ROM "$T/root/roms/Alpha (USA).md" ntsc >/dev/null
 	key() { pad="$pad;$f:$1;$((f + 2)):0"; f=$((f + ${2:-6})); } # one press, then the next one $2 flips later
 	pad="0:0;20:$TRIANGLE;22:0"; f=30
-	for i in $(seq 1 7); do key $UP; done
+	for i in $(seq 1 8); do key $UP; done
 	key $CROSS 20; key $DOWN; key $CROSS 20; key $CROSS 20; key $CIRCLE 20
 	key $UP; key $RIGHT 20; key $CIRCLE 20; key $UP; key $CROSS 20
 	key $DOWN; key $CROSS 20; key $CIRCLE 20; key $CIRCLE 30
@@ -1263,7 +1263,8 @@ formats = [re.compile('^' + ''.join('.*' if spec.fullmatch(part) else re.escape(
 # (the first walk's names and rules, and the network screens' names)
 names = {'Alpha (USA)', 'A', 'X', 'Y', 'Z', 'Mode', 'L1', 'R1', 'OPTIONS', 'MAME YM2612', 'English', 'Español',
          'Português (Brasil)', 'Français', 'Deutsch', 'Off', 'S-Video', 'RGB', '4:3', '16:9', 'GPU', 'CPU',
-         'SMB (Windows, Samba, NAS)', 'NFS', 'USB'}
+         'SMB (Windows, Samba, NAS)', 'NFS', 'USB',
+         'Mega Drive', 'Genesis', 'Sega CD', 'Mega-CD', 'Master System', 'Game Gear', 'SG-1000'}
 try:
     lines = open(sys.argv[1], encoding='utf-8').read().splitlines()
 except FileNotFoundError:
@@ -1566,8 +1567,9 @@ fi
 
 if want 42; then
 echo "== 42. the Network shares screen: add, change, test and remove a share with the on-screen keyboard (Settings, Network shares)"
-# tests/osk_pad.py turns the steps into a pad script (the keyboard's layout is its model). Settings is Triangle on the shelf; Up seven
-# times from Shader reaches Network shares (Back, Updates, Debug logs, Performance log, Renderer, Language, Network shares). Every run
+# tests/osk_pad.py turns the steps into a pad script (the keyboard's layout is its model). Settings is Triangle on the shelf; Up eight
+# times from Shader reaches Network shares (Back, Updates, Debug logs, Performance log, Renderer, Language, Download all borders,
+# Network shares). Every run
 # ends: Circle twice, OPTIONS, Cross.
 net_pad() { python3 tests/osk_pad.py 2>/dev/null; }
 net_quit='press CIRCLE 2
@@ -1580,7 +1582,7 @@ mkdir -p "$T/share"
 PAD=$(net_pad <<STEPS
 frame 40
 press TRIANGLE
-press UP 7
+press UP 8
 press CROSS
 press CROSS
 field 10.0.0.5
@@ -1613,7 +1615,7 @@ printf '# my shares\nsmb://old/x   # my note\nnfs://nas/export/sega\n' >"$T/root
 PAD=$(net_pad <<STEPS
 frame 40
 press TRIANGLE
-press UP 7
+press UP 8
 press CROSS
 press CROSS
 press DOWN 3
@@ -1646,7 +1648,7 @@ T=$(newroot t42c)
 PAD=$(net_pad <<STEPS
 frame 40
 press TRIANGLE
-press UP 7
+press UP 8
 press CROSS
 press CROSS
 press DOWN 10

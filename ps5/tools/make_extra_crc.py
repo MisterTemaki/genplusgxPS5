@@ -98,6 +98,8 @@ def main():
     best = {}  # (system, crc) -> (rank, name)
     sources = []
     for system, dat, platform in SYSTEMS:
+        if system == "scd":
+            continue  # a Sega CD disc is named by its file name, never by a CRC (fe_games.cpp RomCrc32): no rows to use
         feeds = []
         if args.libretro_database:
             for folder in DAT_FOLDERS:

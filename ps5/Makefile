@@ -25,7 +25,7 @@
 PS5_PAYLOAD_SDK ?= /opt/ps5-payload-sdk
 PS5_HOST ?= ps5
 PS5_PORT ?= 9021
-VERSION ?= 2.0.2
+VERSION ?= 2.1
 CORE_VERSION := 1.7.4
 # the GPU's shader tables, generated from shaders/presets.txt (see "shaders:" below)
 SLANG_CPP := build/gen/slang_presets.cpp
