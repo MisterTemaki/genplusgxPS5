@@ -35,15 +35,16 @@ libretro port's cheats aside). The frontend drives the
 core through its libretro interface -- the most complete of its ports -- and plays the part RetroArch plays on a
 PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
 
-> **Status (2.0):** builds with the ps5-payload-dev SDK into a signed native app, in two builds: **GPU** (RADV,
+> **Status (2.1):** builds with the ps5-payload-dev SDK into a signed native app, in two builds: **GPU** (RADV,
 > Mesa's Vulkan driver for AMD GPUs, ported to the PS5 by [PS5_Vulkan](https://github.com/mihawk-99/PS5_Vulkan),
-> linked into the app) and **CPU-only**. It passes 420 host tests, which run the same code (the core, the
+> linked into the app) and **CPU-only**. It passes 634 host tests, which run the same code (the core, the
 > frontend, the GPU renderer, every built-in slang shader, the shelf on the GPU) on Linux with the PS5 calls
 > simulated and the GPU renderer on a software Vulkan driver (lavapipe). **1.9 has run on a PS5** (a user's
 > console, 4K at 59.94 Hz): the GPU renderer started, the 26 built-in shaders loaded, crt-easymode took 0.6 ms of
 > the GPU a frame and the Mega Bezel Standard 2-3 ms, and a Sega CD game from a `.chd` (Earnest Evans) played at
-> 60 fps with its CD music and no sound/picture drift. **What 2.0 adds has only run in the host tests so far**:
-> the shader cache, the shader parameters, your own `.slangp` presets and the shelf drawn by the GPU. If the GPU
+> 60 fps with its CD music and no sound/picture drift. **What 2.0 and 2.1 add has only run in the host tests so far**:
+> the shader cache, the shader parameters, your own `.slangp` presets and the shelf drawn by the GPU, and **all of
+> 2.1** (network shares, shelf tabs, borders, the new covers, cheats). If the GPU
 > fails to start, the app draws with the CPU (see [The GPU renderer](#the-gpu-renderer)). If something fails, turn
 > on Settings, SYSTEM, Debug logs, and send the logs in `/data/genplus/logs/`.
 
@@ -98,7 +99,11 @@ after the design of [thatboialex](https://github.com/thatboialex)'s pull request
   manager in the pause menu, and they reload by themselves when the `.cht` file changes. See [Cheats](#cheats).
 - The new screens in the five languages. libsmb2 and libnfs (LGPL-2.1-or-later) are built in, at the upstream code
   with the security fixes Snes9x PS5 2.7 took (among them CVE-2025-57632 and CVE-2026-110712).
-- **Tests:** TESTCOUNT.
+- **Tests:** 634 host tests, the new ones for all of the above (a share on this machine standing in for the NAS,
+  with slow links, read errors and a share that goes away; the keyboard; the tabs; borders on the CPU and on the
+  GPU under the shaders; downloads; the cover matching; every kind of cheat code on each system, the cheat manager
+  and the reload), plus netfs's own 229 checks and the SMB tests against a real Samba server (58 of 60 pass here;
+  the two that list a server's shares need a part of Samba this machine lacks, as for Snes9x PS5).
 
 **2.0:** the GPU does more, and the pauses and spikes 1.9 showed on a PS5 are dealt with (checked in the host
 tests; not yet on a console).
