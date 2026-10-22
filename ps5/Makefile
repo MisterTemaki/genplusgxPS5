@@ -69,6 +69,8 @@ EMU_SRC := coreorbis/main-boot.cpp \
 	frontend/fe_emu.cpp frontend/fe_menu.cpp frontend/fe_settings.cpp frontend/fe_i18n.cpp frontend/fe_chdcache.cpp frontend/fe_text.cpp \
 	frontend/fe_games.cpp frontend/fe_http.cpp frontend/fe_covers.cpp frontend/fe_shelf.cpp \
 	frontend/fe_prefetch.cpp frontend/fe_coverfetch.cpp frontend/fe_coverworker.cpp
+# the cheats (.cht files, the cheat manager): fe_cheatcode.cpp is under Genesis Plus GX's licence (libretro.c's decoding)
+EMU_SRC += frontend/fe_cheats.cpp frontend/fe_cheatcode.cpp frontend/fe_chtfile.cpp
 # minizip (zlib licence) for games inside a .zip, built as C with the core's zlib
 EMU_C_SRC := frontend/third_party/unzip.c frontend/third_party/ioapi.c
 # a C bridge to the core's own state (the Sega CD backup RAM), built with the core's defines and headers
@@ -438,6 +440,23 @@ $(HOST_OUT)/shader-bench: tools/shader_bench.cpp coreorbis/orbis-shims/ProsperoC
 	@mkdir -p $(dir $@)
 	$(HOST_CXX) -std=c++17 -O3 -march=znver2 -fno-strict-aliasing $(INCS) -o $@ tools/shader_bench.cpp \
 		coreorbis/orbis-shims/ProsperoCrt.cpp -lpthread
+
+# the cheats' unit test: the frontend's code check (fe_cheatcode.cpp) and .cht files (fe_chtfile.cpp) against
+# libretro.c's own cheat code, copied out of it as it is (tests/extract_libretro_cheats.py) and run on fake ROM and RAM
+CHEATS_TEST := $(HOST_OUT)/cheats-test
+$(HOST_OUT)/gen/libretro_cheats.inc: $(ROOT)/libretro/libretro.c tests/extract_libretro_cheats.py
+	@mkdir -p $(dir $@)
+	python3 tests/extract_libretro_cheats.py $< $@
+$(HOST_OUT)/gen/libretro_cheats_shim.o: tests/libretro_cheats_shim.c $(HOST_OUT)/gen/libretro_cheats.inc
+	$(HOST_CC) -std=gnu99 $(HOST_CORE_OPT) $(HOST_CORE_SAN) -DLSB_FIRST -I$(HOST_OUT)/gen -w -c -o $@ $<
+$(CHEATS_TEST): tests/test_cheats.cpp frontend/fe_cheatcode.cpp frontend/fe_cheatcode.h frontend/fe_chtfile.cpp \
+		frontend/fe_chtfile.h $(HOST_OUT)/gen/libretro_cheats_shim.o
+	$(HOST_CXX) -std=c++17 $(HOST_OPT) $(HOST_SAN) $(PORT_WARN) -Ifrontend -o $@ tests/test_cheats.cpp frontend/fe_cheatcode.cpp \
+		frontend/fe_chtfile.cpp $(HOST_OUT)/gen/libretro_cheats_shim.o
+test-cheats: $(CHEATS_TEST)
+	$(CHEATS_TEST)
+host: $(CHEATS_TEST)
+.PHONY: test-cheats
 
 clean:
 	rm -rf build

@@ -7,6 +7,7 @@
 
 #include "fe_menu.h"
 
+#include "fe_cheats.h"
 #include "fe_emu.h"
 #include "fe_i18n.h"
 #include "fe_settings.h"
@@ -148,6 +149,7 @@ struct Row
 	std::string value; // "" = an action
 	bool enabled = true;
 	bool header = false;
+	bool raw = false; // the label is a name (a cheat's), shown as it is, not translated
 };
 
 void DrawOptionBox(const std::string& title, const std::vector<Row>& rows, int sel, bool over_game)
@@ -180,7 +182,8 @@ void DrawOptionBox(const std::string& title, const std::vector<Row>& rows, int s
 		if (top + i == sel)
 			ps5video::FillRect(bx + 16, y - 6, bw - 32, row_h, kSel);
 		const uint32_t col = row.enabled ? kText : kDim;
-		DrawText(bx + 40, y, FitText(T(row.label.c_str()), scale, bw * 3 / 5).c_str(), scale, col);
+		DrawText(bx + 40, y, FitText(row.raw ? row.label.c_str() : T(row.label.c_str()), scale, bw * 3 / 5).c_str(), scale,
+			col);
 		if (!row.value.empty())
 		{
 			const std::string tv = FitText(T(row.value.c_str()), scale, bw / 2 - 60); // a long preset path
@@ -637,6 +640,89 @@ std::vector<std::string> Wrap(const std::string& text, int scale, int max_px)
 		lines.push_back(cur);
 	return lines;
 }
+// The cheat manager (Snes9x PS5's, by thatboialex): the game's cheats, read by fe::cheats when the game started and
+// again whenever its cheat file changes (a code added over FTP shows up here by itself). A scrolled list: libretro's
+// files can hold hundreds of cheats.
+void CheatMenu()
+{
+	NavReader nav;
+	uint32_t prev = ps5input::Pad(0).buttons; // buttons still held from the pause menu don't count
+	int sel = 0;
+	int top = 0;
+	constexpr int kVisible = 14;
+	bool first = true;
+	for (;;)
+	{
+		cheats::Refresh(first);
+		first = false;
+		const int count = cheats::Count();
+		const int visible = std::min(count, kVisible);
+		// the list may have become shorter under the selection
+		sel = std::max(0, std::min(sel, count - 1));
+		top = std::max(0, std::min(top, count - visible));
+		Background(true);
+		if (count == 0)
+		{
+			DrawOptionBox("No cheats found", {{"Place a matching .cht file in /data/genplus/cheats", ""}, {"Back", ""}}, 1, true);
+			const std::string status = cheats::Status();
+			DrawText((W - TextWidth(FitText(status, 3, W - 300).c_str(), 3)) / 2, H - 184, FitText(status, 3, W - 300).c_str(), 3,
+				kText);
+			Footer(std::string(T("Copy a .cht file over FTP: it loads by itself")) + "     " + icon::Circle + " " + T("Back"));
+		}
+		else
+		{
+			if (sel < top)
+				top = sel;
+			if (sel >= top + visible)
+				top = sel - visible + 1;
+			std::vector<Row> rows;
+			rows.reserve(size_t(visible));
+			for (int i = 0; i < visible; ++i)
+			{
+				Row r{cheats::Name(top + i), cheats::Enabled(top + i) ? "On" : "Off"};
+				r.raw = true;
+				rows.push_back(r);
+			}
+			DrawOptionBox(Fmt(T("Cheats %d-%d / %d"), top + 1, top + visible, count), rows, sel - top, true);
+			const char* sp = "     ";
+			Footer(std::string(icon::Cross) + " " + T("Toggle") + sp + icon::L1 + " " + icon::R1 + " " + T("Page") + sp +
+				icon::Triangle + " " + T("All on") + sp + icon::Square + " " + T("All off") + sp + icon::Circle + " " +
+				T("Back"));
+		}
+		Present();
+		const Nav n = nav.Read();
+		const uint32_t cur = ps5input::Pad(0).buttons;
+		const uint32_t pressed = cur & ~prev;
+		prev = cur;
+		if (n.back || n.menu || n.options)
+			return;
+		if (count == 0)
+		{
+			if (n.ok)
+				return; // Back
+			continue;
+		}
+		if (n.up)
+			sel = (sel + count - 1) % count;
+		if (n.down)
+			sel = (sel + 1) % count;
+		if (pressed & SCE_PAD_BUTTON_L1)
+			sel = std::max(0, sel - kVisible);
+		if (pressed & SCE_PAD_BUTTON_R1)
+			sel = std::min(count - 1, sel + kVisible);
+		// The arrows repeat while held; a switch reacts only to the press, otherwise holding Left/Right would switch
+		// the cheat again and again and write the file each time.
+		if (n.ok || (pressed & (SCE_PAD_BUTTON_LEFT | SCE_PAD_BUTTON_RIGHT)))
+		{
+			if (!cheats::Toggle(sel))
+				OrbisLog("[cheats] could not save the switch of cheat %d", sel);
+		}
+		if (pressed & SCE_PAD_BUTTON_TRIANGLE)
+			cheats::SetAll(true);
+		if (pressed & SCE_PAD_BUTTON_SQUARE)
+			cheats::SetAll(false);
+	}
+}
 } // namespace
 
 void SettingsMenu()
@@ -657,6 +743,7 @@ PauseAction PauseMenu()
 		I_SLOT,
 		I_SETTINGS,
 		I_OWN,
+		I_CHEATS,
 		I_RESET,
 		I_POWER,
 		I_LIST,
@@ -682,6 +769,7 @@ PauseAction PauseMenu()
 		rows[I_UNDO] = {buf, "", emu::PreviousStateExists(cfg.state_slot)};
 		rows[I_SETTINGS] = {GameHasOwnSettings() ? "Settings (this game's)" : "Settings", ""};
 		rows[I_OWN] = {"Settings for this game", GameHasOwnSettings() ? "Its own" : "The global ones"};
+		rows[I_CHEATS] = {"Cheat manager", ""};
 		rows[I_RESET] = {"Reset", ""};
 		rows[I_POWER] = {"Power cycle", ""};
 		rows[I_LIST] = {"Back to the game list", ""};
@@ -750,6 +838,10 @@ PauseAction PauseMenu()
 					break;
 				case I_SETTINGS:
 					SettingsScreen(true);
+					nav = NavReader();
+					break;
+				case I_CHEATS:
+					CheatMenu();
 					nav = NavReader();
 					break;
 				case I_RESET:
