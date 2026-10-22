@@ -303,7 +303,8 @@ struct CrcCache
 		for (auto it = lines.begin(); prune && it != lines.end();)
 		{
 			const std::string& key = it->first;
-			const bool network = netfs_is_network_path(key.c_str()) || (key.rfind("sys:", 0) == 0 && netfs_is_network_path(key.c_str() + 4));
+			const bool network = netfs_is_network_path(key.c_str()) ||
+				((key.rfind("sys:", 0) == 0 || key.rfind("cue:", 0) == 0) && netfs_is_network_path(key.c_str() + 4));
 			if (!seen.count(key) && key.rfind("/mnt/", 0) != 0 && !network)
 			{
 				it = lines.erase(it);
@@ -341,6 +342,45 @@ CrcCache& SharedCrcCache()
 {
 	static CrcCache* c = new CrcCache; // never freed: the naming pass may still run at exit
 	return *c;
+}
+
+// Whether a file that could not be used (no ROM in a zip, a CRC that could not be taken) may be remembered as such.
+// A local file: yes. A file on a share: only when it reads whole, without an error, from a share that is still
+// connected. A read error (the share dropped, the watchdog cut a slow request, Settings > Network shares connected
+// the shares again) is not the file's fault, and a remembered failure would hide the game, or keep it unnamed, until
+// the file changes; it is tried again at the next visit of the shelf instead.
+bool FailureIsTheFiles(const std::string& path, const struct stat& st, const std::atomic<bool>* cancel = nullptr)
+{
+	if (!netfs_is_network_path(path.c_str()))
+		return true;
+	if (st.st_size > 64LL * 1024 * 1024)
+		return false; // too big to read through each time it fails
+	FILE* f = fopen(path.c_str(), "rb");
+	if (!f)
+		return false;
+	std::vector<char> buf(1 << 20);
+	long long total = 0;
+	bool ok = true;
+	for (;;)
+	{
+		if (cancel && cancel->load())
+		{
+			ok = false;
+			break;
+		}
+		const size_t got = fread(buf.data(), 1, buf.size(), f);
+		total += (long long)got;
+		if (got < buf.size())
+			break;
+	}
+	ok = ok && ferror(f) == 0 && total == (long long)st.st_size;
+	fclose(f);
+	if (!ok)
+		return false;
+	for (const std::string& m : netfs_mount_points())
+		if (path.size() > m.size() && path.compare(0, m.size(), m) == 0 && path[m.size()] == '/')
+			return true;
+	return false;
 }
 
 // read: false for a ROM on a share, where only a CRC already in the cache is used (reading every ROM over the
@@ -383,8 +423,11 @@ bool CachedCrc(CrcCache& cache, const std::string& path, uint32_t* whole, uint32
 	if (!RomCrc32(path, whole, body))
 	{
 		// unreadable (or an empty zip): remembered, so the next scans don't read it again until it changes
-		snprintf(val, sizeof(val), "%sfail", key);
-		cache.Put(path, val);
+		if (FailureIsTheFiles(path, st))
+		{
+			snprintf(val, sizeof(val), "%sfail", key);
+			cache.Put(path, val);
+		}
 		return false;
 	}
 	snprintf(val, sizeof(val), "%s%08X\t%08X", key, *whole, *body);
@@ -402,8 +445,10 @@ size_t HeaderSize(const std::vector<uint8_t>& d, const std::string& ext)
 }
 
 // The track files .cue sheets of this folder name (FILE "Game (Track 01).bin" BINARY): they belong to a disc,
-// not to the shelf as Mega Drive .bin ROMs.
-std::vector<std::string> CueTracks(const std::string& dir)
+// not to the shelf as Mega Drive .bin ROMs. Each sheet's list is cached while the sheet hasn't changed, so a scan
+// again (each share that connects, each batch of the network naming pass) doesn't read every sheet of a share once
+// more: "cue:<path>" -> "size\tmtime\t<track>\t<track>...". A sheet that could not be read whole is not cached.
+std::vector<std::string> CueTracks(const std::string& dir, CrcCache& cache)
 {
 	std::vector<std::string> tracks;
 	DIR* d = opendir(dir.c_str());
@@ -413,9 +458,40 @@ std::vector<std::string> CueTracks(const std::string& dir)
 	{
 		if (ExtOf(e->d_name) != ".cue")
 			continue;
-		FILE* f = fopen((dir + "/" + e->d_name).c_str(), "r");
+		const std::string path = dir + "/" + e->d_name;
+		struct stat st = {};
+		if (stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
+			continue;
+		const std::string key = "cue:" + path;
+		char stamp[64];
+		snprintf(stamp, sizeof(stamp), "%lld\t%lld\t", (long long)st.st_size, (long long)st.st_mtime);
+		bool cached = false;
+		{
+			std::lock_guard<std::mutex> g(cache.lock);
+			cache.seen[key] = true;
+			auto it = cache.lines.find(key);
+			if (it != cache.lines.end() && it->second.compare(0, strlen(stamp), stamp) == 0)
+			{
+				cached = true;
+				const std::string& v = it->second;
+				for (size_t at = strlen(stamp); at < v.size();)
+				{
+					size_t tab = v.find('\t', at);
+					if (tab == std::string::npos)
+						tab = v.size();
+					if (tab > at)
+						tracks.push_back(v.substr(at, tab - at));
+					at = tab + 1;
+				}
+			}
+		}
+		if (cached)
+			continue;
+		FILE* f = fopen(path.c_str(), "r");
 		if (!f)
 			continue;
+		std::string val = stamp;
+		bool first = true;
 		char line[1024];
 		while (fgets(line, sizeof(line), f))
 		{
@@ -446,9 +522,16 @@ std::vector<std::string> CueTracks(const std::string& dir)
 			if (slash != std::string::npos)
 				file = file.substr(slash + 1);
 			if (!file.empty())
+			{
 				tracks.push_back(Lower(file));
+				val += (first ? "" : "\t") + tracks.back();
+				first = false;
+			}
 		}
+		const bool read_ok = ferror(f) == 0;
 		fclose(f);
+		if (read_ok)
+			cache.Put(key, val);
 	}
 	closedir(d);
 	return tracks;
@@ -458,7 +541,7 @@ std::vector<std::string> CueTracks(const std::string& dir)
 // start is slow on a USB drive with a big library. "sys:<path>" -> "size\tmtime\t<system>".
 // read: false for a zip on a share (*known then says whether the cache had it; NetNaming opens it later).
 bool CachedArchiveSystem(CrcCache& cache, const std::string& path, const struct stat& st, System* out, bool read = true,
-	bool* known = nullptr)
+	bool* known = nullptr, const std::atomic<bool>* cancel = nullptr)
 {
 	const std::string key = "sys:" + path;
 	char stamp[64];
@@ -489,7 +572,9 @@ bool CachedArchiveSystem(CrcCache& cache, const std::string& path, const struct 
 		return false;
 	}
 	const bool ok = ArchiveSystem(path, out);
-	cache.Put(key, std::string(stamp) + (ok ? std::to_string(int(*out)) : std::string("none")));
+	// "none" hides the zip from the shelf until it changes: only when it is really the zip's (FailureIsTheFiles)
+	if (ok || FailureIsTheFiles(path, st, cancel))
+		cache.Put(key, std::string(stamp) + (ok ? std::to_string(int(*out)) : std::string("none")));
 	return ok;
 }
 
@@ -520,7 +605,7 @@ System GuessSystemFromFolder(const std::string& path)
 void Walk(const std::string& dir, int depth, bool usb, bool net, std::vector<GameInfo>& out, CrcCache& cache,
 	const ScanProgress& progress)
 {
-	const std::vector<std::string> tracks = CueTracks(dir);
+	const std::vector<std::string> tracks = CueTracks(dir, cache);
 	DIR* d = opendir(dir.c_str());
 	if (!d)
 		return;
@@ -990,7 +1075,7 @@ struct NetNaming::Impl
 {
 	std::mutex lock;
 	std::deque<std::string> todo;
-	std::set<std::string> tried; // every path ever queued: a ROM is read once per run
+	std::set<std::string> tried; // every path queued: a ROM is read once per run (one whose share went away is let go)
 	std::atomic<bool> stop{false};
 	std::atomic<int> resolved{0};
 	std::atomic<bool> busy{false};
@@ -1015,24 +1100,43 @@ struct NetNaming::Impl
 			}
 			struct stat st = {};
 			if (stat(path.c_str(), &st) != 0)
-				continue; // the share went away; the next scan will list it again
+			{
+				// the share went away: the next scan lists it again once it is back, and Add queues it then
+				std::lock_guard<std::mutex> g(lock);
+				tried.erase(path);
+				continue;
+			}
 			if (ExtOf(path) == ".zip")
 			{
 				System sys;
-				CachedArchiveSystem(cache, path, st, &sys, true); // the system of the ROM inside, for the next scan
+				CachedArchiveSystem(cache, path, st, &sys, true, nullptr, &stop); // the system of the ROM inside, for the next scan
 			}
 			char key[64];
 			snprintf(key, sizeof(key), "%lld\t%lld\t", (long long)st.st_size, (long long)st.st_mtime);
 			uint32_t whole = 0, body = 0;
 			const bool ok = RomCrc32(path, &whole, &body, nullptr, &stop);
 			if (stop.load())
-				break; // cancelled half way: nothing recorded
+			{
+				// cancelled half way: nothing recorded, and it is the first to be read when the pass starts again
+				std::lock_guard<std::mutex> g(lock);
+				todo.push_front(path);
+				break;
+			}
 			char val[96];
 			if (ok)
 				snprintf(val, sizeof(val), "%s%08X\t%08X", key, whole, body);
 			else
 				snprintf(val, sizeof(val), "%sfail", key);
-			cache.Put(path, val);
+			// a read error is not remembered as "fail" (FailureIsTheFiles): the next visit of the shelf tries it again
+			// (not this one: it stays in `tried`, or every scan the pass's results bring would read it once more)
+			if (ok || FailureIsTheFiles(path, st, &stop))
+				cache.Put(path, val);
+			else if (stop.load())
+			{
+				std::lock_guard<std::mutex> g(lock);
+				todo.push_front(path); // cancelled while it was being checked: the same as above
+				break;
+			}
 			named++;
 			resolved++;
 			if (++since_save >= 20)
@@ -1056,7 +1160,7 @@ NetNaming::~NetNaming()
 
 void NetNaming::Add(const std::vector<GameInfo>& games)
 {
-	size_t added = 0;
+	size_t added = 0, queued = 0;
 	{
 		std::lock_guard<std::mutex> g(m_i->lock);
 		for (const GameInfo& game : games)
@@ -1065,10 +1169,13 @@ void NetNaming::Add(const std::vector<GameInfo>& games)
 				m_i->todo.push_back(game.path);
 				added++;
 			}
+		queued = m_i->todo.size();
 	}
-	if (!added)
+	if (added)
+		OrbisLog("[games] naming %zu network ROM(s) by CRC in the background", added);
+	// nothing new may still leave work: what a Stop() cut short, or what was queued when a game started (netfs_realtime)
+	if (!queued)
 		return;
-	OrbisLog("[games] naming %zu network ROM(s) by CRC in the background", added);
 	if (m_i->busy.load())
 		return; // the running pass takes the new ones too
 	m_i->thread.join();

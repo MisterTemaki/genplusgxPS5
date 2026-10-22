@@ -875,7 +875,7 @@ std::string Shelf()
 	std::string net_key;
 	bool rescan = false; // Square on the Network tab
 	// The games of the storage tab and the system tab, the selection on `keep` (else the first game). restart: the
-	// cover service starts again even when the list is the same (the games were scanned again).
+	// cover service starts again even when the list is the same (the shelf opens on a library that changed).
 	auto Fill = [&](const std::string& keep, bool restart) {
 		std::vector<GameInfo> local;
 		for (const GameInfo& g : st.all)
@@ -887,9 +887,15 @@ std::string Shelf()
 			if (int(ftabs[i]) == cfg.shelf_family)
 				tab = int(i);
 		std::vector<GameInfo> list = InFamily(local, ftabs[size_t(tab)]);
+		// the same games, named the same (the cover is looked up by these): the covers are left as they are
 		bool same_list = list.size() == st.games.size();
 		for (size_t i = 0; same_list && i < list.size(); i++)
-			same_list = list[i].path == st.games[i].path;
+		{
+			const GameInfo &a = list[i], &b = st.games[i];
+			same_list = a.path == b.path && a.system == b.system && a.nointro == b.nointro && a.title == b.title &&
+						a.crc == b.crc && a.crc_name == b.crc_name && a.header_title == b.header_title &&
+						a.header_japan == b.header_japan;
+		}
 		if (restart || !same_list || !st.started || st.downloads != cfg.covers_download || st.family != int(ftabs[size_t(tab)]))
 		{
 			st.family = int(ftabs[size_t(tab)]);
@@ -982,7 +988,7 @@ std::string Shelf()
 					CoversRestartIfNeeded(fresh, cfg.covers_download, false, Loading);
 				st.all = std::move(fresh);
 				naming.Add(st.all);
-				OpenTab(stab, keep, true);
+				OpenTab(stab, keep, false); // the covers start again only when the tab's games or their names changed
 				dirty = true;
 			}
 			if (RefreshNet(now) && stab == tabs::Network)
@@ -1042,7 +1048,11 @@ std::string Shelf()
 		}
 		if (down & SCE_PAD_BUTTON_TRIANGLE)
 		{
+			// Settings > Network shares connects the shares again (netfs_reload), which needs no other netfs call
+			// running: the naming pass waits, and goes on (with what it had left) afterwards
+			naming.Stop();
 			SettingsMenu();
+			naming.Add(st.all);
 			if (st.downloads != cfg.covers_download)
 			{
 				st.downloads = cfg.covers_download;
