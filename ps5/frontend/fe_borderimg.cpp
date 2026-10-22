@@ -416,7 +416,8 @@ bool FindWindow(const Image& img, ps5video::Rect* window, std::string* why)
 
 bool WindowFits(const ps5video::Rect& w)
 {
-	return w.x >= 0 && w.y >= 0 && w.w >= kMinWindowW && w.h >= kMinWindowH && w.x + w.w <= kWidth && w.y + w.h <= kHeight;
+	// as differences, not sums: x + w of numbers read from an .ini could overflow (2147483000 + 400 passes a sum's test)
+	return w.x >= 0 && w.y >= 0 && w.w >= kMinWindowW && w.h >= kMinWindowH && w.w <= kWidth - w.x && w.h <= kHeight - w.y;
 }
 
 void PunchWindow(Image* img, const ps5video::Rect& w)

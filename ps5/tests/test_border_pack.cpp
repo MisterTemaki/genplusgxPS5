@@ -99,13 +99,17 @@ std::string PackMatcher::Match(const GameInfo& game) const
 	return !game.crc_name.empty() && std::find(n.begin(), n.end(), game.crc_name) != n.end() ? game.crc_name : std::string();
 }
 
-GameInfo DescribeGame(const std::string& path)
+// How many games were described: the border describes a game once, at Select (the real one may open a zip on a share).
+int g_described = 0;
+GameInfo DescribeGame(const std::string& path, const System* system)
 {
+	g_described++;
 	GameInfo g;
 	g.path = path;
 	const std::string name = path.substr(path.find_last_of('/') + 1);
 	g.file_base = name.substr(0, name.find_last_of('.'));
-	g.system = name.size() > 3 && name.compare(name.size() - 3, 3, ".gg") == 0 ? System::Gg : System::Md;
+	// a zip without the loader's system is a Mega Drive game here, as for the real one when its share has dropped
+	g.system = system ? *system : name.size() > 3 && name.compare(name.size() - 3, 3, ".gg") == 0 ? System::Gg : System::Md;
 	// "Mapped Name.md" is the ROM of the game the pack calls "Mapped Name (USA)"
 	g.nointro = g.file_base.rfind("Mapped", 0) == 0 ? g.file_base + " (USA)" : g.file_base;
 	// "Loose Name.md" is a translation of Sonic The Hedgehog 2: the CRC table knows it by the index's name
@@ -383,6 +387,10 @@ void TestWindow()
 	CHECK(!fe::border::WindowFits({1700, 0, 400, 400}), "a window past the right edge is refused");
 	CHECK(!fe::border::WindowFits({0, 700, 400, 400}), "a window past the bottom edge is refused");
 	CHECK(!fe::border::WindowFits({-1, 0, 400, 400}), "a window left of the surface is refused");
+	CHECK(!fe::border::WindowFits({2147483600, 0, 480, 300}), "a window far past the right edge is refused (x + w would overflow)");
+	CHECK(!fe::border::WindowFits({0, 2147483600, 480, 300}), "a window far below the surface is refused (y + h would overflow)");
+	CHECK(!fe::border::WindowFits({100, 50, 2147483600, 300}), "a huge width is refused");
+	CHECK(!fe::border::WindowFits({100, 50, 480, 2147483600}), "a huge height is refused");
 }
 
 void TestBuild()
@@ -729,6 +737,13 @@ void TestChoose()
 	WriteText(games + "plain.ini", "window=300,100,479,400\n");
 	pick = Choose(pack, 1, Game("plain"));
 	CHECK(pick.source == "default.png", "a window= under 480 wide is ignored, so the RGB PNG has no window again");
+	// numbers whose sum overflows an int: ignored (a sum's test let them through and the hole was cleared far past the picture)
+	WriteText(games + "plain.ini", "window=2147483600,0,480,300\n");
+	pick = Choose(pack, 1, Game("plain"));
+	CHECK(pick.source == "default.png", "a window= with x + w past INT_MAX is ignored");
+	WriteText(games + "plain.ini", "window=0,2147483600,480,300\n");
+	pick = Choose(pack, 1, Game("plain"));
+	CHECK(pick.source == "default.png", "a window= with y + h past INT_MAX is ignored");
 	// an RGBA picture with a window= loses its soft edge: the rectangle is a hole
 	WriteBytes(games + "soft.png", png_a);
 	WriteText(games + "soft.ini", "window=261,21,1398,1038\n");
@@ -1146,7 +1161,30 @@ void TestShape()
 	fe::border::Reselect(ShapeOf(r43, 240, Scale::Integer));
 	CHECK(ps5video::g_set_calls == calls + 5 && SameRect(ps5video::g_shown->window, fe::border::IntegerOpening(kWinB, 240, r43)),
 		"a 240-line picture (a PAL game) at Integer scale: the window follows the line count");
+	// a new shape only refits the picture chosen at Select: the game is not described again (a zip on a share is not opened on
+	// the emulation thread), the pack is not listed, the file is not read again (here it is gone)
+	const int described = fe::g_described;
+	unlink((games + "Sonic The Hedgehog 2 (World).png").c_str());
+	fe::border::Reselect(ShapeOf(320.0 / 224));
+	CHECK(ps5video::g_set_calls == calls + 6 && ps5video::g_shown && SameRect(ps5video::g_shown->window, fe::border::FitOpening(kWinB, 320.0 / 224)),
+		"a new shape while a game runs refits the picture chosen at load, from its decoded copy");
+	fe::border::Reselect(ShapeOf(r43, 224, Scale::Stretch));
+	CHECK(ps5video::g_set_calls == calls + 7 && SameRect(ps5video::g_shown->window, fe::border::FitOpening(kWinB, 16.0 / 9)),
+		"and again for another shape");
+	CHECK(fe::g_described == described, "the game is described once, at Select, not at each new shape");
+	fe::Config().border = 2;
+	fe::border::Reselect(ShapeOf(r43, 224, Scale::Stretch));
+	CHECK(ps5video::g_set_calls == calls + 8 && fe::g_described == described, "a new setting picks again, for the game as Select described it");
+	fe::Config().border = 1;
 	fe::border::Release();
+
+	// the loader's system reaches the pick: a Game Gear zip gets the GameGear folder without its zip being opened again
+	WriteBytes(gg + "pocket.png", ArtPng(kWinC));
+	const fe::System gg_system = fe::System::Gg;
+	fe::border::Select("/smb/10.0.0.5/games/misc/pocket.zip", fe::border::Shape(), &gg_system);
+	CHECK(ps5video::g_shown && SameRect(ps5video::g_shown->window, kWinC), "a Game Gear zip (system from the loader): GameGear/pocket.png");
+	fe::border::Release();
+	unlink((gg + "pocket.png").c_str());
 
 	// a border that is downloaded while the game runs is fitted to the shape of the moment
 	unlink((games + "Sonic The Hedgehog 2 (World).png").c_str());
@@ -1157,6 +1195,21 @@ void TestShape()
 	CHECK(ps5video::g_set_calls == 1 && Shaped(ps5video::g_shown->window, 16, 9), "the frame it starts with is fitted");
 	Land(games + "Sonic The Hedgehog 2 (World).png", ArtPng(kWinD));
 	CHECK(WaitForCalls(2) && Shaped(ps5video::g_shown->window, 16, 9) && ps5video::g_shown->window.h == kWinD.h, "and so is the downloaded border (kWinD is 10:7)");
+	fe::border::Reselect(ShapeOf(r43));
+	CHECK(ps5video::g_set_calls == 3 && SameRect(ps5video::g_shown->window, fe::border::FitOpening(kWinD, r43)),
+		"a new shape afterwards refits the downloaded border, not the frame the game started with");
+	fe::border::Release();
+
+	// the shape changes while the download is awaited: the border that lands is fitted to the new one
+	unlink((games + "Sonic The Hedgehog 2 (World).png").c_str());
+	unlink((pack + "/priority.txt").c_str());
+	ps5video::g_set_calls = 0;
+	fe::border::Select(rom, ShapeOf(r43, 224, Scale::Stretch));
+	fe::border::Reselect(ShapeOf(r43));
+	CHECK(ps5video::g_set_calls == 2 && SameRect(ps5video::g_shown->window, fe::border::FitOpening(frame, r43)),
+		"the frame is refitted while the download is awaited");
+	Land(games + "Sonic The Hedgehog 2 (World).png", ArtPng(kWinD));
+	CHECK(WaitForCalls(3) && SameRect(ps5video::g_shown->window, fe::border::FitOpening(kWinD, r43)), "and the downloaded border lands fitted to the new shape");
 	fe::border::Release();
 	fe::Config().border_download = true;
 }

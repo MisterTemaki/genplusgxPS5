@@ -108,7 +108,9 @@ std::string DatabaseCoverUrls(const GameInfo& game);
 } // namespace gamedb
 
 // The GameInfo of a ROM that is being loaded, named exactly as ScanGames names it (the border picks its picture by it).
-GameInfo DescribeGame(const std::string& path);
+// system: the one the loader already knows (a zip's, from the ROM inside), so a zip is not opened again; null: from the
+// path (a zip's directory is read).
+GameInfo DescribeGame(const std::string& path, const System* system = nullptr);
 
 // The internal header of a Mega Drive ROM or a Sega CD disc (a .zip is read through, a .cue's first track); false if
 // there is none to find (the other systems' headers have no title).

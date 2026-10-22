@@ -1204,12 +1204,14 @@ bool LoadGame(const std::string& path, std::string* error)
 	fe_bram_start();
 	PerfStart();
 	fe::cheats::GameStarted(g.path, g.name, g.system); // its .cht, the cheats that are on given to the core
+	// the border: the game described once (its system as found here: a zip on a share is not opened again), its picture
+	// read from /data, before the game's first frame and before realtime (a new picture shape later only refits it)
+	fe::border::Select(path, BorderShape(), &g.system);
 	// from here nothing on this thread waits for a share: a Sega CD disc on one streams through netfs's cache
 	// (blocks read ahead of the core), a cartridge was read whole by retro_load_game
 	netfs_set_realtime(true);
 	OrbisLog("[emu] running \"%s\" (%s), %.3f fps, %.0f Hz, aspect %.4f, state size %zu", g.name.c_str(),
 		SystemName().c_str(), g.fps, g.sample_rate, g.core_aspect, retro_serialize_size());
-	fe::border::Select(path, BorderShape()); // reads /data: before the game's first frame
 	return true;
 }
 
@@ -1615,7 +1617,7 @@ FrameResult RunFrame()
 	{
 		g.new_frame = false;
 		const double t_pic = Now();
-		fe::border::Reselect(BorderShape()); // a few comparisons: a new picture shape (rare) fits the border again
+		fe::border::Reselect(BorderShape()); // a few comparisons: a new picture shape (rare) refits the border chosen at load
 		ps5video::Rect r = DrawLast();
 		ShowOverlays(&r);
 		present_ms = (Now() - t_pic) * 1000.0; // the picture's preparation (a CPU shader included), not the vsync wait

@@ -173,61 +173,84 @@ std::vector<PackFile> ListPack(const std::string& games_dir)
 }
 
 // ---- one picture ----
-// The last picture decoded, with its window found (before any fitting): a new picture shape (a setting, a game switching
-// its screen mode) refits it without reading and decoding the PNG again. Keyed by the file and its size, time and .ini.
+// A picture decoded, with its window found or given (before any fitting): a new picture shape (a setting, a game switching
+// its screen mode) refits it without reading and decoding the PNG again.
+struct Art
+{
+	std::shared_ptr<const Image> img; // null: none
+	ps5video::Rect window = {};
+};
+// The last picture decoded, keyed by the file and its size, time and .ini: picking again (the setting changed) finds it here.
 struct Decoded
 {
 	std::string key;
-	Image img;
-	ps5video::Rect window = {};
+	Art art;
 };
 std::mutex s_decoded_lock;
 Decoded s_decoded;
 
-// From a PNG to a border; null (one log line) when it cannot be used. label: what the log calls the file; key: what makes
-// the decoded picture the same as last time ("" never is); read: the PNG's bytes, asked for only when it isn't. The art is
-// refitted so its window has the shape of the picture, or the size of its whole-multiple picture for Integer scale (FitToShape).
-std::shared_ptr<const ps5video::Border> Build(const std::string& label, const std::string& key,
-	const std::function<bool(std::vector<uint8_t>*, std::string*)>& read, const Ini& ini, const Shape& shape)
+// From a PNG to the picture and its window; false (one log line) when it cannot be used. label: what the log calls the file;
+// key: what makes the decoded picture the same as last time ("" never is); read: the PNG's bytes, asked for only when it isn't.
+bool Decode(const std::string& label, const std::string& key, const std::function<bool(std::vector<uint8_t>*, std::string*)>& read,
+	const Ini& ini, Art* out)
 {
-	Image img;
-	ps5video::Rect window = ini.window;
-	std::string why;
-	bool cached = false;
 	{
 		std::lock_guard<std::mutex> lock(s_decoded_lock);
 		if (!key.empty() && s_decoded.key == key)
 		{
-			img = s_decoded.img;
-			window = s_decoded.window;
-			cached = true;
+			*out = s_decoded.art;
+			return true;
 		}
 	}
-	if (!cached)
+	std::string why;
+	std::vector<uint8_t> bytes;
+	auto img = std::make_shared<Image>();
+	ps5video::Rect window = ini.window;
+	if (!read(&bytes, &why) || !DecodePng(bytes.data(), bytes.size(), img.get(), &why))
 	{
-		std::vector<uint8_t> bytes;
-		if (!read(&bytes, &why) || !DecodePng(bytes.data(), bytes.size(), &img, &why))
-		{
-			OrbisLog("[border] %s: %s", label.c_str(), why.c_str());
-			return nullptr;
-		}
-		if (ini.has_window)
-			PunchWindow(&img, window);
-		else if (!FindWindow(img, &window, &why))
-		{
-			OrbisLog("[border] %s: %s", label.c_str(), why.c_str());
-			return nullptr;
-		}
-		std::lock_guard<std::mutex> lock(s_decoded_lock);
-		s_decoded.key = key;
-		s_decoded.img = img;
-		s_decoded.window = window;
+		OrbisLog("[border] %s: %s", label.c_str(), why.c_str());
+		return false;
 	}
+	if (ini.has_window)
+		PunchWindow(img.get(), window);
+	else if (!FindWindow(*img, &window, &why))
+	{
+		OrbisLog("[border] %s: %s", label.c_str(), why.c_str());
+		return false;
+	}
+	out->img = std::move(img);
+	out->window = window;
+	std::lock_guard<std::mutex> lock(s_decoded_lock);
+	s_decoded.key = key;
+	s_decoded.art = *out;
+	return true;
+}
+
+// A decoded picture to a border; null (one log line) when it cannot be used. The art is refitted so its window has the shape
+// of the picture, or the size of its whole-multiple picture for Integer scale (FitToShape).
+std::shared_ptr<const ps5video::Border> Fit(const std::string& label, const Art& art, const Shape& shape)
+{
+	Image img = *art.img;
+	ps5video::Rect window = art.window;
+	std::string why;
 	if (!FitToShape(&img, &window, shape, &why))
 		OrbisLog("[border] %s: not fitted to the picture, drawn as it is: %s", label.c_str(), why.c_str());
 	auto border = BuildBorder(img, window, &why);
 	if (!border)
 		OrbisLog("[border] %s: %s", label.c_str(), why.c_str());
+	return border;
+}
+
+// Decode and Fit; *art (when given) gets the decoded picture of a border that could be built.
+std::shared_ptr<const ps5video::Border> Build(const std::string& label, const std::string& key,
+	const std::function<bool(std::vector<uint8_t>*, std::string*)>& read, const Ini& ini, const Shape& shape, Art* art = nullptr)
+{
+	Art decoded;
+	if (!Decode(label, key, read, ini, &decoded))
+		return nullptr;
+	auto border = Fit(label, decoded, shape);
+	if (border && art)
+		*art = decoded;
 	return border;
 }
 
@@ -239,7 +262,7 @@ std::string IniKey(const Ini& ini)
 }
 
 std::shared_ptr<const ps5video::Border> LoadFile(const std::string& label, const std::string& path, const Ini& ini,
-	const Shape& shape)
+	const Shape& shape, Art* art = nullptr)
 {
 	struct stat st = {};
 	std::string key;
@@ -247,7 +270,7 @@ std::shared_ptr<const ps5video::Border> LoadFile(const std::string& label, const
 		key = path + "|" + std::to_string((long long)st.st_size) + "|" + std::to_string((long long)st.st_mtime) + "." +
 			  std::to_string((long long)st.st_mtim.tv_nsec) + IniKey(ini);
 	return Build(label, key, [&path](std::vector<uint8_t>* bytes, std::string* why) { return ReadFile(path, bytes, why); }, ini,
-		shape);
+		shape, art);
 }
 
 } // namespace
@@ -274,9 +297,12 @@ Pick Choose(const std::string& pack, int setting, const GameInfo& game, const Sh
 				pick.file = folder + "/" + f.file;
 				return true;
 			}
-			pick.border = LoadFile(folder + "/" + f.file, games_dir + "/" + f.file, ini, shape);
+			Art art;
+			pick.border = LoadFile(folder + "/" + f.file, games_dir + "/" + f.file, ini, shape, &art);
 			if (!pick.border)
 				return false;
+			pick.art = art.img;
+			pick.art_window = art.window;
 			pick.source = how;
 			pick.file = folder + "/" + f.file;
 			return true;
@@ -313,22 +339,28 @@ Pick Choose(const std::string& pack, int setting, const GameInfo& game, const Sh
 	{
 		if (!IsFile(pack + "/" + d.first + ".png"))
 			continue;
-		pick.border = LoadFile(d.first + ".png", pack + "/" + d.first + ".png", ReadIni(pack + "/" + d.first + ".ini"), shape);
+		Art art;
+		pick.border = LoadFile(d.first + ".png", pack + "/" + d.first + ".png", ReadIni(pack + "/" + d.first + ".ini"), shape, &art);
 		if (pick.border)
 		{
+			pick.art = art.img;
+			pick.art_window = art.window;
 			pick.source = d.second;
 			pick.file = d.first + ".png";
 			return pick;
 		}
 	}
+	Art art;
 	pick.border = Build("the built-in frame", "built-in",
 		[](std::vector<uint8_t>* bytes, std::string*) {
 			bytes->assign(genplus_border_default_begin, genplus_border_default_end);
 			return true;
 		},
-		Ini(), shape);
+		Ini(), shape, &art);
 	if (pick.border)
 	{
+		pick.art = art.img;
+		pick.art_window = art.window;
 		pick.source = "built-in";
 		pick.file = "built-in";
 	}
@@ -337,18 +369,28 @@ Pick Choose(const std::string& pack, int setting, const GameInfo& game, const Sh
 
 namespace
 {
-// The game that is loaded, to pick again when the setting changes. Used on the thread that loads games, except `shown`.
+// The game that is loaded, described once by Select (before the game runs: a zip on a share is not opened again), to pick
+// again when the setting changes, and the picture chosen for it, to refit when the picture's shape changes. Used on the
+// thread that loads games; the download watcher reads `shape` and sets `label`, `art`, `art_id` and `shown`, all under s_lock
+// (the loader thread writes them under it too, and reads its own `shape` without it).
 struct Current
 {
 	bool game = false;
 	std::string rom_path;
+	bool has_system = false; // the loader's system for it
+	System system = System::Md;
+	bool described = false; // `info` is the game's (described once: at Select, or at the first setting that wants a border)
+	GameInfo info;
 	int setting = 0; // the setting the border on screen was picked for
 	Shape shape; // and the picture it was fitted to
-	bool shown = false; // SetBorder has been given a border (s_lock)
+	std::string label; // the picture on screen: its file in the pack ("built-in")
+	Art art; // and as decoded (null: no border on screen)
+	uint64_t art_id = 0; // changes with `art`
+	bool shown = false; // SetBorder has been given a border
 } s_cur;
 
 // s_gen changes whenever the border is picked again or released: the watcher for an older pick gives up. s_lock guards it and
-// `shown`; the cv wakes the watcher at once.
+// the fields above; the cv wakes the watcher at once.
 std::mutex s_lock;
 std::condition_variable s_cv;
 uint64_t s_gen = 0;
@@ -357,6 +399,30 @@ ps5::BigThread s_watch; // started and joined by the thread that loads games
 constexpr std::chrono::milliseconds kWatchPoll(500);
 constexpr std::chrono::minutes kWatchMax(30); // the helper may be offline for a while; after this the next game start asks again
 
+bool SameShape(const Shape& a, const Shape& b)
+{
+	return a.valid == b.valid && a.base_h == b.base_h && a.scale == b.scale &&
+		   std::fabs(a.aspect - b.aspect) <= 0.005 * std::max(a.aspect, b.aspect);
+}
+
+const char* ScaleWord(ps5video::Scale s)
+{
+	switch (s)
+	{
+		case ps5video::Scale::Integer: return "integer scale";
+		case ps5video::Scale::Stretch: return "16:9";
+		default: return "fit";
+	}
+}
+
+// The picture on screen from now on (what a new shape refits); called with s_lock held.
+void SetChosenLocked(const std::string& label, Art art)
+{
+	s_cur.label = label;
+	s_cur.art = std::move(art);
+	s_cur.art_id++;
+}
+
 void Show(std::shared_ptr<const ps5video::Border> border)
 {
 	std::lock_guard<std::mutex> lock(s_lock);
@@ -364,17 +430,6 @@ void Show(std::shared_ptr<const ps5video::Border> border)
 		return; // nothing on screen, nothing to take away: the renderer is not disturbed
 	s_cur.shown = border != nullptr;
 	ps5video::SetBorder(std::move(border));
-}
-
-// The watcher puts a border up only while its pick is still the current one.
-bool ShowIfCurrent(uint64_t gen, std::shared_ptr<const ps5video::Border> border)
-{
-	std::lock_guard<std::mutex> lock(s_lock);
-	if (s_gen != gen)
-		return false;
-	s_cur.shown = true;
-	ps5video::SetBorder(std::move(border));
-	return true;
 }
 
 void StopWatch()
@@ -388,8 +443,9 @@ void StopWatch()
 }
 
 // The helper is downloading `file` into the pack for the game that was just loaded: waits for it (a stat twice a second, on
-// this thread), loads it and puts it up in place of the frame the game started with. Never on the emulation thread.
-void Watch(uint64_t gen, std::string pack, std::string file, std::string game_name, Shape shape)
+// this thread), loads it and puts it up in place of the frame the game started with, fitted to the picture's shape of the
+// moment (a shape that changes meanwhile fits it again). Never on the emulation thread.
+void Watch(uint64_t gen, std::string pack, std::string file, std::string game_name)
 {
 	try
 	{
@@ -415,15 +471,39 @@ void Watch(uint64_t gen, std::string pack, std::string file, std::string game_na
 		const Ini ini = ReadIni(pack + "/" + stem + ".ini");
 		if (ini.off)
 			return;
-		auto border = LoadFile(file, path, ini, shape);
-		if (!border)
-			return;
-		const long ms = long(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count());
-		const ps5video::Rect& w = border->window;
-		const size_t rim = border->rim.size();
-		if (ShowIfCurrent(gen, std::move(border)))
-			OrbisLog("[border] %s -> %s (downloaded): window %d,%d %dx%d, rim %zu pixels, %ld ms", game_name.c_str(), file.c_str(), w.x,
-				w.y, w.w, w.h, rim, ms);
+		Art art;
+		std::shared_ptr<const ps5video::Border> border;
+		Shape shape;
+		{
+			std::lock_guard<std::mutex> lock(s_lock);
+			shape = s_cur.shape;
+		}
+		border = LoadFile(file, path, ini, shape, &art);
+		for (;;)
+		{
+			if (!border)
+				return;
+			{
+				std::lock_guard<std::mutex> lock(s_lock);
+				if (s_gen != gen)
+					return;
+				if (SameShape(shape, s_cur.shape))
+				{
+					const ps5video::Rect w = border->window;
+					const size_t rim = border->rim.size();
+					SetChosenLocked(file, art);
+					s_cur.shown = true;
+					ps5video::SetBorder(std::move(border));
+					const long ms =
+						long(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count());
+					OrbisLog("[border] %s -> %s (downloaded): window %d,%d %dx%d, rim %zu pixels, %ld ms", game_name.c_str(), file.c_str(),
+						w.x, w.y, w.w, w.h, rim, ms);
+					return;
+				}
+				shape = s_cur.shape; // the picture changed shape while this one was being fitted: again
+			}
+			border = Fit(file, art, shape);
+		}
 	}
 	catch (const std::exception& e)
 	{
@@ -437,7 +517,7 @@ void Watch(uint64_t gen, std::string pack, std::string file, std::string game_na
 
 // Auto, and the game has only the default or the built-in frame: asks the helper for The Bezel Project's border (borders/
 // priority.txt, fe_borderfetch.h) and starts watching for it.
-void RequestDownload(const std::string& pack, const GameInfo& game, const Shape& shape)
+void RequestDownload(const std::string& pack, const GameInfo& game)
 {
 	WantedCover want;
 	if (BorderWanted(pack, game, &want))
@@ -461,30 +541,19 @@ void RequestDownload(const std::string& pack, const GameInfo& game, const Shape&
 		std::lock_guard<std::mutex> lock(s_lock);
 		gen = s_gen;
 	}
-	s_watch = ps5::BigThread([gen, pack, file = want.file, name = game.file_base, shape] { Watch(gen, pack, file, name, shape); }, 1024 * 1024);
+	s_watch = ps5::BigThread([gen, pack, file = want.file, name = game.file_base] { Watch(gen, pack, file, name); }, 1024 * 1024);
 }
 
-bool SameShape(const Shape& a, const Shape& b)
-{
-	return a.valid == b.valid && a.base_h == b.base_h && a.scale == b.scale &&
-		   std::fabs(a.aspect - b.aspect) <= 0.005 * std::max(a.aspect, b.aspect);
-}
-
-const char* ScaleWord(ps5video::Scale s)
-{
-	switch (s)
-	{
-		case ps5video::Scale::Integer: return "integer scale";
-		case ps5video::Scale::Stretch: return "16:9";
-		default: return "fit";
-	}
-}
-
+// Picks the border for the game Select described (the pack on /data, nothing on a share).
 void Apply()
 {
 	StopWatch();
 	s_cur.setting = Config().border;
 	const Shape shape = s_cur.shape;
+	{
+		std::lock_guard<std::mutex> lock(s_lock);
+		SetChosenLocked("", Art());
+	}
 	if (s_cur.setting <= 0)
 	{
 		Show(nullptr);
@@ -493,7 +562,13 @@ void Apply()
 	try
 	{
 		const auto t0 = std::chrono::steady_clock::now();
-		const GameInfo game = DescribeGame(s_cur.rom_path);
+		if (!s_cur.described)
+		{
+			// the loader's system: a zip (on a share) is not opened again; a ROM on a share is not read (NameGame)
+			s_cur.info = DescribeGame(s_cur.rom_path, s_cur.has_system ? &s_cur.system : nullptr);
+			s_cur.described = true;
+		}
+		const GameInfo& game = s_cur.info;
 		const std::string pack = OrbisDir("borders");
 		Pick pick = Choose(pack, s_cur.setting, game, shape);
 		const long ms = long(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count());
@@ -509,9 +584,14 @@ void Apply()
 		else
 			OrbisLog("[border] %s: none usable", game.file_base.c_str());
 		const bool no_own = pick.source != "own file" && pick.source != "matched" && pick.source != "bezel name" && pick.source != "off";
+		if (pick.border)
+		{
+			std::lock_guard<std::mutex> lock(s_lock);
+			SetChosenLocked(pick.file, Art{pick.art, pick.art_window});
+		}
 		Show(std::move(pick.border));
 		if (s_cur.setting == 1 && no_own && Config().border_download)
-			RequestDownload(pack, game, shape);
+			RequestDownload(pack, game);
 	}
 	catch (const std::exception& e)
 	{
@@ -524,23 +604,84 @@ void Apply()
 		Show(nullptr);
 	}
 }
+
+// The picture's shape changed: the picture on screen fitted again, from its decoded copy (no folder listed, no file read).
+void Refit(const Shape& shape)
+{
+	Art art;
+	std::string label;
+	uint64_t id;
+	{
+		std::lock_guard<std::mutex> lock(s_lock);
+		s_cur.shape = shape;
+		art = s_cur.art;
+		label = s_cur.label;
+		id = s_cur.art_id;
+	}
+	if (!art.img)
+		return; // no border on screen (off=1, none usable): nothing to fit
+	try
+	{
+		const auto t0 = std::chrono::steady_clock::now();
+		auto border = Fit(label, art, shape);
+		const long ms = long(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count());
+		std::lock_guard<std::mutex> lock(s_lock);
+		if (s_cur.art_id != id)
+			return; // the watcher put up a downloaded border meanwhile, fitted to this shape
+		if (border)
+			OrbisLog("[border] %s refitted: window %d,%d %dx%d, rim %zu pixels, %ld ms, picture %.3f:1 %d lines %s", label.c_str(),
+				border->window.x, border->window.y, border->window.w, border->window.h, border->rim.size(), ms, shape.aspect,
+				shape.base_h, ScaleWord(shape.scale));
+		if (!border && !s_cur.shown)
+			return;
+		s_cur.shown = border != nullptr;
+		ps5video::SetBorder(std::move(border));
+	}
+	catch (const std::exception& e)
+	{
+		OrbisLog("[border] refitting failed, the game runs without: %s", e.what());
+		Show(nullptr);
+	}
+	catch (...)
+	{
+		OrbisLog("[border] refitting failed, the game runs without");
+		Show(nullptr);
+	}
+}
 } // namespace
 
-void Select(const std::string& rom_path, const Shape& shape)
+void Select(const std::string& rom_path, const Shape& shape, const System* system)
 {
 	s_cur.game = true;
 	s_cur.rom_path = rom_path;
-	s_cur.shape = shape;
+	s_cur.has_system = system != nullptr;
+	s_cur.system = system ? *system : System::Md;
+	s_cur.described = false;
+	s_cur.info = GameInfo();
+	{
+		std::lock_guard<std::mutex> lock(s_lock);
+		s_cur.shape = shape;
+	}
 	Apply();
 }
 
 void Reselect(const Shape& shape)
 {
-	// the shape counts too: the window is stretched to it (an Off border has nothing to fit)
-	if (!s_cur.game || (Config().border == s_cur.setting && (s_cur.setting <= 0 || SameShape(shape, s_cur.shape))))
+	if (!s_cur.game)
 		return;
-	s_cur.shape = shape;
-	Apply();
+	if (Config().border != s_cur.setting)
+	{
+		{
+			std::lock_guard<std::mutex> lock(s_lock);
+			s_cur.shape = shape;
+		}
+		Apply();
+		return;
+	}
+	// the shape counts too: the window is stretched to it (an Off border has nothing to fit)
+	if (s_cur.setting <= 0 || SameShape(shape, s_cur.shape))
+		return;
+	Refit(shape);
 }
 
 void Release()
@@ -548,6 +689,12 @@ void Release()
 	StopWatch();
 	s_cur.game = false;
 	s_cur.rom_path.clear();
+	s_cur.described = false;
+	s_cur.info = GameInfo();
+	{
+		std::lock_guard<std::mutex> lock(s_lock);
+		SetChosenLocked("", Art());
+	}
 	Show(nullptr);
 }
 } // namespace fe::border

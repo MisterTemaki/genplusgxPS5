@@ -1256,7 +1256,7 @@ bool CachedRomCrc32(const std::string& path, uint32_t* whole, uint32_t* body, bo
 	return CachedCrc(cache, path, whole, body, read);
 }
 
-GameInfo DescribeGame(const std::string& path)
+GameInfo DescribeGame(const std::string& path, const System* system)
 {
 	GameInfo g;
 	g.path = path;
@@ -1267,7 +1267,9 @@ GameInfo DescribeGame(const std::string& path)
 	g.ext = ext;
 	g.on_usb = path.rfind("/mnt/", 0) == 0;
 	g.on_network = netfs_is_network_path(path.c_str());
-	if (ext == ".zip")
+	if (system)
+		g.system = *system;
+	else if (ext == ".zip")
 	{
 		if (!ArchiveSystem(path, &g.system))
 			g.system = System::Md;

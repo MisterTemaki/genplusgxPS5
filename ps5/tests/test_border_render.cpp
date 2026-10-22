@@ -297,6 +297,17 @@ static void TestBorderFrames()
 	SetBorder(bad_window);
 	r = Draw(f224, 320, 224, Scale::Fit);
 	CHECK_RECT(LastFrameRect(), 240, 0, 1440, 1080);
+	// numbers whose sum overflows an int (x + w, y + h past INT_MAX) are off the surface too, not a window inside it
+	for (const Rect& w : {Rect{2147483000, 0, 1000, 700}, Rect{0, 2147483000, 1000, 700}})
+	{
+		auto huge = std::make_shared<Border>();
+		huge->backdrop.assign(size_t(kWidth) * kHeight, kBorderColor);
+		huge->window = w;
+		SetBorder(huge);
+		r = Draw(f224, 320, 224, Scale::Fit);
+		CHECK_RECT(LastFrameRect(), 240, 0, 1440, 1080);
+		CHECK(Px(100, 100) == 0xff000000u);
+	}
 	SetBorder(nullptr);
 }
 
