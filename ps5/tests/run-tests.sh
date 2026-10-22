@@ -1563,6 +1563,39 @@ nosan "$T"
 rc=$(GENPLUS_HOST_REALTIME=1 MAXFLIPS=200 GENPLUS_HOST_NETFS_DIR="$T/share" run "$T" "0:0" "")
 expect "[ \$(grep -c 'sor2.md \[md\] -> \"Streets of Rage 2 (USA)\" (by CRC)' $T/root/logs/boot.log) -ge 1 ] && grep -q 'misc/pocket.zip \[gg\]' $T/root/logs/boot.log && ! grep -q 'naming .* network ROM' $T/root/logs/boot.log" "the next start: named from the cache, no pass needed"
 nosan "$T"
+# a read error while the share stays connected (a link that drops, the watchdog, the shares connected again) is not the file's
+# fault: nothing is remembered, the zip stays on the shelf, and the next start reads both again. A .cue sheet's track list is
+# cached (a scan again doesn't read every sheet of the share once more): its track stays off the shelf when the sheet can't be read.
+T=$(newroot t41e)
+mkdir -p "$T/share/misc" "$T/share/SegaCD"
+$ROM "$T/share/sor2.md" ntsc >/dev/null
+python3 tests/forge_crc.py "$T/share/sor2.md" $(grep -P "^md\t[0-9A-F]{8}\tStreets of Rage 2 \(USA\)$" frontend/data/nointro.tsv | cut -f2) >/dev/null
+$ROM "$T/gg.gg" >/dev/null
+python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w'); z.write(sys.argv[2],'Pocket.gg'); z.close()" "$T/share/misc/pocket.zip" "$T/gg.gg"
+printf 'FILE "Disc (Track 01).bin" BINARY\r\n  TRACK 01 MODE1/2352\r\n    INDEX 01 00:00:00\r\n' >"$T/share/SegaCD/Disc (USA).cue"
+head -c 4096 /dev/zero >"$T/share/SegaCD/Disc (Track 01).bin"
+echo "smb://10.0.0.5/games" >"$T/root/shares.txt"
+rc=$(GENPLUS_HOST_NETFS_EIO=sor2.md,pocket.zip GENPLUS_HOST_REALTIME=1 MAXFLIPS=400 GENPLUS_HOST_NETFS_DIR="$T/share" run "$T" "0:0" "")
+expect "grep -q 'network CRC pass: 2 ROM(s) read\$' $T/root/logs/boot.log" "read errors: the pass tried both"
+expect "! grep -q 'sor2.md.*fail' $T/root/covers/crc-cache.txt && ! grep -q '^sys:.*pocket.zip' $T/root/covers/crc-cache.txt" "and remembered no failure"
+expect "[ \$(grep -c 'misc/pocket.zip \[md\]' $T/root/logs/boot.log) -ge 2 ]" "the zip is still on the shelf after the pass"
+expect "grep -q '^cue:/smb/10.0.0.5/games/SegaCD/Disc (USA).cue' $T/root/covers/crc-cache.txt && grep -q 'SegaCD/Disc (USA).cue \[scd\]' $T/root/logs/boot.log && ! grep -q 'Track 01).bin \[' $T/root/logs/boot.log" "the sheet's track list is cached, its track is not a game"
+nosan "$T"
+rc=$(GENPLUS_HOST_NETFS_EIO=.cue GENPLUS_HOST_REALTIME=1 MAXFLIPS=400 GENPLUS_HOST_NETFS_DIR="$T/share" run "$T" "0:0" "")
+expect "grep -q 'sor2.md \[md\] -> \"Streets of Rage 2 (USA)\" (by CRC)' $T/root/logs/boot.log && grep -q 'misc/pocket.zip \[gg\]' $T/root/logs/boot.log" "the next start reads both again and names them"
+expect "grep -q 'SegaCD/Disc (USA).cue \[scd\]' $T/root/logs/boot.log && ! grep -q 'Track 01).bin \[' $T/root/logs/boot.log" "the sheet is not read again (it can't be now): its track is still not a game"
+nosan "$T"
+# Settings (Triangle) while the pass reads a ROM (3 s a read): the pass stops first (Settings > Network shares may connect the shares
+# again, which needs no other netfs call running); the ROM it was reading is read again once Settings is left
+T=$(newroot t41s)
+mkdir -p "$T/share"
+$ROM "$T/share/sor2.md" ntsc >/dev/null
+python3 tests/forge_crc.py "$T/share/sor2.md" $(grep -P "^md\t[0-9A-F]{8}\tStreets of Rage 2 \(USA\)$" frontend/data/nointro.tsv | cut -f2) >/dev/null
+echo "smb://10.0.0.5/games" >"$T/root/shares.txt"
+rc=$(GENPLUS_HOST_NETFS_DELAY_MS=3000 GENPLUS_HOST_REALTIME=1 MAXFLIPS=900 GENPLUS_HOST_NETFS_DIR="$T/share" run "$T" "0:0;60:$TRIANGLE;62:0;90:$CIRCLE;92:0" "")
+expect "grep -q 'network CRC pass: 0 ROM(s) read (stopped)' $T/root/logs/boot.log" "Settings stops the pass while it reads"
+expect "grep -q 'sor2.md \[md\] -> \"Streets of Rage 2 (USA)\" (by CRC)' $T/root/logs/boot.log" "and, once Settings is left, the ROM it was reading is read again and named"
+nosan "$T"
 fi
 
 if want 42; then
@@ -1689,6 +1722,7 @@ expect "grep -q '\[shelf\] tab Network: 1 game' $T/root/logs/boot.log" "the Netw
 expect "grep -q '\[shelf\] tab Internal: 1 game' $T/root/logs/boot.log" "and the Internal tab only the local one"
 expect "grep -q '\[shelf\] network tab: scan again\$' $T/root/logs/boot.log" "Square on the Network tab scans again"
 expect "[ \$(grep -c '\[games\] 2 ROM' $T/root/logs/boot.log) -ge 2 ]" "and the scan found both games again"
+expect "awk '/network tab: scan again/{f=1;next} f&&/\[covers\]/{c++} f&&/\[shelf\] tab /{exit} END{exit !(f && c == 0)}' $T/root/logs/boot.log" "the same games after the scan: the covers are not loaded again"
 expect "grep -q 'last_tab=0' $T/root/genplus-ps5.ini" "the tab left on is kept (Internal)"
 nosan "$T"
 T=$(newroot t43b)
