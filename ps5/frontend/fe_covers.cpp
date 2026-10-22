@@ -748,7 +748,9 @@ CoverPtr CoverService::Load(int i, bool* downloaded)
 	if (!manual.empty())
 		cands.push_back({manual, "manual"});
 	const std::string dir = g.path.substr(0, g.path.find_last_of('/'));
-	const std::string beside = FindWithExts(dir + "/" + g.file_base);
+	// not beside a game on a share: this thread would make network calls while Settings may reload the shares (netfs
+	// reloads only when no other call is running); the covers of network games are kept on the console
+	const std::string beside = g.on_network ? std::string() : FindWithExts(dir + "/" + g.file_base);
 	if (!beside.empty())
 		cands.push_back({beside, "beside"});
 	const std::string cache = CachePath(i);

@@ -70,7 +70,7 @@ nor USB drives. The request is the one PS5SX2 makes:
   elfldr does for payloads. No other app is touched.
 
 Genesis Plus GX PS5 only uses `/data/genplus/`, `/data/homebrew/PPSA99921/` and its own
-`/user/appmeta/PPSA99921/`. It sits next to Snes9x PS5 (PPSA99922, helper port 9089), Mesen2 PS5 (PPSA99923, port 9091), FBNeo PS5 (PPSA99924, port 9092) and PS5SX2 (PPSA99203) without touching them.
+`/user/appmeta/PPSA99921/`. It sits next to Snes9x PS5 (PPSA99922, helper port 9090), Mesen2 PS5 (PPSA99923, port 9091), FBNeo PS5 (PPSA99924, port 9092) and PS5SX2 (PPSA99203) without touching them.
 
 ## Versions
 
@@ -380,7 +380,7 @@ wordmark: **github.com/MisterTemaki**.
     have is marked (`.missing`) and only looked for again after 30 days; **Square** forces a new try.
   - Without a network nothing is tried and the shelf works the same.
 - **Your own covers:** a `.png` or `.jpg` named after the ROM file, in `/data/genplus/covers/<system>/`
-  (`covers/MegaDrive/Sonic.png` for `roms/MegaDrive/Sonic.md`), in `covers/` itself, or next to the ROM, takes
+  (`covers/MegaDrive/Sonic.png` for `roms/MegaDrive/Sonic.md`), in `covers/` itself, or next to the ROM (not on a network share), takes
   priority over downloads.
 - **No cover:** the game gets a card with its title and system.
 - **Turning downloads off:** Settings, "Download covers".
