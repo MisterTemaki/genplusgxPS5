@@ -1,0 +1,3 @@
+# Genesis Plus GX PS5: Sega games libretro-thumbnails has no cover for, with where an online database has one;
+# made by tools/make_db_art.py from Hasheous' dumps (not fetched yet: run the tool where hasheous.org is reachable).
+# system<TAB>name<TAB>cover sources (h = hasheous.org image id, t = TheGamesDB id)<TAB>CRC32 of its dumps

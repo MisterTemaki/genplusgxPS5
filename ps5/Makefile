@@ -68,7 +68,8 @@ EMU_SRC := coreorbis/main-boot.cpp \
 	coreorbis/orbis-shims/ProsperoUpdate.cpp coreorbis/orbis-shims/ProsperoSlangExt.cpp \
 	frontend/fe_emu.cpp frontend/fe_menu.cpp frontend/fe_settings.cpp frontend/fe_i18n.cpp frontend/fe_chdcache.cpp frontend/fe_text.cpp \
 	frontend/fe_games.cpp frontend/fe_http.cpp frontend/fe_covers.cpp frontend/fe_shelf.cpp \
-	frontend/fe_prefetch.cpp frontend/fe_coverfetch.cpp frontend/fe_coverworker.cpp
+	frontend/fe_prefetch.cpp frontend/fe_coverfetch.cpp frontend/fe_coverworker.cpp \
+	frontend/fe_border.cpp frontend/fe_borderimg.cpp frontend/fe_borderfetch.cpp
 # minizip (zlib licence) for games inside a .zip, built as C with the core's zlib
 EMU_C_SRC := frontend/third_party/unzip.c frontend/third_party/ioapi.c
 # a C bridge to the core's own state (the Sega CD backup RAM), built with the core's defines and headers
@@ -95,11 +96,22 @@ MINIZIP_FLAGS := -DNOUNCRYPT -I$(ROOT)/$(CHD)/deps/zlib-1.3.1 -w
 PORT_WARN := -Wall -Wextra -Werror -Wno-unused-parameter -Wno-missing-field-initializers
 
 # the game-name table built into fe_games.o (tools/make_gamedb.py), the palettes in fe_config.o
-GAMEDB_DEFS := -DGAMEDB_TSV='"$(abspath frontend/data/nointro.tsv)"'
+# (2.1: with the dumps No-Intro lacks and the games an online database has art of, tools/make_extra_crc.py, make_db_art.py)
+GAMEDB_DEFS := -DGAMEDB_TSV='"$(abspath frontend/data/nointro.tsv)"' -DEXTRACRC_TSV='"$(abspath frontend/data/extra-crc.tsv)"' \
+	-DDBART_TSV='"$(abspath frontend/data/db-art.tsv)"'
 %/port/frontend/fe_games.o: EXTRA_FLAGS = $(GAMEDB_DEFS)
-%/port/frontend/fe_games.o: frontend/data/nointro.tsv
-# stb_image in fe_covers.o has warnings of its own
-%/port/frontend/fe_covers.o: EXTRA_FLAGS = -Wno-error -Wno-sign-compare -Wno-unused-but-set-variable -Wno-implicit-fallthrough
+%/port/frontend/fe_games.o: frontend/data/nointro.tsv frontend/data/extra-crc.tsv frontend/data/db-art.tsv
+# stb_image in fe_covers.o has warnings of its own; libretro-thumbnails' box art names are built in (tools/make_cover_index.py)
+%/port/frontend/fe_covers.o: EXTRA_FLAGS = -Wno-error -Wno-sign-compare -Wno-unused-but-set-variable -Wno-implicit-fallthrough \
+	-DCOVER_INDEX_TXT='"$(abspath frontend/data/cover-index.txt)"'
+%/port/frontend/fe_covers.o: frontend/data/cover-index.txt
+# the borders (2.1): the built-in frame is embedded in fe_border.o (tools/make_default_border.py), the names of the borders The
+# Bezel Project has in fe_borderfetch.o (tools/make_border_index.py; the pictures are downloaded); stb_image in fe_borderimg.o
+%/port/frontend/fe_border.o: EXTRA_FLAGS = -DBORDER_DEFAULT_PNG='"$(abspath frontend/assets/borders/default.png)"'
+%/port/frontend/fe_border.o: frontend/assets/borders/default.png
+%/port/frontend/fe_borderfetch.o: EXTRA_FLAGS = -DBORDER_INDEX_TXT='"$(abspath frontend/data/border-index.txt)"'
+%/port/frontend/fe_borderfetch.o: frontend/data/border-index.txt
+%/port/frontend/fe_borderimg.o: EXTRA_FLAGS = -Wno-error -Wno-sign-compare -Wno-unused-but-set-variable -Wno-implicit-fallthrough
 # the UI fonts (PS5SX2's: PCSX2's Roboto Regular and PromptFont; Font Awesome's brands) built into fe_text.o
 %/port/frontend/fe_text.o: EXTRA_FLAGS = -DFE_FONT_DIR='"$(abspath frontend/assets/fonts)"' -Wno-error -Wno-sign-compare -Wno-unused-function
 %/port/frontend/fe_text.o: frontend/assets/fonts/Roboto-Regular.ttf frontend/assets/fonts/promptfont.otf \
@@ -419,8 +431,35 @@ $(HOST_OUT)/glslang/%.o: %.cpp
 $(HOST_OUT)/genplus-ps5-host: $(HOST_CORE_OBJ) $(HOST_EMU_OBJ) $(HOST_OUT)/helper_data.o $(HOST_OUT)/slang_presets.o $(HOST_GLSLANG_OBJ)
 	$(HOST_CXX) $(HOST_SAN) -o $@ $^ -Wl,--wrap=chd_read -Wl,--wrap=chd_close -lpthread -lm -lvulkan
 
-test: host
+test: host unit-tests
 	bash tests/run-tests.sh
+
+# 2.1's unit tests (run by run-tests.sh, groups 60-63), ported from Snes9x PS5 2.7:
+# the cover and border matcher over the built-in tables (headers only)
+TITLEMATCH_TEST := $(HOST_OUT)/titlematch-test
+$(TITLEMATCH_TEST): tests/test_titlematch.cpp frontend/fe_titlematch.h frontend/fe_artmatch.h frontend/fe_dbart.h frontend/fe_romheader.h
+	@mkdir -p $(dir $@)
+	$(HOST_CXX) -std=c++17 -O2 -g $(HOST_SAN) $(PORT_WARN) -Ifrontend -o $@ tests/test_titlematch.cpp
+# the border pack code (fe_border.cpp, fe_borderimg.cpp, fe_borderfetch.cpp) with the renderer, the cover matcher and the game
+# naming stood in for by the test: generated PNGs through the lookup order, the window, the backdrop and the rim
+BORDER_TEST := $(HOST_OUT)/border-pack-test
+BORDER_TEST_OBJ := $(patsubst %.cpp,$(HOST_OUT)/port/%.o,tests/test_border_pack.cpp frontend/fe_border.cpp frontend/fe_borderimg.cpp \
+	frontend/fe_borderfetch.cpp frontend/fe_coverfetch.cpp frontend/fe_settings.cpp coreorbis/orbis-shims/orbis_paths.cpp)
+$(BORDER_TEST): $(BORDER_TEST_OBJ)
+	$(HOST_CXX) $(HOST_SAN) -o $@ $^ -lpthread -lz
+# the border in the renderer (ProsperoVideo.cpp) on the CPU and for the GPU (stood in for), against the host's video output
+BORDER_RENDER_TEST := $(HOST_OUT)/border-render-test
+BORDER_RENDER_OBJ := $(patsubst %.cpp,$(HOST_OUT)/port/%.o,tests/test_border_render.cpp coreorbis/orbis-shims/ProsperoVideo.cpp \
+	coreorbis/orbis-shims/ProsperoCrt.cpp coreorbis/orbis-shims/ProsperoCrash.cpp coreorbis/orbis-shims/orbis_paths.cpp host/sce_host.cpp)
+$(BORDER_RENDER_TEST): $(BORDER_RENDER_OBJ)
+	$(HOST_CXX) $(HOST_SAN) -o $@ $^ -lpthread
+# the helper's download loop with its covers and borders lanes (fe_coverworker.cpp), against a fake HTTP client
+DOWNLOAD_WORKER_TEST := $(HOST_OUT)/download-worker-test
+DOWNLOAD_WORKER_OBJ := $(patsubst %.cpp,$(HOST_OUT)/port/%.o,tests/test_download_worker.cpp frontend/fe_coverworker.cpp frontend/fe_coverfetch.cpp \
+	frontend/fe_http.cpp coreorbis/orbis-shims/orbis_paths.cpp coreorbis/orbis-shims/ProsperoCrash.cpp host/sce_host.cpp)
+$(DOWNLOAD_WORKER_TEST): $(DOWNLOAD_WORKER_OBJ)
+	$(HOST_CXX) $(HOST_SAN) -o $@ $^ -lpthread
+unit-tests: $(TITLEMATCH_TEST) $(BORDER_TEST) $(BORDER_RENDER_TEST) $(DOWNLOAD_WORKER_TEST)
 
 # The GPU's shaders: shaders/presets.txt (RetroArch slang presets, in shaders/slang/) compiled to SPIR-V tables
 # with their reflection and textures (tools/slang_compile.py, which needs glslangValidator).
@@ -442,5 +481,5 @@ $(HOST_OUT)/shader-bench: tools/shader_bench.cpp coreorbis/orbis-shims/ProsperoC
 clean:
 	rm -rf build
 
-.PHONY: shaders shader-bench ps5 ps5-core host-core host test send strip app dist clean
+.PHONY: shaders shader-bench ps5 ps5-core host-core host test unit-tests send strip app dist clean
 .SECONDARY:

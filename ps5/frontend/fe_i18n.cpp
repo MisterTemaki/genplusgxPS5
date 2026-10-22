@@ -321,6 +321,16 @@ const Entry kTable[] = {
 		"Genesis Plus GX PS5: não foi possível reiniciar o jogo. %s",
 		"Genesis Plus GX PS5 : le jeu n'a pas pu être relancé. %s",
 		"Genesis Plus GX PS5: das Spiel konnte nicht neu gestartet werden. %s"},
+	// ---- borders (2.1, Snes9x PS5's translations)
+	{"Border", "Marco", "Moldura", "Bordure", "Rahmen"},
+	{"Default frame", "Marco predeterminado", "Moldura padrão", "Cadre par défaut", "Standardrahmen"},
+	{"Download all borders", "Descargar todos los marcos", "Baixar todas as molduras", "Télécharger toutes les bordures",
+		"Alle Rahmen herunterladen"},
+	{"%d left", "faltan %d", "faltam %d", "%d restantes", "noch %d"},
+	{"%d queued", "%d en cola", "%d na fila", "%d en attente", "%d eingereiht"},
+	{"Nothing to fetch", "Nada que descargar", "Nada para baixar", "Rien à télécharger", "Nichts zu laden"},
+	{"Waiting for the helper", "Esperando al helper", "Aguardando o helper", "En attente du helper", "Warte auf den Helper"},
+	{"%d fetched", "%d descargados", "%d baixadas", "%d téléchargées", "%d geladen"},
 };
 
 const char* const kLanguageNames[] = {"English", "Español", "Português (Brasil)", "Français", "Deutsch"};

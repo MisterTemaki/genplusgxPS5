@@ -25,12 +25,14 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cstdlib>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -614,6 +616,7 @@ struct FrameGeom
 	Scale scale = Scale::Count;
 	bool smooth = false;
 	bool scanlines = false;
+	uint64_t border_gen = 0; // s_border_gen when the surface was last prepared
 	Rect dst = {0, 0, 0, 0};
 	std::vector<uint32_t> xsrc; // dst column -> src column (nearest), or the left column (smooth)
 	std::vector<uint16_t> xw; // smooth: weight of the right column, 0..256
@@ -676,9 +679,69 @@ Rect ComputeRect(int base_h, double aspect, Scale scale)
 double s_shader_ms = 0;
 int s_shader_frames = 0;
 uint64_t s_frame_no = 0;
+std::shared_ptr<const Border> s_border; // published by SetBorder with atomic_store, read once per DrawFrame with atomic_load
+std::atomic<uint64_t> s_border_gen{0}; // counts SetBorder calls: a new border repaints the surface
 
-void Setup(int w, int h, int base_h, double aspect, Scale scale, bool smooth, bool scanlines, int shader)
+// A picture of ratio `ratio` in 'bounds': as large as fits, or all of 'bounds' when it is within 3% of that ratio.
+void FitRatio(const Rect& bounds, double ratio, int& dw, int& dh)
 {
+	const double have = double(bounds.w) / double(std::max(1, bounds.h));
+	if (std::fabs(have - ratio) <= 0.03 * ratio)
+	{
+		dw = bounds.w;
+		dh = bounds.h;
+		return;
+	}
+	dh = bounds.h;
+	dw = int(bounds.h * ratio + 0.5);
+	if (dw > bounds.w)
+	{
+		dw = bounds.w;
+		dh = int(bounds.w / ratio + 0.5);
+	}
+}
+
+bool UsableBorder(const Border& b)
+{
+	const Rect& w = b.window;
+	return b.backdrop.size() == size_t(kWidth) * kHeight && w.w > 0 && w.h > 0 && w.x >= 0 && w.y >= 0 &&
+		   w.x + w.w <= kWidth && w.y + w.h <= kHeight;
+}
+
+// The rim of a border over the picture rectangle d (the rim pixels outside it are in the backdrop already). The rim is
+// sorted by index, so only the rows of d are visited. CPU: out = pic * (255 - a) / 255 + colour * a / 255. GPU: the
+// surface over the picture is transparent; a rim pixel becomes its premultiplied colour with alpha a, which the GPU lays
+// over the picture the same way.
+void BlendRim(const Border& b, const Rect& d, bool gpu)
+{
+	const uint32_t lo = uint32_t(d.y) * kWidth, hi = uint32_t(d.y + d.h) * kWidth;
+	const auto cmp = [](const RimPixel& p, uint32_t index) { return p.index < index; };
+	const RimPixel* it = std::lower_bound(b.rim.data(), b.rim.data() + b.rim.size(), lo, cmp);
+	const RimPixel* end = std::lower_bound(it, b.rim.data() + b.rim.size(), hi, cmp);
+	uint32_t* surf = g.surface;
+	for (; it != end; ++it)
+	{
+		const uint32_t x = it->index % kWidth;
+		if (x < uint32_t(d.x) || x >= uint32_t(d.x + d.w))
+			continue;
+		if (gpu)
+		{
+			surf[it->index] = it->pre | ((255u - it->inv) << 24);
+			continue;
+		}
+		const uint32_t pic = surf[it->index], pre = it->pre, inv = it->inv;
+		const uint32_t r = ((pic & 0xff) * inv + 127) / 255 + (pre & 0xff);
+		const uint32_t gr = (((pic >> 8) & 0xff) * inv + 127) / 255 + ((pre >> 8) & 0xff);
+		const uint32_t bl = (((pic >> 16) & 0xff) * inv + 127) / 255 + ((pre >> 16) & 0xff);
+		surf[it->index] = 0xff000000u | (bl << 16) | (gr << 8) | r;
+	}
+}
+
+
+void Setup(int w, int h, int base_h, double aspect, Scale scale, bool smooth, bool scanlines, int shader, const Border* border,
+	uint64_t border_gen)
+{
+	s_geom.border_gen = border_gen;
 	s_geom.shader = shader;
 	s_geom.src_w = w;
 	s_geom.src_h = h;
@@ -687,7 +750,7 @@ void Setup(int w, int h, int base_h, double aspect, Scale scale, bool smooth, bo
 	s_geom.scale = scale;
 	s_geom.smooth = smooth;
 	s_geom.scanlines = scanlines;
-	s_geom.dst = ComputeRect(base_h, aspect, scale);
+	s_geom.dst = border ? ComputeRectIn(base_h, aspect, scale, border->window) : ComputeRect(base_h, aspect, scale);
 	const Rect& d = s_geom.dst;
 	// Smoothing only when a source pixel doesn't land on a whole number of screen pixels both ways.
 	const bool whole = (d.w % w) == 0 && (d.h % h) == 0;
@@ -728,13 +791,28 @@ void Setup(int w, int h, int base_h, double aspect, Scale scale, bool smooth, bo
 			s_geom.dark[y] = line_here != line_next;
 		}
 	}
-	FillRect(0, 0, kWidth, kHeight, Rgb(0, 0, 0));
-	if (shader > 0)
-		OrbisLog("[video] picture %dx%d (%d lines, aspect %.4f, %s, shader %s%s) -> %d,%d %dx%d", w, h, base_h, aspect,
-			ScaleName(scale), ShaderName(shader), g.gpu ? ", GPU" : "", d.x, d.y, d.w, d.h);
+	if (border) // the border goes in once, here: only the picture rectangle changes from frame to frame
+		memcpy(g.surface, border->backdrop.data(), size_t(kWidth) * kHeight * sizeof(uint32_t));
 	else
-		OrbisLog("[video] picture %dx%d (%d lines, aspect %.4f, %s%s%s) -> %d,%d %dx%d", w, h, base_h, aspect,
-			ScaleName(scale), lerp ? ", smooth" : "", scanlines ? ", scanlines" : "", d.x, d.y, d.w, d.h);
+		FillRect(0, 0, kWidth, kHeight, Rgb(0, 0, 0));
+	char in_border[64] = "";
+	if (border)
+		snprintf(in_border, sizeof(in_border), ", border window %d,%d %dx%d", border->window.x, border->window.y,
+			border->window.w, border->window.h);
+	// logged when it changes (the pause menu redraws the frame, with InvalidateFrame, every time it draws)
+	static std::string logged;
+	char line[256];
+	if (shader > 0)
+		snprintf(line, sizeof(line), "picture %dx%d (%d lines, aspect %.4f, %s, shader %s%s) -> %d,%d %dx%d%s", w, h, base_h,
+			aspect, ScaleName(scale), ShaderName(shader), g.gpu ? ", GPU" : "", d.x, d.y, d.w, d.h, in_border);
+	else
+		snprintf(line, sizeof(line), "picture %dx%d (%d lines, aspect %.4f, %s%s%s) -> %d,%d %dx%d%s", w, h, base_h, aspect,
+			ScaleName(scale), lerp ? ", smooth" : "", scanlines ? ", scanlines" : "", d.x, d.y, d.w, d.h, in_border);
+	if (logged != line)
+	{
+		logged = line;
+		OrbisLog("[video] %s", line);
+	}
 }
 } // namespace
 
@@ -747,6 +825,46 @@ const char* ScaleName(Scale s)
 		case Scale::Stretch: return "Stretch to 16:9";
 		default: return "?";
 	}
+}
+
+void SetBorder(std::shared_ptr<const Border> border)
+{
+	std::atomic_store(&s_border, std::move(border));
+	s_border_gen.fetch_add(1, std::memory_order_release); // after the pointer: DrawFrame reads them in the other order
+}
+
+Rect ComputeRectIn(int base_h, double aspect, Scale scale, const Rect& bounds)
+{
+	if (!std::isfinite(aspect) || aspect <= 0.01 || aspect > 8.0)
+		aspect = 4.0 / 3.0;
+	base_h = std::max(1, base_h);
+	int dw = bounds.w, dh = bounds.h;
+	switch (scale)
+	{
+		case Scale::Fit: FitRatio(bounds, aspect, dw, dh); break;
+		case Scale::Integer:
+		{
+			// a window cut to a whole multiple of this picture (fe_borderimg.cpp, IntegerOpening): the picture fills it
+			const int k = bounds.h / base_h;
+			if (bounds.h % base_h == 0 && std::abs(bounds.w - (int(bounds.h * aspect + 0.5) & ~1)) <= 2)
+				break;
+			int kk = k;
+			while (kk >= 1 && int(base_h * kk * aspect + 0.5) > bounds.w)
+				kk--;
+			if (kk < 1) // a window smaller than the picture: no whole multiple fits
+				FitRatio(bounds, aspect, dw, dh);
+			else
+			{
+				dh = base_h * kk;
+				dw = int(dh * aspect + 0.5);
+			}
+			break;
+		}
+		default: break;
+	}
+	dw = std::max(2, std::min(dw, bounds.w) & ~1); // always inside 'bounds'
+	dh = std::max(1, std::min(dh, bounds.h));
+	return Rect{bounds.x + (bounds.w - dw) / 2, bounds.y + (bounds.h - dh) / 2, dw, dh};
 }
 
 Rect LastFrameRect()
@@ -777,11 +895,29 @@ Rect DrawFrame(const uint32_t* argb, int w, int h, int base_h, double aspect, Sc
 	if (base_h <= 0)
 		base_h = h;
 
+	// the border, read once: SetBorder may run meanwhile (the count first, so a border newer than the count only repaints again)
+	const uint64_t border_gen = s_border_gen.load(std::memory_order_acquire);
+	std::shared_ptr<const Border> border = std::atomic_load(&s_border);
+	if (border && !UsableBorder(*border))
+	{
+		static const Border* refused = nullptr;
+		if (refused != border.get())
+		{
+			refused = border.get();
+			OrbisLog("[border] refused: backdrop %zu pixels, window %d,%d %dx%d", border->backdrop.size(), border->window.x,
+				border->window.y, border->window.w, border->window.h);
+		}
+		border.reset();
+	}
+	if (border && g.gpu && ps5gpu::ShaderFullscreen(shader))
+		border.reset(); // the shader draws a bezel of its own around the game
+
 	bool cleared = false;
 	if (w != s_geom.src_w || h != s_geom.src_h || base_h != s_geom.base_h || std::fabs(aspect - s_geom.aspect) > 1e-6 ||
-		scale != s_geom.scale || smooth != s_geom.smooth || scanlines != s_geom.scanlines || shader != s_geom.shader)
+		scale != s_geom.scale || smooth != s_geom.smooth || scanlines != s_geom.scanlines || shader != s_geom.shader ||
+		border_gen != s_geom.border_gen)
 	{
-		Setup(w, h, base_h, aspect, scale, smooth, scanlines, shader);
+		Setup(w, h, base_h, aspect, scale, smooth, scanlines, shader, border.get(), border_gen);
 		cleared = true;
 	}
 
@@ -795,6 +931,8 @@ Rect DrawFrame(const uint32_t* argb, int w, int h, int base_h, double aspect, Sc
 		const Rect t = full ? Rect{0, 0, kWidth, kHeight} : d;
 		for (int y = t.y; y < t.y + t.h; y++)
 			memset(g.surface + size_t(y) * kWidth + t.x, 0, size_t(t.w) * 4);
+		if (border)
+			BlendRim(*border, d, true);
 		ps5gpu::SetGame(argb, w, h, ps5gpu::Rect{d.x, d.y, d.w, d.h}, shader, smooth, scanlines);
 		return (cleared || full) ? Rect{0, 0, kWidth, kHeight} : d;
 	}
@@ -808,6 +946,8 @@ Rect DrawFrame(const uint32_t* argb, int w, int h, int base_h, double aspect, Sc
 		clock_gettime(CLOCK_MONOTONIC, &t1);
 		s_shader_ms += (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
 		s_shader_frames++;
+		if (border)
+			BlendRim(*border, d, false);
 		return cleared ? Rect{0, 0, kWidth, kHeight} : d;
 	}
 	const uint32_t* xs = s_geom.xsrc.data();
@@ -858,6 +998,8 @@ Rect DrawFrame(const uint32_t* argb, int w, int h, int base_h, double aspect, Sc
 			prev_w = wy;
 		}
 	}
+	if (border)
+		BlendRim(*border, d, false);
 	return cleared ? Rect{0, 0, kWidth, kHeight} : d;
 }
 

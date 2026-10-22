@@ -14,6 +14,8 @@ struct Settings
 	int aspect = 0; // emu::kAspects: the core's (TV), square pixels, 4:3, 16:9
 	int ntsc = 0; // emu::kNtscFilters: off, composite, S-Video, RGB, monochrome (Blargg's NTSC filter)
 	int borders = 0; // emu::kBorders: off, top/bottom, left/right, full (the core's overscan option)
+	int border = 0; // art around the picture (fe_border.h): 0 Off, 1 Auto (the game's own, else a default), 2 Default frame
+	bool border_download = true; // Auto also downloads the game's border from The Bezel Project (border_download=0 turns it off)
 	bool gg_lcd = true; // Game Gear LCD ghosting
 	bool smooth = false; // bilinear when the scale isn't whole
 	bool scanlines = false;

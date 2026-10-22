@@ -322,6 +322,19 @@ wordmark: **github.com/MisterTemaki**.
     name and cover.
   - Loose names (`sonic the hedgehog.md`) are recognised too.
   - CRCs are cached in `covers/crc-cache.txt`, so each ROM is read once.
+  - **Fan translations and renamed ROMs** (`Langrisser 2 (English).md`, `Phantasy Star Gaiden [T-Eng].gg`) find the
+    cover of the game they come from, whatever the file is called, as in Snes9x PS5 2.7 (thatboialex's design, pull
+    request #3). Three clues are used: the ROM's CRC32 in a second table of 4,150 dumps No-Intro does not list (fan
+    translations, hacks, homebrew, from libretro-database's TOSEC, hacks and homebrew sets, `data/extra-crc.tsv`); the
+    words of the file name, matched against the names libretro-thumbnails has for that system (tags, `v1.1`,
+    `Rev 01`, roman numerals and romanisation spellings are smoothed out; a different number or an ambiguous result
+    never matches); and, last, the title inside a Mega Drive ROM's or a Sega CD disc's own header. Your file name is
+    what the shelf shows; only the cover comes from the original game.
+  - **Games libretro-thumbnails has no cover for** can get the cover an online database has: a table built into the
+    app (`data/db-art.tsv`, made by `ps5/tools/make_db_art.py` from [Hasheous](https://hasheous.org)' public dumps of
+    each Sega system) names them by CRC32 and by name, and the helper downloads the image from hasheous.org or from
+    TheGamesDB's image server, after libretro-thumbnails had none. No checksum or file name of yours is sent to
+    those two: only the image address from the table is fetched.
 - **Automatic covers, in the background:** box art comes from
   [libretro-thumbnails](https://github.com/libretro-thumbnails) (each system's `Named_Boxarts`) over HTTPS.
   - The console's own HTTPS (`libSceHttp2`/`libSceSsl`) only works inside the app's sandbox, and the app can't
@@ -379,6 +392,76 @@ The shelf is in real 3D perspective (each cover a quad turned about the vertical
 the floor and a glow behind the selected one). With the GPU renderer (2.0) the GPU draws it at the TV's resolution
 with mip-mapped covers (see [The shelf on the GPU](#the-shelf-on-the-gpu)); otherwise the CPU draws it column by
 column with bilinear filtering, mipmaps and anti-aliased edges, split across several cores, as in Snes9x PS5.
+
+## Borders around the picture
+
+While a game runs, the area around the picture can show art, such as a console cabinet or the Game Gear handheld,
+instead of black bars, as in Snes9x PS5 2.7 (thatboialex's design, pull request #3). The picture sits in a window of
+the art (a rounded glass, for the built-in one).
+
+**Settings (Triangle on the shelf, or L3 + R3 in a game, then Settings) > VIDEO > Border:**
+
+| Value | What you see |
+|---|---|
+| **Off** (default) | Black bars, as before. |
+| **Auto** | The game's own border from `/data/genplus/borders/<system>/`; without one, the game's border from The Bezel Project, downloaded the first time you play it (see below); until it lands, or for a game it has none for, `borders/<system>/default.png`, then `borders/default.png`; without those, the built-in frame. |
+| **Default frame** | `borders/<system>/default.png` or `borders/default.png` if you put one there, else the built-in frame, for every game. |
+
+It is saved as `border=0`, `1` or `2` in `genplus-ps5.ini` (and in a game's own settings file, when it has one).
+Changing it in the pause menu applies when you resume. It works with both renderers and every shader: the CPU draws
+the border and its soft edge over the picture; with the GPU renderer the border is drawn on the layer the menus use,
+clear over the picture, so the GPU's picture and its shader show through the window. The two Mega Bezel presets draw a
+bezel of their own around the game: with them no border is drawn. The pause menu darkens the border with the picture.
+How it looks on a TV, and what it costs a frame, has only been tested on the Linux host, not on a PS5.
+
+**The window follows the picture.** Borders are drawn for a 4:3 picture, so the app refits the art until its window has
+the shape of the game's picture, and the picture fills it: its **Aspect ratio** (the core's, square pixels, 4:3, 16:9 --
+a 320x224 picture with square pixels gets a 10:7 window); **Stretch to 16:9**, a 16:9 window; **Integer scale**, a window
+exactly the whole-multiple picture (4x a 224-line Mega Drive picture: 1194x896; 7x the Game Gear's 144 lines), so there is
+no black around it. A Game Gear game in a Game Gear bezel has its picture in the handheld's screen. The art is not
+squeezed out of shape: the side art is scaled up evenly and cropped to the height when its margin grows, and cut to its
+outer part when it shrinks; the 24 pixels along the window and the corners of the window stay as drawn. A window that
+already has the shape (within 3%) is not touched. It changes at once when a setting changes, and when a game changes its
+picture's shape.
+
+**Your own borders.** Put PNG files in `/data/genplus/borders` (over FTP, like the covers):
+
+```
+/data/genplus/borders/
+  default.png          used when a game has no border of its own (optional)
+  MegaDrive/           one folder per system, as for the covers: MegaDrive, SegaCD, MasterSystem, GameGear, SG1000
+    default.png                          this system's default (optional)
+    Sonic The Hedgehog 2 (World).png     a border for one game
+    Sonic The Hedgehog 2 (World).ini     optional settings for it
+```
+
+- A game's border is found the way its cover is: the ROM's own file name first (`Sonic The Hedgehog 2 (World).md`
+  uses `MegaDrive/Sonic The Hedgehog 2 (World).png`), then the game's name, so renamed ROMs and translations find the
+  border of the original game.
+- **The art:** exactly 1920x1080 pixels, a PNG with transparency (RGBA, or palette with a `tRNS` chunk), under 8 MiB.
+  The clear area in the middle is the window. A file of another size, one without a clear centre, or one whose window
+  is smaller than 480x270 is skipped, with a line `[border] <file>: <reason>` in `logs/boot.log`; the next choice
+  applies and the game starts as usual. `boot.log` also says which file a game got
+  (`[border] <game> -> <file> (<source>): window ..., rim N pixels, N ms, ...`).
+- **The `.ini`** (same name as the PNG, `key=value` lines): `window=x,y,w,h`, the window in screen pixels (at least
+  480x270) when it cannot be found by itself (an RGB image); `off=1`, this game has no border even when Border is Auto.
+- **The Bezel Project:** its `GameBezels/<system>/*.png` files work as they are: copy them to `borders/<system>/`
+  (`GameBezels/SG-1000` to `borders/SG1000`), or let the app download the ones you need.
+- **Downloaded borders.** With Auto, a game that has no border of its own gets The Bezel Project's picture for it. The
+  app has the list of names the project has for each system (3,286 Mega Drive, 468 Sega CD, 1,065 Master System,
+  850 Game Gear and 212 SG-1000 names, built in from its MegaDrive, SegaCD, MasterSystem, GameGear and SG-1000
+  repositories; the pictures are not) and finds the game's name in its system's list the way a cover is found. The
+  helper downloads the picture into `borders/<system>/` under the project's own name, the built-in frame stays up until
+  it lands, and then the game's border replaces it while you play. A game the project has no picture for keeps the
+  default or built-in frame and is not asked about again for 30 days (`<name>.missing`).
+  - **Settings > LIBRARY > Download all borders** fetches the borders of every game in the library in the background;
+    the row shows how many are left.
+  - Downloads need the helper (like the covers) and a network connection.
+  - `border_download=0` in `genplus-ps5.ini` turns downloading off: Auto then uses only what is in the folder.
+  - The project states no licence for its pictures. The app does not include them; it fetches them from the project's
+    GitHub repositories on your console, only with Border on Auto.
+- **The built-in frame** is original art, generated by `ps5/tools/make_default_border.py` (Python with Pillow and numpy;
+  the result, `ps5/frontend/assets/borders/default.png`, is checked in and built into the app).
 
 ## Controls
 
@@ -965,8 +1048,14 @@ The build has three stages:
   background). SEGA, Mega Drive and their logos are trademarks of SEGA; this port is not affiliated with or
   endorsed by SEGA.
 - **Covers:** [libretro-thumbnails](https://github.com/libretro-thumbnails), downloaded on the console, not
-  included. **Names and CRCs:** [libretro-database](https://github.com/libretro/libretro-database) (No-Intro,
-  Redump).
+  included; the names it has are built in (`ps5/frontend/data/cover-index.txt`, `ps5/tools/make_cover_index.py`).
+  **Names and CRCs:** [libretro-database](https://github.com/libretro/libretro-database) (No-Intro, Redump; its TOSEC,
+  hacks, homebrew and Lost Level Archive sets for the dumps No-Intro lacks, `ps5/tools/make_extra_crc.py`).
+  **Covers libretro-thumbnails lacks:** [Hasheous](https://hasheous.org)' public dumps (`ps5/tools/make_db_art.py`);
+  those covers are IGDB's, served by Hasheous, or [TheGamesDB](https://thegamesdb.net)'s, downloaded on the console.
+- **Borders:** [The Bezel Project](https://github.com/thebezelproject)'s per-system repositories, downloaded on the
+  console, not included; their names are built in (`ps5/frontend/data/border-index.txt`, `ps5/tools/make_border_index.py`).
+  The borders, the cover matcher and the download lanes are Snes9x PS5 2.7's, by thatboialex (pull request #3).
 - **Port:** [github.com/MisterTemaki](https://github.com/MisterTemaki).
 
 ---

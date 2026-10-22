@@ -60,6 +60,7 @@ void CopyGameKeys(Settings& to, const Settings& from)
 	to.aspect = from.aspect;
 	to.ntsc = from.ntsc;
 	to.borders = from.borders;
+	to.border = from.border;
 	to.gg_lcd = from.gg_lcd;
 	to.smooth = from.smooth;
 	to.scanlines = from.scanlines;
@@ -111,6 +112,10 @@ bool Settings::LoadFrom(const std::string& path)
 			ntsc = Clamp(n, 0, 4);
 		else if (key == "borders")
 			borders = Clamp(n, 0, 3);
+		else if (key == "border")
+			border = Clamp(n, 0, 2);
+		else if (key == "border_download")
+			border_download = n != 0;
 		else if (key == "gg_lcd")
 			gg_lcd = n != 0;
 		else if (key == "smooth")
@@ -197,6 +202,7 @@ bool Settings::SaveTo(const std::string& path, bool game_keys_only) const
 	fprintf(f, "aspect=%d\n", aspect);
 	fprintf(f, "ntsc=%d\n", ntsc);
 	fprintf(f, "borders=%d\n", borders);
+	fprintf(f, "border=%d\n", border);
 	fprintf(f, "gg_lcd=%d\n", gg_lcd ? 1 : 0);
 	fprintf(f, "smooth=%d\n", smooth ? 1 : 0);
 	fprintf(f, "scanlines=%d\n", scanlines ? 1 : 0);
@@ -224,6 +230,7 @@ bool Settings::SaveTo(const std::string& path, bool game_keys_only) const
 	{
 		fprintf(f, "state_slot=%d\n", state_slot);
 		fprintf(f, "covers_download=%d\n", covers_download ? 1 : 0);
+		fprintf(f, "border_download=%d\n", border_download ? 1 : 0);
 		fprintf(f, "language=%d\n", language);
 		fprintf(f, "renderer=%d\n", renderer);
 		fprintf(f, "perf_log=%d\n", perf_log ? 1 : 0);

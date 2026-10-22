@@ -8,11 +8,16 @@
 //      tools/make_gamedb.py makes it);
 //   3. otherwise the file name, loosely: "super mario world.smc" -> the best entry with that title (USA first,
 //      then World, Europe, Japan).
+// A ROM none of that names (a fan translation, a hack) keeps its file name as the title. For the cover and border
+// lookup it also carries what its CRC is called in the extra table (data/extra-crc.tsv) and the title in its own header
+// (fe_romheader.h, fe_artmatch.h), as Snes9x PS5 2.7 does (pull request #3 by thatboialex).
 // The Master System and the SG-1000 are searched together (and a .sms file may be a Game Gear dump); the table
 // that knows the game decides its system, and so where its cover comes from.
 //
 // SPDX-License-Identifier: MIT
 #pragma once
+
+#include "fe_romheader.h"
 
 #include <cstdint>
 #include <functional>
@@ -53,7 +58,7 @@ struct SystemInfo
 const SystemInfo& Info(System s);
 const char* FamilyName(Family f); // "All games", "Mega Drive", "Sega CD"...
 
-// Creates roms/<folder> and covers/<folder> for every system (MegaDrive, SegaCD, MasterSystem, GameGear, SG1000)
+// Creates roms/<folder>, covers/<folder> and borders/<folder> for every system (MegaDrive, SegaCD, MasterSystem, GameGear, SG1000)
 // and moves covers cached by an older build ("md - <name>.png" in covers/) into their system's folder.
 void PrepareFolders();
 
@@ -71,6 +76,10 @@ struct GameInfo
 	std::string region; // "USA", "Europe"... from the name's tags
 	bool on_usb = false;
 	bool name_by_crc = false; // the name came from the CRC (not the file name)
+	uint32_t crc = 0; // the ROM's CRC32 (without a copier header) when the scan took it; 0 if not
+	std::string crc_name; // the name the ROM's CRC has in the extra table (a translation, a hack), "" if none
+	std::string header_title; // the ROM header's title, only for a ROM no name identified; "" otherwise
+	bool header_japan = false; // that header says Japan only
 };
 
 // The table built into the app.
@@ -86,7 +95,20 @@ std::string Loose(System s, const std::string& file_base, System* found_in);
 // "Sonic The Hedgehog (USA, Europe)" -> "Sonic The Hedgehog"; "Ooze, The (...)" -> "The Ooze"
 std::string Title(const std::string& nointro);
 std::string Region(const std::string& nointro);
+// The name of a dump No-Intro does not list (data/extra-crc.tsv: fan translations, hacks, homebrew, other dump sets),
+// in s's family, or "". Not a No-Intro name: only the cover and border lookup reads it.
+std::string ByExtraCrc(System s, uint32_t crc);
+// Where an online database has the cover of a game libretro-thumbnails lacks (data/db-art.tsv, fe_dbart.h): addresses,
+// tab-separated, found by the ROM's CRC or by the words of its name; "" when no row of its system fits.
+std::string DatabaseCoverUrls(const GameInfo& game);
 } // namespace gamedb
+
+// The GameInfo of a ROM that is being loaded, named exactly as ScanGames names it (the border picks its picture by it).
+GameInfo DescribeGame(const std::string& path);
+
+// The internal header of a Mega Drive ROM or a Sega CD disc (a .zip is read through, a .cue's first track); false if
+// there is none to find (the other systems' headers have no title).
+bool ReadRomHeader(const std::string& path, System system, romheader::Info* info);
 
 // The ROM's CRC32s: of the whole file, and without its header (= whole when it has none). For a .zip, of the ROM
 // inside; *inner_ext gets that ROM's extension. False if it can't be read (a disc image: named by file name).

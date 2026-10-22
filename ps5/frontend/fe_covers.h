@@ -57,11 +57,37 @@ constexpr int kCoverTexH = 512; // level 0 height
 // "Super Metroid (Japan, USA) (En,Ja)" -> its file name in libretro-thumbnails (&*/:`<>?\| become _).
 std::string ThumbnailName(const std::string& nointro);
 
-// The download address of a game's box art: libretro-thumbnails/<its system's repository>/Named_Boxarts/<name>.png
-// (GENPLUS_COVER_URL on the host, with ${repo} and ${name}).
+// The name of a game's box art in libretro-thumbnails (data/cover-index.txt): its No-Intro name when the list has it,
+// else what the cover matcher picks (Snes9x PS5 2.7, pull request #3 by thatboialex: the extra CRC table's name for its
+// dump, spelling, the same words, its header's title: renamed and fan-translated ROMs find their game's cover), else its
+// No-Intro name anyway, else its ROM name when an online database has its art (data/db-art.tsv), else "" (no cover).
+std::string CoverNameFor(const GameInfo& game);
+
+// The entry of `names` (file names without extension, a list that may differ every call: a border pack) that is this
+// game's art, by the same matcher as the cover. "" when none fits.
+std::string MatchPackName(const std::vector<std::string>& names, const GameInfo& game);
+
+// MatchPackName for many games over one list: the indexes are made once, in the constructor, and the list is copied, so it
+// may change afterwards. Match may be called from any thread. usa_on_tie: a name that fits a USA and a Japanese entry alike
+// (a retranslation of a game released in both) gets the USA one, where the cover matcher gives none.
+class PackMatcher
+{
+public:
+	explicit PackMatcher(const std::vector<std::string>& names, bool usa_on_tie = false);
+	~PackMatcher();
+	std::string Match(const GameInfo& game) const;
+
+private:
+	struct Impl;
+	std::unique_ptr<Impl> m_i;
+};
+
+// The download addresses of a game's box art, tab-separated: libretro-thumbnails/<its system's repository>/Named_Boxarts/
+// <CoverNameFor>.png (GENPLUS_COVER_URL on the host, with ${repo} and ${name}), then an online database's, if it has the art
+// and libretro-thumbnails has not.
 std::string CoverUrlFor(const GameInfo& g);
-// Its file in the cover cache, relative to /data/genplus/covers: "<system folder>/<No-Intro name>.png"
-// ("MegaDrive/Sonic The Hedgehog (USA, Europe).png"), so the same name on two systems doesn't collide.
+// Its file in the cover cache, relative to /data/genplus/covers: "<system folder>/<CoverNameFor>.png"
+// ("MegaDrive/Sonic The Hedgehog (USA, Europe).png"), so the same name on two systems doesn't collide; "" for no cover.
 std::string CoverFileFor(const GameInfo& g);
 // Your own cover for a game, or "": covers/<system folder>/<ROM name>.png|jpg, else covers/<ROM name>.png|jpg.
 std::string OwnCover(const GameInfo& g);

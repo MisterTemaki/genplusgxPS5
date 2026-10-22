@@ -7,6 +7,8 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
+#include <vector>
 
 namespace ps5video
 {
@@ -53,6 +55,33 @@ struct Rect
 {
 	int x, y, w, h;
 };
+
+// Art around the picture (the border, fe_border.h; Snes9x PS5 2.7's design, pull request #3 by thatboialex). The picture
+// goes in the border's window; the border is painted into the surface where the surface is cleared (a new geometry, the
+// pause menu's redraw), so a normal frame still changes only the picture rectangle. The CPU draws the rim over the picture
+// every frame; for the GPU, the surface over the picture is transparent but for the rim, premultiplied, so the GPU's picture
+// (any shader) shows through the window and the rim is laid over it. A shader that draws the whole screen itself (the Mega
+// Bezel, ps5gpu::ShaderFullscreen) has a bezel of its own: the border is left out while it is in use.
+// One pixel of the border that lies inside the window: drawn over the picture every frame.
+struct RimPixel
+{
+	uint32_t index; // y * kWidth + x
+	uint32_t pre; // 0xAABBGGRR with A = 0: each colour already multiplied by alpha / 255
+	uint32_t inv; // 255 - alpha
+};
+struct Border
+{
+	std::vector<uint32_t> backdrop; // kWidth * kHeight, 0xAABBGGRR, opaque. Window pixels 0xff000000, rim pixels already on black.
+	Rect window;
+	std::vector<RimPixel> rim; // every pixel inside `window` with alpha 1..255, sorted by index
+};
+// The border DrawFrame uses from the next frame on; null = none (black around the picture). Cheap: swaps a pointer.
+void SetBorder(std::shared_ptr<const Border> border);
+
+// Where the picture goes inside 'bounds' (a border's window): centred, width kept even. Fit takes the aspect ratio by the
+// limiting side, or fills 'bounds' when it has that ratio within 3%; Integer is the largest whole multiple of base_h lines
+// that fits (all of 'bounds' when it is such a multiple already, as a window fitted for Integer scale is); Stretch fills it.
+Rect ComputeRectIn(int base_h, double aspect, Scale scale, const Rect& bounds);
 // aspect: display width / height; base_h: the console's line count before any video filter (the integer
 // scale and the scanlines follow it). smooth: bilinear when the scale isn't whole; scanlines: darkens the
 // last screen row of every console line, CRT style, when each line gets 3 rows or more. Returns the

@@ -13,6 +13,7 @@
 #include "fe_emu.h"
 
 #include "fe_bram.h"
+#include "fe_border.h"
 #include "ProsperoNotify.h"
 #include "fe_games.h"
 #include "fe_i18n.h"
@@ -255,6 +256,7 @@ struct State
 	unsigned pixel_format = RETRO_PIXEL_FORMAT_0RGB1555;
 	std::vector<uint32_t> frame;
 	int fw = 0, fh = 0;
+	int av_w = 0, av_h = 0; // the core's picture size when the game was loaded (before the first frame gives fw, fh)
 	bool new_frame = false;
 	double fps = 60.0, core_aspect = 4.0 / 3.0;
 	double sample_rate = 44100.0;
@@ -913,6 +915,27 @@ double FrameAspect()
 	}
 }
 
+// The picture the border's window is fitted to (fe_border.h): FrameAspect's ratio and the line grid DrawLast uses, from the
+// last frame, or before the first one from the size the core gave at load.
+fe::border::Shape BorderShape()
+{
+	const fe::Settings& cfg = fe::Config();
+	fe::border::Shape shape;
+	shape.valid = true;
+	const int w = g.fw > 0 ? g.fw : g.av_w, h = g.fh > 0 ? g.fh : g.av_h;
+	const int lines = h > 300 ? h / 2 : h;
+	shape.base_h = lines > 0 ? lines : 224;
+	switch (cfg.aspect)
+	{
+		case 1: shape.aspect = w > 0 && lines > 0 ? double(w) / lines : 4.0 / 3.0; break;
+		case 2: shape.aspect = 4.0 / 3.0; break;
+		case 3: shape.aspect = 16.0 / 9.0; break;
+		default: shape.aspect = g.core_aspect; break;
+	}
+	shape.scale = ps5video::Scale(cfg.scale);
+	return shape;
+}
+
 ps5video::Rect DrawLast()
 {
 	if (g.frame.empty())
@@ -1035,7 +1058,10 @@ void ApplySettings()
 	if (!s.rewind)
 		RewindClear();
 	if (g.loaded)
+	{
 		ApplyControllers();
+		fe::border::Reselect(BorderShape()); // the Border setting, or a picture setting the window follows, changed
+	}
 }
 
 bool LoadGame(const std::string& path, std::string* error)
@@ -1139,6 +1165,8 @@ bool LoadGame(const std::string& path, std::string* error)
 	g.fps = av.timing.fps > 1 ? av.timing.fps : 60.0;
 	g.sample_rate = av.timing.sample_rate > 1000 ? av.timing.sample_rate : 44100.0;
 	g.core_aspect = av.geometry.aspect_ratio > 0.1f ? av.geometry.aspect_ratio : 4.0 / 3.0;
+	g.av_w = int(av.geometry.base_width);
+	g.av_h = int(av.geometry.base_height);
 	g.loaded = true;
 	g.wait_release = true;
 	g.prev_p1 = 0;
@@ -1173,6 +1201,7 @@ bool LoadGame(const std::string& path, std::string* error)
 	PerfStart();
 	OrbisLog("[emu] running \"%s\" (%s), %.3f fps, %.0f Hz, aspect %.4f, state size %zu", g.name.c_str(),
 		SystemName().c_str(), g.fps, g.sample_rate, g.core_aspect, retro_serialize_size());
+	fe::border::Select(path, BorderShape()); // reads /data: before the game's first frame
 	return true;
 }
 
@@ -1190,6 +1219,7 @@ void CloseGame()
 	g.frame.clear();
 	g.rom.clear();
 	RewindClear();
+	fe::border::Release();
 	fe::EndGame();
 	ApplySettings();
 	OrbisLog("[emu] game closed");
@@ -1467,6 +1497,7 @@ void PowerCycle()
 
 void RedrawLastFrame()
 {
+	ps5video::InvalidateFrame(); // what is around the picture is drawn again too (black, or the border)
 	DrawLast();
 }
 
@@ -1573,6 +1604,7 @@ FrameResult RunFrame()
 	{
 		g.new_frame = false;
 		const double t_pic = Now();
+		fe::border::Reselect(BorderShape()); // a few comparisons: a new picture shape (rare) fits the border again
 		ps5video::Rect r = DrawLast();
 		ShowOverlays(&r);
 		present_ms = (Now() - t_pic) * 1000.0; // the picture's preparation (a CPU shader included), not the vsync wait

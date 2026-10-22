@@ -9,7 +9,9 @@
 
 #include "fe_emu.h"
 #include "fe_i18n.h"
+#include "fe_coverworker.h"
 #include "fe_settings.h"
+#include "fe_shelf.h"
 #include "fe_text.h"
 
 #include "OrbisPaths.h"
@@ -222,6 +224,7 @@ enum SettingRow
 	S_SHADERPARAMS, // GPU only: the shader's parameters, a screen of their own
 	S_SCALE,
 	S_ASPECT,
+	S_BORDER, // the art around the picture (fe_border.h)
 	S_NTSC,
 	S_BORDERS,
 	S_SMOOTH,
@@ -247,6 +250,7 @@ enum SettingRow
 	S_BTN_DEFAULT,
 	H_LIBRARY,
 	S_COVERS,
+	S_BORDERS_ALL, // Download all borders (an action)
 	H_SYSTEM,
 	S_LANGUAGE,
 	S_RENDERER,
@@ -331,6 +335,40 @@ void UpdateAction()
 	PollUpdate(true);
 }
 
+// Settings::border: nothing, the game's own art from /data/genplus/borders (else a default, else the built-in frame), or the
+// default frame only.
+const char* BorderName(int b)
+{
+	switch (b)
+	{
+		case 1: return "Auto";
+		case 2: return "Default frame";
+		default: return "Off";
+	}
+}
+
+// The Download all borders row: what the helper is doing (borders/progress.txt), or what the last press asked for.
+struct BorderAsk
+{
+	double at = -1000;
+	int queued = 0;
+} g_border_ask;
+
+std::string BorderDownloadValue()
+{
+	const CoverProgress p = ReadBorderProgress();
+	const double age = Now() - g_border_ask.at;
+	if (p.valid && p.left > 0)
+		return Fmt(T("%d left"), int(p.left));
+	if (age < 6.0)
+		return g_border_ask.queued > 0 ? Fmt(T("%d queued"), g_border_ask.queued) : std::string("Nothing to fetch");
+	if (g_border_ask.queued > 0 && !p.valid && age < 120.0)
+		return "Waiting for the helper";
+	if (p.valid && p.fetched > 0)
+		return Fmt(T("%d fetched"), int(p.fetched));
+	return "";
+}
+
 Row SettingRowFor(int s)
 {
 	const Settings& c = Config();
@@ -348,6 +386,7 @@ Row SettingRowFor(int s)
 		}
 		case S_SCALE: return {"Screen size", ps5video::ScaleName(ps5video::Scale(c.scale))};
 		case S_ASPECT: return {"Aspect ratio", emu::kAspects[c.aspect % emu::kAspectCount].name};
+		case S_BORDER: return {"Border", BorderName(c.border)};
 		case S_NTSC: return {"NTSC filter (Blargg)", emu::kNtscFilters[c.ntsc % emu::kNtscFilterCount].name};
 		case S_BORDERS: return {"Show the borders (overscan)", emu::kBorders[c.borders % emu::kBorderCount].name};
 		case S_SMOOTH: return {"Smooth picture", c.shader ? "(shader)" : OnOff(c.smooth), c.shader == 0};
@@ -375,6 +414,7 @@ Row SettingRowFor(int s)
 		case S_BTN_DEFAULT: return {"Default button layout", ""};
 		case H_LIBRARY: return {"LIBRARY", "", true, true};
 		case S_COVERS: return {"Download covers", OnOff(c.covers_download)};
+		case S_BORDERS_ALL: return {"Download all borders", BorderDownloadValue()};
 		case H_SYSTEM: return {"SYSTEM", "", true, true};
 		case S_LANGUAGE: return {"Language", LanguageName(c.language)};
 		case S_RENDERER:
@@ -413,6 +453,7 @@ void ChangeSetting(int s, int dir)
 		case S_SHADER: c.shader = Cycle(std::min(c.shader, ps5video::ShaderCount() - 1), dir, ps5video::ShaderCount()); break;
 		case S_SCALE: c.scale = Cycle(c.scale, dir, int(ps5video::Scale::Count)); break;
 		case S_ASPECT: c.aspect = Cycle(c.aspect, dir, emu::kAspectCount); break;
+		case S_BORDER: c.border = Cycle(c.border, dir, 3); break;
 		case S_NTSC: c.ntsc = Cycle(c.ntsc, dir, emu::kNtscFilterCount); break;
 		case S_BORDERS: c.borders = Cycle(c.borders, dir, emu::kBorderCount); break;
 		case S_SMOOTH: c.smooth = !c.smooth; break;
@@ -518,6 +559,14 @@ void SettingsScreen(bool over_game)
 		{
 			if (n.ok)
 				UpdateAction();
+		}
+		else if (id == S_BORDERS_ALL)
+		{
+			if (n.ok)
+			{
+				g_border_ask.queued = DownloadBorders();
+				g_border_ask.at = Now();
+			}
 		}
 		else if (id == S_SHADERPARAMS)
 		{
