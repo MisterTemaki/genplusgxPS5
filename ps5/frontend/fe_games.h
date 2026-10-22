@@ -120,6 +120,10 @@ bool ReadRomHeader(const std::string& path, System system, romheader::Info* info
 bool RomCrc32(const std::string& path, uint32_t* whole, uint32_t* body, std::string* inner_ext = nullptr,
 	const std::atomic<bool>* cancel = nullptr);
 
+// RomCrc32 through the CRC cache the scan keeps (crc-cache.txt): the ROM is read only when the cache has no CRC for
+// the file as it is now (and never when read is false: a ROM on a share). For the cheats' lookup at a game's start.
+bool CachedRomCrc32(const std::string& path, uint32_t* whole, uint32_t* body, bool read);
+
 // The folders to look for games in: OrbisRomRoots() plus the network shares that are connected (in memory, no I/O).
 std::vector<std::string> RomRoots();
 

@@ -1822,6 +1822,14 @@ for g in test.sms ramcolor.sms; do
 	expect "[ $rc = 0 ] && $CHECK $T/dump/flip00090.ppm 960 540 blue >/dev/null" "Master System $g: blue ($([ $g = test.sms ] && echo 'a Game Genie ROM patch; the one whose reference byte is not there does nothing' || echo 'an Action Replay RAM code at \$C000'))"
 	nosan "$T"
 done
+# a Game Genie code with no reference byte (6 characters): applied at once (no bank switch needed), and switched off in
+# the cheat manager the ROM's own byte comes back (the core used to write 0 there: LD B,\$00, black)
+NOREF=$(ggsms ${S:2} 30 03 | cut -c1-7)
+N=0; { echo "cheats = 1"; cht "Blue (no reference)" "$NOREF" true; } >"$T/root/cheats/MasterSystem/test.cht"
+rc=$(run "$T" "0:0;$(CHEATMENU_AT 100);$(PRESS 180 $CROSS);$(PRESS 190 $CIRCLE);$(PRESS 200 $CIRCLE);$(QUITAT 270)" "90,250" "$T/root/roms/test.sms")
+expect "[ $rc = 0 ] && $CHECK $T/dump/flip00090.ppm 960 540 blue >/dev/null" "Master System test.sms: a Game Genie code with no reference byte ($NOREF) patches the ROM, blue"
+expect "$CHECK $T/dump/flip00250.ppm 960 540 red >/dev/null" "... switched off in the cheat manager: the ROM's own byte is back, red (not 0: black)"
+nosan "$T"
 N=0; { echo "cheats = 1"; cht "Black (Fusion RAM)" "C000:00" true; } >"$T/root/cheats/ramcolor.cht"
 for g in test.gg ramcolor.gg; do
 	rc=$(run "$T" "0:0;$(QUITAT 120)" "90" "$T/root/roms/$g")
@@ -1851,9 +1859,10 @@ T=$(newroot t83cd)
 mkdir -p "$T/root/bios" "$T/root/cheats/Sega - Mega-CD - Sega CD"
 $ROM "$T/root/bios/bios_CD_U.bin" cdbioscheat >/dev/null
 $CDMK "$T/root/roms/Test (USA).cue" --region U >/dev/null
-N=0; { echo "cheats = 2"; cht "Blue" "FF0000:0E00" true; cht "PRG-RAM" "01A000:12" true; } >"$T/root/cheats/Sega - Mega-CD - Sega CD/Test (USA).cht"
+N=0; { echo "cheats = 4"; cht "Blue" "FF0000:0E00" true; cht "PRG-RAM" "01A000:12" true; cht "ROM (Action Replay)" "100000:4E71" true
+  cht "ROM (Game Genie)" "$(ggmd 100000 4E71)" true; } >"$T/root/cheats/Sega - Mega-CD - Sega CD/Test (USA).cht"
 rc=$(run "$T" "0:0;$(QUITAT 200)" "90" "$T/root/roms/Test (USA).cue")
-expect "[ $rc = 0 ] && grep -q 'running \"Test (USA)\" (Sega CD)' $T/root/logs/boot.log && grep -q 'Loaded 2 cheats from .*Sega - Mega-CD - Sega CD/Test (USA).cht' $T/root/logs/boot.log" "a Sega CD disc finds its file in 'Sega - Mega-CD - Sega CD/' (a PRG-RAM code is usable there)"
+expect "[ $rc = 0 ] && grep -q 'running \"Test (USA)\" (Sega CD)' $T/root/logs/boot.log && grep -q 'Loaded 2 cheats from .*Sega - Mega-CD - Sega CD/Test (USA).cht (4 in the file)' $T/root/logs/boot.log" "a Sega CD disc finds its file in 'Sega - Mega-CD - Sega CD/' (a PRG-RAM code is usable there; codes on ROM, which the core ignores for a disc, are not)"
 expect "$CHECK $T/dump/flip00090.ppm 960 540 blue >/dev/null" "Sega CD: the Work-RAM code runs, blue"
 nosan "$T"
 fi

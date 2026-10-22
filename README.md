@@ -27,10 +27,10 @@ from:
 - `ps5/installer` is the installer and helper payload.
 
 Everything outside `ps5/` is the original Genesis Plus GX source, unchanged, apart from this README (the original
-one is [README-Genesis-Plus-GX.md](README-Genesis-Plus-GX.md)) and one fix in `libretro/libretro.c`'s cheats (see
+one is [README-Genesis-Plus-GX.md](README-Genesis-Plus-GX.md)) and two fixes in `libretro/libretro.c`'s cheats (see
 [Cheats](#cheats)). The core (`core/`, with its CD
 hardware, libchdr, Tremor and the Nuked/MAME sound chips) and its libretro port (`libretro/libretro.c`) are
-compiled as they are: all 100 of their C files build for the PS5 without a single change (one fix to the
+compiled as they are: all 100 of their C files build for the PS5 without a single change (two fixes to the
 libretro port's cheats aside). The frontend drives the
 core through its libretro interface -- the most complete of its ports -- and plays the part RetroArch plays on a
 PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
@@ -566,14 +566,20 @@ Every change is saved at once, and the game gets it at once. This is Snes9x PS5'
   Genie** (`xxx-xxx`, `xxx-xxx-xxx` with the byte it replaces), **Action Replay** (`00xx-xxyy`) and Fusion codes.
   Several codes joined with `+` are one cheat. ROM patches are taken back when the cheat is turned off (the
   ROM's own bytes return); RAM values are written every frame. Sega CD codes reach the Work-RAM, PRG-RAM and
-  Word-RAM.
+  Word-RAM; a Sega CD code for any other address (the core patches no ROM for a disc) is unusable.
 - A code the core can't read -- an empty one, a placeholder such as `FFA3BF:??` ("fill in the number"), a code
   cut short -- makes its cheat unusable: it is not listed, and stays in the file as it was. Action Replay codes
   with a 2-digit value (`FF92A7:78`, about 2,800 of the database's Mega Drive codes) are read as the byte they
   mean, on RAM. The core applies at most 150 codes at once; beyond that the screen says so.
-- **One fix in the core's libretro port:** on a little-endian machine (the PS5, a PC) its byte-sized RAM codes for
-  the Mega Drive and Sega CD wrote the byte next to the one meant (the 68000's RAM is kept in 16-bit words);
-  `libretro/libretro.c` now writes it where the 68000 reads it. Word codes and the 8-bit systems were right.
+- **Two fixes in the core's libretro port** (`libretro/libretro.c`):
+  - on a little-endian machine (the PS5, a PC) its byte-sized RAM codes for the Mega Drive and Sega CD wrote the
+    byte next to the one meant (the 68000's RAM is kept in 16-bit words); they now write it where the 68000 reads
+    it. Word codes and the 8-bit systems were right;
+  - Master System, Game Gear and SG-1000 ROM codes with no reference byte (6-character Game Genie, Action Replay,
+    Fusion `AAAA:DD` below `$C000`) were applied only after a bank switch (never on a game that doesn't switch
+    banks), and taking them back -- at the next bank switch, or whenever a cheat was switched -- wrote 0 over the
+    ROM's byte (the code's missing reference). The core now applies them at once and keeps the byte each patch
+    replaces (`orig` in its cheat table), which is what it puts back.
 
 ## Settings
 

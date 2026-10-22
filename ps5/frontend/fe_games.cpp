@@ -1142,6 +1142,13 @@ std::vector<GameInfo> ScanGames(const ScanProgress& progress)
 		OrbisLog("[games]   ... and %zu more", games.size() - kLogged);
 	return games;
 }
+bool CachedRomCrc32(const std::string& path, uint32_t* whole, uint32_t* body, bool read)
+{
+	CrcCache& cache = SharedCrcCache();
+	cache.Ensure();
+	return CachedCrc(cache, path, whole, body, read);
+}
+
 GameInfo DescribeGame(const std::string& path)
 {
 	GameInfo g;
