@@ -360,9 +360,22 @@ $(AGC_STUBS):
 	@mkdir -p $(dir $@)
 	$(PS5_CC) -std=c11 -O2 -fPIC -c -o $@.o $<
 	$(PS5_PAYLOAD_SDK)/bin/prospero-lld --shared -soname $(basename $(notdir $@)).prx -o $@ $@.o
-build/app/radv-link.args: tools/radv_link_args.sh $(RADV_ARCHIVE)
+# The GPU build: PS5_Vulkan's platform layer wraps fclose and fflush (open_memstream) as netfs does. A copy of its
+# archive with those two wrappers renamed goes into the link instead, and netfs_wrap.cpp's own wrappers call them for the
+# FILEs that aren't on a share.
+ifneq ($(PS5_VULKAN),)
+PS5_PLATFORM_LIB = $(PS5_PAYLOAD_SDK)/target/lib/libps5platform.a
+$(PS5_OUT)/port/netfs/netfs_wrap.o: EXTRA_FLAGS = -DNETFS_CHAIN_PS5PLATFORM
+build/app/libps5platform-netfs.a: $(PS5_PLATFORM_LIB)
 	@mkdir -p $(dir $@)
-	bash tools/radv_link_args.sh $(abspath $(PS5_VULKAN)) $(abspath $(PS5_PAYLOAD_SDK)) $(abspath $(RADV_ARCHIVE)) > $@
+	$(PS5_PAYLOAD_SDK)/bin/llvm-objcopy --redefine-sym __wrap_fclose=__ps5platform_wrap_fclose \
+		--redefine-sym __wrap_fflush=__ps5platform_wrap_fflush $< $@
+endif
+build/app/radv-link.args: tools/radv_link_args.sh $(RADV_ARCHIVE) build/app/libps5platform-netfs.a
+	@mkdir -p $(dir $@)
+	bash tools/radv_link_args.sh $(abspath $(PS5_VULKAN)) $(abspath $(PS5_PAYLOAD_SDK)) $(abspath $(RADV_ARCHIVE)) \
+		| sed 's|^$(abspath $(PS5_PLATFORM_LIB))$$|$(abspath build/app/libps5platform-netfs.a)|' > $@
+	grep -qx '$(abspath build/app/libps5platform-netfs.a)' $@
 $(PS5_OUT)/slang_presets.o: $(SLANG_CPP) coreorbis/orbis-shims/ProsperoSlang.h
 	@mkdir -p $(dir $@)
 	$(PS5_CXX) -std=c++17 -O0 -fPIC -Icoreorbis/orbis-shims -c -o $@ $<

@@ -128,9 +128,68 @@ DIR* __wrap_opendir(const char* path)
 
 // ---- FILE* ----
 
+// The GPU build links PS5_Vulkan's platform layer, which wraps fclose and fflush itself (open_memstream): its two wrappers
+// are renamed in a copy of its archive (Makefile: libps5platform-netfs.a), and a FILE that isn't netfs's goes on to them.
+#ifdef NETFS_CHAIN_PS5PLATFORM
+extern "C" int __ps5platform_wrap_fclose(FILE*);
+extern "C" int __ps5platform_wrap_fflush(FILE*);
+#define NETFS_NEXT_FCLOSE __ps5platform_wrap_fclose
+#define NETFS_NEXT_FFLUSH __ps5platform_wrap_fflush
+
+// That link has no libc.a (the system's libc stubs and the platform layer stand in): the two lookups libsmb2 and libnfs
+// make that neither has, answered as they need them. getprotobyname: "tcp" for TCP_NODELAY (and "udp"); getnameinfo:
+// numeric addresses and ports only (libnfs's server discovery; nothing resolves names on the console).
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <cstring>
+
+extern "C" struct protoent* getprotobyname(const char* name)
+{
+	static char tcp_name[] = "tcp", udp_name[] = "udp";
+	static char* no_aliases[] = {nullptr};
+	static protoent tcp = {tcp_name, no_aliases, IPPROTO_TCP};
+	static protoent udp = {udp_name, no_aliases, IPPROTO_UDP};
+	if (name && strcmp(name, "tcp") == 0)
+		return &tcp;
+	if (name && strcmp(name, "udp") == 0)
+		return &udp;
+	return nullptr;
+}
+
+extern "C" int getnameinfo(const struct sockaddr* sa, socklen_t salen, char* host, size_t hostlen, char* serv,
+	size_t servlen, int flags) // (FreeBSD's prototype: size_t lengths)
+{
+	(void)flags;
+	const void* addr = nullptr;
+	unsigned port = 0;
+	if (sa && sa->sa_family == AF_INET && salen >= socklen_t(sizeof(sockaddr_in)))
+	{
+		addr = &reinterpret_cast<const sockaddr_in*>(sa)->sin_addr;
+		port = ntohs(reinterpret_cast<const sockaddr_in*>(sa)->sin_port);
+	}
+	else if (sa && sa->sa_family == AF_INET6 && salen >= socklen_t(sizeof(sockaddr_in6)))
+	{
+		addr = &reinterpret_cast<const sockaddr_in6*>(sa)->sin6_addr;
+		port = ntohs(reinterpret_cast<const sockaddr_in6*>(sa)->sin6_port);
+	}
+	else
+		return EAI_FAMILY;
+	if (host && hostlen > 0 && !inet_ntop(sa->sa_family, addr, host, socklen_t(hostlen)))
+		return EAI_OVERFLOW;
+	if (serv && servlen > 0 && size_t(snprintf(serv, servlen, "%u", port)) >= servlen)
+		return EAI_OVERFLOW;
+	return 0;
+}
+#else
+#define NETFS_NEXT_FCLOSE __real_fclose
+#define NETFS_NEXT_FFLUSH __real_fflush
+#endif
+
 int __wrap_fclose(FILE* f)
 {
-	return vfs::IsFile(f) ? vfs::Fclose(f) : __real_fclose(f);
+	return vfs::IsFile(f) ? vfs::Fclose(f) : NETFS_NEXT_FCLOSE(f);
 }
 
 size_t __wrap_fread(void* p, size_t size, size_t n, FILE* f)
@@ -214,7 +273,7 @@ char* __wrap_fgets(char* s, int n, FILE* f)
 
 int __wrap_fflush(FILE* f)
 {
-	return vfs::IsFile(f) ? 0 : __real_fflush(f); // fflush(NULL) is the real call's
+	return vfs::IsFile(f) ? 0 : NETFS_NEXT_FFLUSH(f); // fflush(NULL) is the real call's
 }
 
 int __wrap_setvbuf(FILE* f, char* buf, int mode, size_t size)
