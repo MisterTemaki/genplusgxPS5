@@ -9,15 +9,19 @@
 #include "fe_menu.h"
 #include "fe_prefetch.h"
 #include "fe_settings.h"
+#include "fe_tabs.h"
 #include "fe_text.h"
 
 #include "OrbisPaths.h"
 #include "ProsperoInput.h"
+#include "ProsperoNotify.h"
 #include "ProsperoSce.h"
 #include "ProsperoCrash.h"
 #include "ProsperoGpu.h"
 #include "ProsperoThread.h"
 #include "ProsperoVideo.h"
+
+#include "netfs.h"
 
 #include <immintrin.h>
 
@@ -31,7 +35,9 @@
 #include <cstring>
 #include <ctime>
 #include <functional>
+#include <map>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -612,6 +618,7 @@ struct ShelfState
 	std::vector<CoverPtr> slots;
 	bool started = false;
 	bool downloads = true;
+	std::string tab_sel[tabs::kCount]; // each storage tab's selected game, kept between visits to the shelf
 };
 ShelfState& S()
 {
@@ -680,6 +687,13 @@ void Loading(const char* text)
 	ps5video::Present(0, 0, 0, 0, true);
 }
 
+// A line already in the player's language (a formatted one), centred.
+void CenterRaw(int y, const std::string& s, int scale, uint32_t color)
+{
+	const std::string fit = FitText(s, scale, W - 200);
+	DrawText((W - TextWidth(fit.c_str(), scale)) / 2, y, fit.c_str(), scale, color);
+}
+
 // The same, with a bar under the text: fraction 0..1, or below 0 for none.
 void LoadingProgress(const char* text, float fraction)
 {
@@ -693,6 +707,91 @@ void LoadingProgress(const char* text, float fraction)
 		ps5video::FillRect(bx, by, int(bw * std::min(1.0f, fraction)), bh, Rgb(150, 125, 255));
 	}
 	ps5video::Present(0, 0, 0, 0, true);
+}
+
+// ---- storage tabs (Internal, USB, Network: fe_tabs.h), and what the shares are doing (the Network tab) ---------
+// From Snes9x PS5 (thatboialex's shelf tabs). The system tabs (Up / Down) work inside the storage tab.
+// A tab's name on the screen (USB is a name; the log keeps tabs::Name in English).
+const char* TabLabel(int t)
+{
+	return t == tabs::Usb ? tabs::Name(t) : T(tabs::Name(t));
+}
+
+// The tab bar, centred at the top: Internal, USB (only with a USB game), Network. L1 / R1 stand at its ends.
+constexpr int kTabsY = 24, kTabsH = 54;
+void DrawTabs(const int counts[tabs::kCount], int active)
+{
+	constexpr int scale = 3, padx = 30, gap = 16, y = kTabsY, h = kTabsH;
+	int widths[tabs::kCount] = {};
+	int total = 0, shown = 0;
+	for (int t = 0; t < tabs::kCount; t++)
+		if (tabs::Shown(counts, t))
+			total += (widths[t] = TextWidth(TabLabel(t), scale) + 2 * padx) + (shown++ ? gap : 0);
+	int x = (W - total) / 2;
+	const uint32_t dim = Rgb(150, 146, 185);
+	if (shown > 1)
+	{
+		DrawText(x - 24 - TextWidth(icon::L1, scale), y + 12, icon::L1, scale, dim);
+		DrawText(x + total + 24, y + 12, icon::R1, scale, dim);
+	}
+	for (int t = 0; t < tabs::kCount; t++)
+	{
+		if (!widths[t])
+			continue;
+		const bool on = t == active;
+		ps5video::FillRect(x, y, widths[t], h, on ? Rgb(78, 62, 170) : Rgb(32, 30, 58));
+		if (on)
+			ps5video::FillRect(x, y + h - 4, widths[t], 4, Rgb(170, 150, 255));
+		DrawText(x + padx, y + 12, TabLabel(t), scale, on ? Rgb(245, 245, 252) : dim);
+		x += widths[t] + gap;
+	}
+}
+
+struct NetLine
+{
+	std::string text; // in the player's language
+	uint32_t color;
+	bool ready; // a share that is up: only an empty Network tab lists those
+};
+struct NetView
+{
+	std::vector<NetLine> lines;
+	int shares = 0, waiting = 0, ready = 0;
+};
+
+// What the shares answer, a line for each share. `since` is when each was first seen connecting.
+NetView NetStatus(std::map<std::string, double>& since, double now)
+{
+	NetView v;
+	for (const NetfsShareInfo& s : netfs_shares())
+	{
+		v.shares++;
+		if (s.state == NetfsState::Idle || s.state == NetfsState::Connecting)
+		{
+			v.waiting++;
+			const double t0 = since.emplace(s.mount_point, now).first->second;
+			char text[256];
+			snprintf(text, sizeof(text), T("Connecting to %s... %d s"), s.label.c_str(), int(now - t0));
+			v.lines.push_back({text, Rgb(205, 200, 235), false});
+			continue;
+		}
+		since.erase(s.mount_point);
+		if (s.state == NetfsState::Ready)
+		{
+			v.ready++;
+			char text[256];
+			snprintf(text, sizeof(text), T("%s: connected, no games found."), s.label.c_str());
+			v.lines.push_back({text, Rgb(205, 200, 235), true});
+		}
+		else
+		{
+			// netfs's own reason stays in English (it is the log's text too)
+			char text[256];
+			snprintf(text, sizeof(text), T("%s is not available."), s.label.c_str());
+			v.lines.push_back({s.error.empty() ? std::string(text) : s.error, Rgb(255, 150, 150), false});
+		}
+	}
+	return v;
 }
 } // namespace
 
@@ -720,6 +819,7 @@ std::string Shelf()
 	// a big library takes a while the first time (each new ROM is read once for its CRC): say how far it is,
 	// redrawn at most ten times a second
 	double drawn = Now();
+	std::vector<std::string> net_seen = netfs_mount_points(); // taken first: a share that connects during the scan is seen below
 	std::vector<GameInfo> games = ScanGames([&drawn](int stage, size_t done, size_t total) {
 		const double now = Now();
 		if (now - drawn < 0.1)
@@ -742,29 +842,86 @@ std::string Shelf()
 		CoversRestartIfNeeded(games, cfg.covers_download, false, Loading);
 	}
 	st.all = games;
-	std::vector<Family> tabs = Tabs(st.all);
-	int tab = 0;
-	for (size_t i = 0; i < tabs.size(); i++)
-		if (int(tabs[i]) == cfg.shelf_family)
-			tab = int(i);
-	if (!same || !st.started || st.downloads != cfg.covers_download || st.family != int(tabs[size_t(tab)]))
-	{
-		st.family = int(tabs[size_t(tab)]);
-		st.games = InFamily(st.all, tabs[size_t(tab)]);
-		st.slots.assign(games.size(), nullptr);
-		st.downloads = cfg.covers_download;
-		GENPLUS_STAGE(Shelf, "cover service start");
-		st.covers.Start(st.games, cfg.covers_download && ShelfDownloads(), cfg.covers_download && BackgroundCovers());
-		st.started = true;
-	}
-	int n = int(st.games.size());
+	NetNaming naming; // names the games on shares by CRC while the shelf is up; stops with it
+	naming.Add(st.all);
+	int naming_seen = 0;
+	double naming_refreshed = Now();
 
-	int sel = 0;
-	for (int i = 0; i < n; i++)
-		if (st.games[size_t(i)].path == cfg.last_rom)
-			sel = i;
-	float pos = float(sel);
-	st.covers.SetFocus(sel);
+	// -- tabs: the storage tab (L1 / R1) and, inside it, the system tab (Up / Down); st.games is what both leave
+	for (const GameInfo& g : st.all)
+		if (g.path == cfg.last_rom)
+			st.tab_sel[tabs::Of(g)] = g.path; // the game played last is where its tab opens
+	int counts[tabs::kCount];
+	int stab = cfg.last_tab;
+	std::vector<Family> ftabs = {Family::All};
+	int tab = 0;
+	int n = 0, sel = 0;
+	float pos = 0;
+	double sel_since = Now();
+	double tab_since = -10.0;
+	bool tab_chosen = false; // the player pressed L1 / R1: an empty tab is then left as it is
+	std::map<std::string, double> net_since; // when each share was first seen connecting
+	NetView net;
+	std::string net_key;
+	bool rescan = false; // Square on the Network tab
+	// The games of the storage tab and the system tab, the selection on `keep` (else the first game). restart: the
+	// cover service starts again even when the list is the same (the games were scanned again).
+	auto Fill = [&](const std::string& keep, bool restart) {
+		std::vector<GameInfo> local;
+		for (const GameInfo& g : st.all)
+			if (tabs::Of(g) == stab)
+				local.push_back(g);
+		ftabs = Tabs(local);
+		tab = 0;
+		for (size_t i = 0; i < ftabs.size(); i++)
+			if (int(ftabs[i]) == cfg.shelf_family)
+				tab = int(i);
+		std::vector<GameInfo> list = InFamily(local, ftabs[size_t(tab)]);
+		bool same_list = list.size() == st.games.size();
+		for (size_t i = 0; same_list && i < list.size(); i++)
+			same_list = list[i].path == st.games[i].path;
+		if (restart || !same_list || !st.started || st.downloads != cfg.covers_download || st.family != int(ftabs[size_t(tab)]))
+		{
+			st.family = int(ftabs[size_t(tab)]);
+			st.games = std::move(list);
+			st.slots.assign(st.games.size(), nullptr);
+			st.downloads = cfg.covers_download;
+			GENPLUS_STAGE(Shelf, "cover service start");
+			st.covers.Start(st.games, cfg.covers_download && ShelfDownloads(), cfg.covers_download && BackgroundCovers());
+			st.started = true;
+		}
+		n = int(st.games.size());
+		sel = 0;
+		for (int i = 0; i < n; i++)
+			if (st.games[size_t(i)].path == keep)
+				sel = i;
+		pos = float(sel);
+		sel_since = Now();
+		if (n > 0)
+			st.covers.SetFocus(sel);
+	};
+	// Opens storage tab `want` (or the tab that fits when it has nothing to show, see tabs::Resolve) on the game
+	// `keep`, or on the one that tab had selected.
+	auto OpenTab = [&](int want, const std::string& keep, bool restart) {
+		tabs::Count(st.all, counts);
+		const bool share_set_up = !netfs_shares().empty();
+		stab = tabs::Resolve(counts, want, tab_chosen || (want == tabs::Network && share_set_up), share_set_up);
+		Fill(keep.empty() ? st.tab_sel[stab] : keep, restart);
+		cfg.last_tab = stab;
+		OrbisLog("[shelf] tab %s: %d game(s)", tabs::Name(stab), n);
+	};
+	// what the shares answer, for the Network tab; true when a line changed (a second ticked, a share came or went)
+	auto RefreshNet = [&](double at) {
+		net = NetStatus(net_since, at);
+		std::string key;
+		for (const NetLine& l : net.lines)
+			key += l.text + "\n";
+		const bool changed = key != net_key;
+		net_key = key;
+		return changed;
+	};
+	OpenTab(cfg.last_tab, "", !same);
+	RefreshNet(Now());
 
 	Backdrop bd_cur, bd_old;
 	float fade = 1.0f; // 0..1: old -> cur
@@ -772,14 +929,13 @@ std::string Shelf()
 	BuildBackdrop(pool, bd_cur, nullptr);
 	GENPLUS_STAGE(Shelf, "first frame");
 	const CoverTex* bd_wanted = nullptr;
-	double sel_since = Now();
-	double tab_since = -10.0;
 
-	Repeat rep_l, rep_r, rep_l1, rep_r1;
+	Repeat rep_l, rep_r, rep_l2, rep_r2;
 	ps5input::Poll();
 	uint32_t prev = ps5input::Pad(0).buttons;
 	double last = Now();
 	bool dirty = true;
+	double next_net = Now() + 0.5;
 	int last_status = -1;
 
 	for (;;)
@@ -788,6 +944,40 @@ std::string Shelf()
 		const double now = Now();
 		const float dt = float(std::min(0.05, now - last));
 		last = now;
+
+		// -- shares: one that connected (or dropped out) after the scan changes what is on the shelf
+		if (now >= next_net)
+		{
+			next_net = now + 0.5;
+			for (const std::string& ev : netfs_take_events())
+			{
+				OrbisLog("[net] %s", ev.c_str());
+				ProsperoNotify("Genesis Plus GX PS5: %s", ev.c_str());
+			}
+			std::vector<std::string> mounts = netfs_mount_points();
+			// names from the CRC pass count when it is done, or a minute after the last look
+			const int resolved = naming.Resolved();
+			const bool named = resolved != naming_seen && (!naming.Busy() || now - naming_refreshed >= 60.0);
+			if (mounts != net_seen || named || rescan)
+			{
+				if (rescan)
+					Loading("Scanning the network shares...");
+				rescan = false;
+				net_seen = mounts;
+				naming_seen = resolved;
+				naming_refreshed = now;
+				const std::string keep = n > 0 ? st.games[size_t(sel)].path : std::string();
+				std::vector<GameInfo> fresh = ScanGames();
+				if (!ShelfDownloads()) // the console: covers of games that came late are fetched by the prefetch of a restart
+					CoversRestartIfNeeded(fresh, cfg.covers_download, false, Loading);
+				st.all = std::move(fresh);
+				naming.Add(st.all);
+				OpenTab(stab, keep, true);
+				dirty = true;
+			}
+			if (RefreshNet(now) && stab == tabs::Network)
+				dirty = true;
+		}
 
 		// -- input
 		ps5input::Poll();
@@ -801,32 +991,29 @@ std::string Shelf()
 				sel = std::max(0, sel - 1);
 			if (rep_r.Fire(cur & SCE_PAD_BUTTON_RIGHT, now))
 				sel = std::min(n - 1, sel + 1);
-			if (rep_l1.Fire(cur & SCE_PAD_BUTTON_L1, now))
+			if (rep_l2.Fire(cur & SCE_PAD_BUTTON_L2, now))
 				sel = std::max(0, sel - 10);
-			if (rep_r1.Fire(cur & SCE_PAD_BUTTON_R1, now))
+			if (rep_r2.Fire(cur & SCE_PAD_BUTTON_R2, now))
 				sel = std::min(n - 1, sel + 10);
 		}
-		if ((down & (SCE_PAD_BUTTON_UP | SCE_PAD_BUTTON_DOWN)) && tabs.size() > 1)
+		if ((down & (SCE_PAD_BUTTON_UP | SCE_PAD_BUTTON_DOWN)) && ftabs.size() > 1)
 		{
 			// another system: the shelf shows its games, the selection stays on the same game if it is there
 			const std::string keep = n > 0 ? st.games[size_t(sel)].path : cfg.last_rom;
 			const int dir = (down & SCE_PAD_BUTTON_DOWN) ? 1 : -1;
-			tab = (tab + dir + int(tabs.size())) % int(tabs.size());
-			st.family = int(tabs[size_t(tab)]);
-			cfg.shelf_family = st.family;
-			st.games = InFamily(st.all, tabs[size_t(tab)]);
-			st.slots.assign(st.games.size(), nullptr);
-			st.covers.Start(st.games, cfg.covers_download && ShelfDownloads(), cfg.covers_download && BackgroundCovers());
-			n = int(st.games.size());
-			sel = 0;
-			for (int i = 0; i < n; i++)
-				if (st.games[size_t(i)].path == keep)
-					sel = i;
-			pos = float(sel);
-			st.covers.SetFocus(sel);
-			sel_since = now;
+			cfg.shelf_family = int(ftabs[size_t((tab + dir + int(ftabs.size())) % int(ftabs.size()))]);
+			Fill(keep, false);
 			tab_since = now;
-			OrbisLog("[shelf] tab %s: %d game(s)", FamilyName(tabs[size_t(tab)]), n);
+			OrbisLog("[shelf] tab %s: %d game(s)", FamilyName(ftabs[size_t(tab)]), n);
+			dirty = true;
+		}
+		if (down & (SCE_PAD_BUTTON_L1 | SCE_PAD_BUTTON_R1))
+		{
+			// another storage tab (Internal, USB, Network): it opens on the game it had selected
+			if (n > 0)
+				st.tab_sel[stab] = st.games[size_t(sel)].path;
+			tab_chosen = true;
+			OpenTab(tabs::Step(counts, stab, (down & SCE_PAD_BUTTON_R1) ? 1 : -1), "", false);
 			dirty = true;
 		}
 		if (sel != old_sel)
@@ -838,6 +1025,8 @@ std::string Shelf()
 		if ((down & SCE_PAD_BUTTON_CROSS) && n > 0)
 		{
 			cfg.last_rom = st.games[size_t(sel)].path;
+			cfg.last_tab = stab;
+			st.tab_sel[stab] = cfg.last_rom;
 			cfg.Save();
 			return st.games[size_t(sel)].path;
 		}
@@ -854,7 +1043,26 @@ std::string Shelf()
 			prev = ps5input::Pad(0).buttons;
 			dirty = true;
 		}
-		if ((down & SCE_PAD_BUTTON_SQUARE) && n > 0)
+		if ((down & SCE_PAD_BUTTON_SQUARE) && stab == tabs::Network)
+		{
+			// scan again, as PSFlycast's Square does on its Network tab: forget the folder listings, and connect the
+			// shares that are down once more (that reloads them all, so the games come back as they connect)
+			bool share_down = false;
+			for (const NetfsShareInfo& s : netfs_shares())
+				share_down = share_down || s.state == NetfsState::Failed || s.state == NetfsState::Dead;
+			netfs_rescan();
+			if (share_down)
+			{
+				naming.Stop(); // it reads files of the shares that are about to be disconnected
+				netfs_reload();
+				net_since.clear();
+			}
+			rescan = !share_down;
+			next_net = now;
+			dirty = true;
+			OrbisLog("[shelf] network tab: scan again%s", share_down ? ", reconnecting" : "");
+		}
+		else if ((down & SCE_PAD_BUTTON_SQUARE) && n > 0)
 		{
 			st.covers.Refetch(sel);
 			st.slots[size_t(sel)] = nullptr;
@@ -869,7 +1077,11 @@ std::string Shelf()
 		if (down & SCE_PAD_BUTTON_OPTIONS)
 		{
 			if (Confirm("Quit Genesis Plus GX PS5?"))
+			{
+				cfg.last_tab = stab;
+				cfg.Save();
 				return "";
+			}
 			ps5input::Poll();
 			prev = ps5input::Pad(0).buttons;
 			dirty = true;
@@ -1021,11 +1233,12 @@ std::string Shelf()
 		DrawText(84, 118, ver, 2, Rgb(150, 145, 180));
 		// the author's line, under the wordmark, as PS5SX2 shows its author's handles (fe_app.cpp)
 		DrawText(84, 150, (std::string(icon::GitHub) + " " + kAuthorGitHub).c_str(), 3, Rgb(160, 152, 200));
-		if (tabs.size() > 1)
+		DrawTabs(counts, stab);
+		if (ftabs.size() > 1)
 		{
-			const std::string label = std::string(icon::DpadUpDown) + "  " + T(FamilyName(tabs[size_t(tab)]));
+			const std::string label = std::string(icon::DpadUpDown) + "  " + T(FamilyName(ftabs[size_t(tab)]));
 			const bool flash = now - tab_since < 1.2;
-			CenterText(flash ? 52 : 60, label, flash ? 5 : 4, flash ? Rgb(245, 240, 255) : Rgb(200, 190, 240));
+			CenterText(flash ? 84 : 90, label, flash ? 5 : 4, flash ? Rgb(245, 240, 255) : Rgb(200, 190, 240));
 			if (flash)
 				dirty = true;
 		}
@@ -1044,11 +1257,37 @@ std::string Shelf()
 				c = char(toupper(uint8_t(c)));
 			if (strcasecmp(ext.c_str(), Info(g.system).name) != 0)
 				sub += ext;
-			if (g.on_usb)
-				sub += "   USB";
 			if (sel_tex && !sel_tex->real)
 				sub += std::string("   ") + T("no cover");
 			CenterText(880, sub, 3, Rgb(175, 170, 205));
+		}
+		else if (stab == tabs::Network)
+		{
+			// PSFlycast's empty Network tab says what the share answered
+			const bool plural = net.shares > 1;
+			CenterText(300, net.shares == 0 ? "No network shares yet."
+						  : net.waiting  ? "Looking for network games..."
+						  : net.ready == 0 ? (plural ? "Could not reach the network shares." : "Could not reach the network share.")
+										   : (plural ? "No games found on the network shares." : "No games found on the network share."),
+				5, Rgb(240, 240, 250));
+			int y = 420;
+			for (size_t i = 0; i < net.lines.size() && i < 4; i++, y += 50)
+				CenterRaw(y, net.lines[i].text, 3, net.lines[i].color);
+			if (net.lines.size() > 4)
+			{
+				char more[64];
+				snprintf(more, sizeof(more), T("and %d more"), int(net.lines.size() - 4));
+				CenterRaw(y, more, 3, Rgb(175, 170, 205));
+			}
+			if (net.shares == 0)
+			{
+				CenterRaw(640, std::string(T("Add one:")) + "  " + icon::Triangle + "  " + T("Settings > Network shares"), 4,
+					Rgb(200, 190, 255));
+				CenterText(710, "SMB or NFS; the pad types the address, user and password.", 3, Rgb(200, 200, 220));
+			}
+			else if (!net.waiting)
+				CenterRaw(660, std::string(icon::Square) + "  " + T("Scan again") + "        " + icon::Triangle + "  " +
+					T("Settings > Network shares"), 3, Rgb(200, 190, 255));
 		}
 		else
 		{
@@ -1060,6 +1299,16 @@ std::string Shelf()
 			CenterText(570, "GameGear  .gg     SG1000  .sg     (cartridges also inside .zip)", 3, Rgb(185, 180, 210));
 			CenterText(640, "Sega CD needs its BIOS in /data/genplus/bios.  Then open Genesis Plus GX PS5 again.", 3,
 				Rgb(200, 200, 220));
+			CenterRaw(720, std::string(T("Games on a NAS or PC?")) + "  " + icon::Triangle + "  " + T("Settings > Network shares"), 3,
+				Rgb(200, 190, 255));
+		}
+		if (stab == tabs::Network && n > 0)
+		{
+			int y = 716; // a share that is connecting or down, with games on the others
+			int shown = 0;
+			for (const NetLine& l : net.lines)
+				if (!l.ready && shown++ < 2)
+					CenterRaw(y + 28 * (shown - 1), l.text, 2, l.color);
 		}
 		// download status
 		if (st.covers.ToDownload() > 0 && !st.covers.Offline() && cfg.covers_download)
@@ -1083,13 +1332,19 @@ std::string Shelf()
 		// hints
 		ps5video::DarkenRect(0, H - 78, W, 78);
 		const std::string sp = "      ";
+		const std::string square = std::string(icon::Square) + " " + T(stab == tabs::Network ? "Scan again" : "Get cover") + sp;
 		const std::string hint = n > 0
 			? std::string(icon::Cross) + " " + T("Play") + sp + icon::DpadLeftRight + " " + T("Browse") + sp + icon::DpadUpDown +
-				" " + T("System") + sp + icon::L1 + " " + icon::R1 + " " + T("Skip 10") + sp + icon::Triangle + " " +
-				T("Settings") + sp + icon::Square + " " + T("Get cover") + sp + icon::Options + " " + T("Quit")
-			: std::string(icon::DpadUpDown) + " " + T("System") + sp + icon::Triangle + " " + T("Settings") + sp +
-				icon::Options + " " + T("Quit");
-		DrawText((W - TextWidth(hint.c_str(), 3)) / 2, H - 60, hint.c_str(), 3, Rgb(205, 200, 228));
+				" " + T("System") + sp + icon::L1 + " " + icon::R1 + " " + T("Tabs") + sp + icon::L2 + " " + icon::R2 + " " +
+				T("Skip 10") + sp + icon::Triangle + " " + T("Settings") + sp + square + icon::Options + " " + T("Quit")
+			: std::string(icon::L1) + " " + icon::R1 + " " + T("Tabs") + sp + (ftabs.size() > 1 ? std::string(icon::DpadUpDown) +
+				" " + T("System") + sp : std::string()) + icon::Triangle + " " + T("Settings") + sp +
+				(stab == tabs::Network ? square : std::string()) + icon::Options + " " + T("Quit");
+		// a long (translated) line a size smaller, then cut
+		const int hint_scale = TextWidth(hint.c_str(), 3) <= W - 40 ? 3 : 2;
+		const std::string hint_fit = FitText(hint, hint_scale, W - 40);
+		DrawText((W - TextWidth(hint_fit.c_str(), hint_scale)) / 2, H - (hint_scale == 3 ? 60 : 54), hint_fit.c_str(), hint_scale,
+			Rgb(205, 200, 228));
 
 		ps5video::Present(0, 0, 0, 0, true);
 	}

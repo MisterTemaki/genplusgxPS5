@@ -1229,6 +1229,50 @@ PY
 	expect "[ $rc = 0 ] && [ ! -s $T/untranslated.txt ]" "$(sed -n 1p $T/root/genplus-ps5.ini >/dev/null; echo language $L): every menu text shown is translated ($(head -c 200 $T/untranslated.txt | tr '\n' '|'))"
 	nosan "$T"
 done
+# the network screens (2.1): Settings, Network shares with a share that does not connect, Add a share, the keyboard on
+# Server (Circle closes it), the share type switched to NFS, Circle asks to discard (Up, Cross: discard), Connect again;
+# back to the shelf: R1 to its Network tab (the share's state), Square scans again, L1 back, quit
+for L in 1 2 3 4; do
+	T=$(newroot t35net_$L)
+	echo "language=$L" >>"$T/root/genplus-ps5.ini"
+	echo "smb://10.0.0.5/games" >"$T/root/shares.txt"
+	$ROM "$T/root/roms/Alpha (USA).md" ntsc >/dev/null
+	key() { pad="$pad;$f:$1;$((f + 2)):0"; f=$((f + ${2:-6})); } # one press, then the next one $2 flips later
+	pad="0:0;20:$TRIANGLE;22:0"; f=30
+	for i in $(seq 1 7); do key $UP; done
+	key $CROSS 20; key $DOWN; key $CROSS 20; key $CROSS 20; key $CIRCLE 20
+	key $UP; key $RIGHT 20; key $CIRCLE 20; key $UP; key $CROSS 20
+	key $DOWN; key $CROSS 20; key $CIRCLE 20; key $CIRCLE 30
+	key 800 30; key 8000 60; key 400 30
+	key $OPTIONS 10; key $CROSS 10
+	rm -f $T/missing.txt
+	rc=$(GENPLUS_HOST_REALTIME=1 GENPLUS_HOST_NETFS_DIR=$T/nothing GENPLUS_HOST_I18N_MISSING=$T/missing.txt run "$T" "$pad" "")
+	python3 - $T/missing.txt $PWD/frontend/fe_i18n.cpp > $T/untranslated.txt <<'PY'
+import re, sys
+src = open(sys.argv[2], encoding='utf-8').read()
+translated = set(re.findall(r'"((?:[^"\\]|\\.)*)"', src))
+spec = re.compile(r'%(?:%|[-+ #0]*\d*(?:\.\d+)?(?:hh|h|ll|l|z)?[diouxXeEfgGcsp])')
+formats = [re.compile('^' + ''.join('.*' if spec.fullmatch(part) else re.escape(part)
+                                    for part in re.split('(' + spec.pattern + ')', f)) + '$')
+           for f in translated if '%' in f]
+# (the first walk's names and rules, and the network screens' names)
+names = {'Alpha (USA)', 'A', 'X', 'Y', 'Z', 'Mode', 'L1', 'R1', 'OPTIONS', 'MAME YM2612', 'English', 'Español',
+         'Português (Brasil)', 'Français', 'Deutsch', 'Off', 'S-Video', 'RGB', '4:3', '16:9', 'GPU', 'CPU',
+         'SMB (Windows, Samba, NAS)', 'NFS', 'USB'}
+try:
+    lines = open(sys.argv[1], encoding='utf-8').read().splitlines()
+except FileNotFoundError:
+    lines = []
+for t in lines:
+    if t in translated or t in names or not re.search('[A-Za-z]{2}', t) or any(f.match(t) for f in formats):
+        continue
+    if re.search(r'Mega Drive {3}MD', t) or t.startswith('↣') or t.endswith(' 1.8') or re.search(r'\(\w+ \d\)$', t):
+        continue
+    print(t)
+PY
+	expect "[ $rc = 0 ] && grep -q 'network tab: scan again' $T/root/logs/boot.log && [ ! -s $T/untranslated.txt ]" "language $L: the network screens and the Network tab are translated ($(head -c 200 $T/untranslated.txt | tr '\n' '|'))"
+	nosan "$T"
+done
 # English stays the default: no setting, English on the screen (the texts pass through as they are)
 T=$(newroot t35en)
 $ROM "$T/root/roms/test.md" ntsc >/dev/null
@@ -1390,6 +1434,293 @@ a, b = load(sys.argv[1]), load(sys.argv[2])
 diff = sum(1 for i in range(0, len(a), 3 * 7) if abs(a[i] - b[i]) + abs(a[i + 1] - b[i + 1]) + abs(a[i + 2] - b[i + 2]) > 60)
 sys.exit(0 if diff * 7 * 3 < len(a) * 0.01 else 1)
 PY" "... the same picture as the CPU's (under 1% of pixels differ)"
+nosan "$T"
+fi
+
+# ---- network shares and the shelf's storage tabs (2.1, from Snes9x PS5: thatboialex's pull request #3) ----
+# host/netfs_dirbackend.cpp turns every address in shares.txt into a folder on this machine (GENPLUS_HOST_NETFS_DIR);
+# the app is the real one. The shelf looks for a connected share twice a second of wall time, so these runs are
+# paced (GENPLUS_HOST_REALTIME). netfs's own unit tests (test-netfs here; test-nfs, test-tabs and smb-test in the
+# Makefile) need no app.
+L1=400; R1=800; SQUARE=8000
+
+if want 39; then
+echo "== 39. netfs: share addresses and redaction, routing, the libc --wrap layer, minizip and zlib on a share, the watchdog (in-memory share)"
+NETFS_OUT=$(ASAN_OPTIONS=detect_leaks=1 timeout 120 "$PWD/build/host/test-netfs" 2>&1)
+NETFS_RC=$?
+echo "$NETFS_OUT" | tail -3 | sed 's/^/  /'
+expect "[ $NETFS_RC = 0 ]" "netfs: every check passes"
+expect "! echo \"\$NETFS_OUT\" | grep -q 'runtime error\|Sanitizer'" "no sanitizer reports"
+fi
+
+if want 40; then
+echo "== 40. games on a share: on the shelf, a cartridge started from it, Sega CD discs (cue, chd) and MD+ CD audio streamed from it"
+# a. a Mega Drive cartridge on an SMB share: listed, started from the shelf (read whole), its save state on the console
+T=$(newroot t40)
+mkdir -p "$T/share/MegaDrive"
+$ROM "$T/share/MegaDrive/Net Game (USA).md" ntsc >/dev/null
+echo "smb://10.0.0.5/games" >"$T/root/shares.txt"
+rc=$(GENPLUS_HOST_REALTIME=1 MAXFLIPS=900 GENPLUS_HOST_NETFS_DIR="$T/share" run "$T" "0:0;150:$CROSS;152:0;280:$CROSS;320:0;340:$L2UP;345:0;$(QUITAT 400)" "300")
+expect "[ $rc = 0 ]" "exit code 0 (got $rc)"
+expect "grep -q '\[net\] 1 share(s) in shares.txt' $T/root/logs/boot.log" "shares.txt was read"
+expect "grep -q '\[net\] Connected to smb://10.0.0.5/games' $T/root/logs/boot.log" "the share connected"
+expect "grep -q 'loading /smb/10.0.0.5/games/MegaDrive/Net Game (USA).md' $T/root/logs/boot.log && grep -q 'running \"Net Game (USA)\" (Mega Drive)' $T/root/logs/boot.log" "the game was started from the share"
+expect "$CHECK $T/dump/flip00300.ppm 960 540 green >/dev/null" "it runs (Cross -> green)"
+expect "[ -f '$T/root/states/MegaDrive/Net Game (USA).state1' ] && [ ! -e '$T/share/states' ] && [ \$(find $T/share -type f | wc -l) = 1 ]" "its state is on the console, nothing is written to the share"
+expect "grep -q 'last_rom=/smb/10.0.0.5/games/MegaDrive/Net Game (USA).md' $T/root/genplus-ps5.ini" "the shelf remembers it"
+nosan "$T"
+# b. Sega CD discs on an NFS share (the BIOS on the console): the core reads the disc through netfs while it runs
+for kind in cue chd; do
+	T=$(newroot t40$kind)
+	mkdir -p "$T/root/bios" "$T/share/SegaCD"
+	$ROM "$T/root/bios/bios_CD_U.bin" cdbios >/dev/null
+	$CD "$T/share/SegaCD/Test (USA).$kind" --region U >/dev/null
+	echo "nfs://10.0.0.5/export/sega" >"$T/root/shares.txt"
+	rc=$(GENPLUS_HOST_REALTIME=1 MAXFLIPS=900 GENPLUS_HOST_NETFS_DIR="$T/share" run "$T" "0:0;150:$CROSS;152:0;300:$CROSS;340:0;$(QUITAT 400)" "290,330")
+	expect "[ $rc = 0 ] && grep -q 'loading /nfs/10.0.0.5/export/sega/SegaCD/Test (USA).$kind' $T/root/logs/boot.log && grep -q 'running \"Test (USA)\" (Sega CD)' $T/root/logs/boot.log" "$kind on a share: the disc boots as a Sega CD game"
+	expect "$CHECK $T/dump/flip00290.ppm 960 540 red >/dev/null && $CHECK $T/dump/flip00330.ppm 960 540 green >/dev/null" "$kind on a share: the BIOS runs (red), the pad reaches it (green)"
+	nosan "$T"
+done
+# c. CD audio while the game runs: an MD+ cartridge and its disc on the share, track 2 streamed (netfs's blocks and read-ahead)
+for kind in cue chd; do
+	T=$(newroot t40mdp$kind)
+	mkdir -p "$T/share"
+	[ $kind = chd ] && echo "add_on=1" >>"$T/root/genplus-ps5.ini"
+	$ROM "$T/share/mdp.md" mdplus >/dev/null
+	$CD "$T/share/mdp.$kind" --loop >/dev/null
+	echo "smb://10.0.0.5/games" >"$T/root/shares.txt"
+	rc=$(GENPLUS_HOST_AUDIO_DUMP=$T/audio.raw GENPLUS_HOST_REALTIME=1 MAXFLIPS=900 GENPLUS_HOST_NETFS_DIR="$T/share" run "$T" "0:0;150:$CROSS;152:0;$(QUITAT 500)" "")
+	expect "[ $rc = 0 ] && $TONE $T/audio.raw >$T/tone.txt" "MD+ $kind on a share: 1000 Hz left, 1500 Hz right, in tune and clean"
+	sed 's/^/    /' $T/tone.txt
+	nosan "$T"
+done
+# the same with 200 ms on every read, as a slow link: the game waits for the block it seeks to (logged), then plays on
+T=$(newroot t40slow)
+mkdir -p "$T/share"
+$ROM "$T/share/mdp.md" mdplus >/dev/null
+$CD "$T/share/mdp.cue" --loop >/dev/null
+echo "smb://10.0.0.5/games" >"$T/root/shares.txt"
+rc=$(GENPLUS_HOST_NETFS_DELAY_MS=200 GENPLUS_HOST_AUDIO_DUMP=$T/audio.raw GENPLUS_HOST_REALTIME=1 MAXFLIPS=900 GENPLUS_HOST_NETFS_DIR="$T/share" run "$T" "0:0;150:$CROSS;152:0;$(QUITAT 500)" "")
+expect "[ $rc = 0 ] && grep -q 'smb://10.0.0.5/games: waited for mdp.bin in realtime (#1)' $T/root/logs/boot.log" "a slow link: the wait for the disc is logged"
+expect "$TONE $T/audio.raw >$T/tone.txt" "and the track still plays at its pitch (after a gap while it waited)"
+sed 's/^/    /' $T/tone.txt
+nosan "$T"
+# d. a share that does not connect: the shelf still works and says why; a game on it that is gone says so too
+T=$(newroot t40f)
+echo "smb://10.0.0.5/games" >"$T/root/shares.txt"
+rc=$(GENPLUS_HOST_REALTIME=1 GENPLUS_HOST_NETFS_DIR="$T/nothing" run "$T" "0:0;100:$OPTIONS;102:0;110:$CROSS;112:0" "")
+expect "[ $rc = 0 ] && grep -q '\[games\] 0 ROM(s)' $T/root/logs/boot.log" "a share that does not connect leaves the shelf working"
+expect "grep -q '\[net\] The folder games is not on 10.0.0.5' $T/root/logs/boot.log" "and says why"
+nosan "$T"
+# e. shares.txt: written with its comments when missing; a bad line is named in the log, never its text
+T=$(newroot t40n)
+rc=$(run "$T" "0:0;$(SHELFQUIT_AT 40)" "")
+expect "[ $rc = 0 ] && grep -q '^# Genesis Plus GX PS5 network shares' $T/root/shares.txt && ! grep -q '^smb://\|^nfs://' $T/root/shares.txt" "a commented shares.txt is written when there is none"
+printf 'smb://bob@10.0.0.5/games?password=Hunter2x\nftp://10.0.0.5/x?password=Hunter2y\n' >"$T/root/shares.txt"
+rc=$(GENPLUS_HOST_NETFS_DIR="$T/nothing" run "$T" "0:0;$(SHELFQUIT_AT 40)" "")
+expect "[ $rc = 0 ] && grep -q 'shares.txt line 2: ' $T/root/logs/boot.log" "a line that is not an address is named by its number"
+expect "! grep -rq 'Hunter2' $T/root/logs $T/out.txt" "no password in a log or on stdout"
+nosan "$T"
+fi
+
+if want 41; then
+echo "== 41. a game on a share with a made-up file name is named by its CRC in the background, its cover follows; a zip's system too"
+T=$(newroot t41)
+MDREPO=Sega_-_Mega_Drive_-_Genesis
+mkdir -p "$T/srv/$MDREPO/Named_Boxarts" "$T/share/misc"
+python3 - "$T/srv/$MDREPO/Named_Boxarts" <<'PY'
+import sys
+from PIL import Image
+Image.new('RGB', (512, 357), (0, 255, 0)).save(sys.argv[1] + '/Streets of Rage 2 (Europe).png')
+open(sys.argv[1] + '/Streets of Rage 2 (USA).png', 'w').write('Streets of Rage 2 (Europe).png')
+PY
+$ROM "$T/share/sor2.md" ntsc >/dev/null
+python3 tests/forge_crc.py "$T/share/sor2.md" $(grep -P "^md\t[0-9A-F]{8}\tStreets of Rage 2 \(USA\)$" frontend/data/nointro.tsv | cut -f2) >/dev/null
+# a Game Gear game in a zip, in a folder whose name says nothing: listed as a Mega Drive game until its zip is read
+$ROM "$T/gg.gg" >/dev/null
+python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w'); z.write(sys.argv[2],'Pocket.gg'); z.close()" "$T/share/misc/pocket.zip" "$T/gg.gg"
+echo "smb://10.0.0.5/games" >"$T/root/shares.txt"
+PORT=18082
+(cd "$T/srv" && exec python3 -m http.server $PORT --bind 127.0.0.1 >/dev/null 2>&1) &
+SRVPID=$!
+sleep 1
+rc=$(OFFLINE= COVER_URL="http://127.0.0.1:$PORT/\${repo}/Named_Boxarts/\${name}.png" GENPLUS_HOST_REALTIME=1 MAXFLIPS=420 GENPLUS_HOST_NETFS_DIR="$T/share" \
+	run "$T" "0:0" "400")
+kill $SRVPID 2>/dev/null
+expect "grep -q '\[games\] naming 2 network ROM(s) by CRC' $T/root/logs/boot.log" "the pass was started for the two games the scan did not read"
+expect "grep -q 'sor2.md \[md\] -> \"Streets of Rage 2 (USA)\" (by CRC)' $T/root/logs/boot.log" "the next scan names the cartridge by its CRC"
+expect "grep -q 'misc/pocket.zip \[md\]' $T/root/logs/boot.log && grep -q 'misc/pocket.zip \[gg\]' $T/root/logs/boot.log" "the zip moves to the Game Gear once its directory was read"
+expect "grep -q '/smb/10.0.0.5/games/sor2.md' $T/root/covers/crc-cache.txt && grep -q '^sys:/smb/10.0.0.5/games/misc/pocket.zip' $T/root/covers/crc-cache.txt" "both are kept for the next start"
+expect "[ -f '$T/root/covers/MegaDrive/Streets of Rage 2 (USA).png' ]" "the cover of the game named late was downloaded"
+nosan "$T"
+# the next start reads nothing over the network: the cache names both
+rc=$(GENPLUS_HOST_REALTIME=1 MAXFLIPS=200 GENPLUS_HOST_NETFS_DIR="$T/share" run "$T" "0:0" "")
+expect "[ \$(grep -c 'sor2.md \[md\] -> \"Streets of Rage 2 (USA)\" (by CRC)' $T/root/logs/boot.log) -ge 1 ] && grep -q 'misc/pocket.zip \[gg\]' $T/root/logs/boot.log && ! grep -q 'naming .* network ROM' $T/root/logs/boot.log" "the next start: named from the cache, no pass needed"
+nosan "$T"
+fi
+
+if want 42; then
+echo "== 42. the Network shares screen: add, change, test and remove a share with the on-screen keyboard (Settings, Network shares)"
+# tests/osk_pad.py turns the steps into a pad script (the keyboard's layout is its model). Settings is Triangle on the shelf; Up seven
+# times from Shader reaches Network shares (Back, Updates, Debug logs, Performance log, Renderer, Language, Network shares). Every run
+# ends: Circle twice, OPTIONS, Cross.
+net_pad() { python3 tests/osk_pad.py 2>/dev/null; }
+net_quit='press CIRCLE 2
+press OPTIONS
+wait 8
+press CROSS'
+# a. a new share: server, share, folder with a space, user, a password that needs Shift and both kinds of symbols
+T=$(newroot t42)
+mkdir -p "$T/share"
+PAD=$(net_pad <<STEPS
+frame 40
+press TRIANGLE
+press UP 7
+press CROSS
+press CROSS
+field 10.0.0.5
+press DOWN
+field games
+press DOWN
+field Mega Drive
+press DOWN
+field jason
+press DOWN
+field Zq9@pw&1
+press DOWN 6
+press CROSS
+wait 20
+$net_quit
+STEPS
+)
+rc=$(GENPLUS_HOST_NETFS_DIR="$T/share" run "$T" "$PAD" "")
+expect "[ $rc = 0 ]" "exit code 0 (got $rc)"
+expect "[ \"\$(tail -n 1 $T/root/shares.txt)\" = 'smb://jason@10.0.0.5/games/Mega%20Drive?password=Zq9%40pw%261' ]" "the share is written as one escaped line"
+expect "grep -q '^# Genesis Plus GX PS5 network shares' $T/root/shares.txt" "after the comments the app wrote"
+expect "grep -q '\[net\] shares.txt: saved smb://jason@10.0.0.5/games/Mega%20Drive' $T/root/logs/boot.log" "the log says what was saved"
+expect "grep -q '\[net\] Connected to smb://jason@10.0.0.5/games/Mega%20Drive' $T/root/logs/boot.log" "and the share connects at once, without a restart"
+expect "! grep -rqE 'Zq9|pw%26' $T/root/logs $T/out.txt" "the password is in no log and not on stdout"
+nosan "$T"
+# b. change one share (its note stays), test the connection, remove the other
+T=$(newroot t42b)
+mkdir -p "$T/share/Sub" && echo x >"$T/share/a.md"
+printf '# my shares\nsmb://old/x   # my note\nnfs://nas/export/sega\n' >"$T/root/shares.txt"
+PAD=$(net_pad <<STEPS
+frame 40
+press TRIANGLE
+press UP 7
+press CROSS
+press CROSS
+press DOWN 3
+field bob
+press DOWN 6
+press CROSS
+wait 120
+press DOWN
+press CROSS
+wait 20
+press DOWN
+press CROSS
+press DOWN 7
+press CROSS
+wait 8
+press UP
+press CROSS
+wait 20
+$net_quit
+STEPS
+)
+rc=$(GENPLUS_HOST_REALTIME=1 GENPLUS_HOST_NETFS_DIR="$T/share" run "$T" "$PAD" "")
+expect "[ $rc = 0 ]" "exit code 0 (got $rc)"
+expect "[ \"\$(cat $T/root/shares.txt)\" = \"\$(printf '# my shares\nsmb://bob@old/x   # my note')\" ]" "one line changed (note kept), the other was removed, the comment stays"
+expect "grep -q '\[net\] test of smb://bob@old/x: Connected. The folder has 1 file and 1 folder.' $T/root/logs/boot.log" "Test connection reports what is in the folder"
+expect "grep -q '\[net\] shares.txt: removed nfs://nas/export/sega' $T/root/logs/boot.log" "the removal is logged"
+nosan "$T"
+# c. Save with nothing filled in changes nothing
+T=$(newroot t42c)
+PAD=$(net_pad <<STEPS
+frame 40
+press TRIANGLE
+press UP 7
+press CROSS
+press CROSS
+press DOWN 10
+press CROSS
+wait 8
+press CIRCLE
+$net_quit
+STEPS
+)
+rc=$(run "$T" "$PAD" "")
+expect "[ $rc = 0 ] && ! grep -q '^smb://\|^nfs://' $T/root/shares.txt" "an empty form is not saved (and Circle on a form with no changes leaves it at once)"
+nosan "$T"
+fi
+
+if want 43; then
+echo "== 43. shelf tabs: Internal and Network apart, L1 / R1 between them, the last tab kept, Square on Network scans again; L2 / R2 skip 10"
+# The tab bar sits at the top: the open tab's pill is the accent colour (78,62,170), the other one dark (32,30,58); (795,30) is
+# inside the Internal pill and (1120,30) inside the Network pill (above their names). The share connects within a few seconds of wall time.
+tab_pills() { # dump the active tab: Internal | Network
+	local f=$1 on=$2
+	if [ "$on" = Internal ]; then
+		$CHECK "$f" 795 30 78 62 170 >/dev/null && $CHECK "$f" 1120 30 32 30 58 >/dev/null
+	else
+		$CHECK "$f" 795 30 32 30 58 >/dev/null && $CHECK "$f" 1120 30 78 62 170 >/dev/null
+	fi
+}
+T=$(newroot t43)
+mkdir -p "$T/share"
+$ROM "$T/root/roms/Local Game (USA).md" ntsc >/dev/null
+$ROM "$T/share/Net Game (USA).md" ntsc >/dev/null
+echo "smb://10.0.0.5/games" >"$T/root/shares.txt"
+rc=$(GENPLUS_HOST_REALTIME=1 GENPLUS_HOST_NETFS_DIR="$T/share" run "$T" "0:0;220:$R1;222:0;300:$SQUARE;302:0;380:$L1;382:0;420:$OPTIONS;422:0;430:$CROSS;432:0" "200,260,400")
+expect "[ $rc = 0 ]" "exit code 0 (got $rc)"
+expect "tab_pills $T/dump/flip00200.ppm Internal" "the shelf opens on the Internal tab"
+expect "tab_pills $T/dump/flip00260.ppm Network" "R1 goes to the Network tab"
+expect "tab_pills $T/dump/flip00400.ppm Internal" "L1 comes back"
+expect "grep -q '\[shelf\] tab Network: 1 game' $T/root/logs/boot.log" "the Network tab holds the game on the share"
+expect "grep -q '\[shelf\] tab Internal: 1 game' $T/root/logs/boot.log" "and the Internal tab only the local one"
+expect "grep -q '\[shelf\] network tab: scan again\$' $T/root/logs/boot.log" "Square on the Network tab scans again"
+expect "[ \$(grep -c '\[games\] 2 ROM' $T/root/logs/boot.log) -ge 2 ]" "and the scan found both games again"
+expect "grep -q 'last_tab=0' $T/root/genplus-ps5.ini" "the tab left on is kept (Internal)"
+nosan "$T"
+T=$(newroot t43b)
+mkdir -p "$T/share"
+$ROM "$T/root/roms/Local Game (USA).md" ntsc >/dev/null
+$ROM "$T/share/Net Game (USA).md" ntsc >/dev/null
+echo "smb://10.0.0.5/games" >"$T/root/shares.txt"
+echo "last_tab=2" >>"$T/root/genplus-ps5.ini"
+rc=$(GENPLUS_HOST_REALTIME=1 GENPLUS_HOST_NETFS_DIR="$T/share" run "$T" "0:0;300:$OPTIONS;302:0;310:$CROSS;312:0" "40,250")
+expect "[ $rc = 0 ] && tab_pills $T/dump/flip00040.ppm Network" "with last_tab=2 and a share set up the shelf opens on Network, before the share is up"
+expect "tab_pills $T/dump/flip00250.ppm Network" "and stays there when its games arrive"
+expect "grep -q 'last_tab=2' $T/root/genplus-ps5.ini" "and keeps the tab on quit"
+T=$(newroot t43c)
+$ROM "$T/root/roms/Local Game (USA).md" ntsc >/dev/null
+echo "last_tab=2" >>"$T/root/genplus-ps5.ini"
+rc=$(run "$T" "0:0;60:$R1;62:0;70:$SQUARE;72:0;90:$L1;92:0;120:$OPTIONS;122:0;130:$CROSS;132:0" "40,80,110")
+expect "[ $rc = 0 ] && tab_pills $T/dump/flip00040.ppm Internal" "last_tab=2 without a share set up opens on the games instead"
+expect "tab_pills $T/dump/flip00080.ppm Network && grep -q '\[shelf\] tab Network: 0 game' $T/root/logs/boot.log" "R1 shows the empty Network tab"
+expect "grep -q '\[shelf\] network tab: scan again\$' $T/root/logs/boot.log" "Square on it scans again, with no share to ask"
+expect "tab_pills $T/dump/flip00110.ppm Internal && grep -q 'last_tab=0' $T/root/genplus-ps5.ini" "L1 goes back and the tab is kept"
+nosan "$T"
+T=$(newroot t43d)
+echo "smb://10.0.0.5/games" >"$T/root/shares.txt"
+rc=$(GENPLUS_HOST_REALTIME=1 GENPLUS_HOST_NETFS_DIR="$T/nothing" run "$T" "0:0;150:$SQUARE;152:0;330:$OPTIONS;332:0;340:$CROSS;342:0" "100")
+expect "[ $rc = 0 ] && tab_pills $T/dump/flip00100.ppm Network" "a share that is down leaves a shelf with no games on the Network tab"
+expect "grep -q '\[shelf\] network tab: scan again, reconnecting' $T/root/logs/boot.log" "Square connects it again"
+expect "[ \$(grep -c 'The folder games is not on 10.0.0.5' $T/root/logs/boot.log) -ge 2 ]" "and says why each time"
+nosan "$T"
+# the system tabs (Up / Down) work inside the storage tab; L2 / R2 skip 10 games (L1 / R1 did before 2.1)
+T=$(newroot t43e)
+mkdir -p "$T/share"
+for i in $(seq -w 1 12); do $ROM "$T/root/roms/Game $i (USA).md" ntsc >/dev/null; done
+$ROM "$T/root/roms/Pocket (USA).gg" >/dev/null
+$ROM "$T/share/Net Pocket (USA).gg" >/dev/null
+echo "smb://10.0.0.5/games" >"$T/root/shares.txt"
+# (back to the shelf from a game: the pause menu, Up twice, Cross)
+rc=$(GENPLUS_HOST_REALTIME=1 MAXFLIPS=900 GENPLUS_HOST_NETFS_DIR="$T/share" run "$T" "0:0;150:$R2;152:0;170:$CROSS;172:0;$(SEQ 230 $L3R3 $UP $UP $CROSS);320:$R1;322:0;340:$DOWN;342:0;380:$CROSS;382:0;$(QUITAT 480)" "")
+expect "[ $rc = 0 ] && grep -q 'loading .*/Game 11 (USA).md' $T/root/logs/boot.log" "R2 skips 10 games (Game 01 -> Game 11)"
+expect "grep -q '\[shelf\] tab Game Gear: 1 game' $T/root/logs/boot.log && grep -q 'loading /smb/10.0.0.5/games/Net Pocket (USA).gg' $T/root/logs/boot.log" "on the Network tab, Down shows its Game Gear game, which runs"
 nosan "$T"
 fi
 

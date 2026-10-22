@@ -28,6 +28,7 @@
 #include "ProsperoVideo.h"
 
 #include "libretro.h"
+#include "netfs.h"
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -1114,8 +1115,10 @@ bool LoadGame(const std::string& path, std::string* error)
 	g.fw = g.fh = 0;
 	g.in.clear();
 	g.mute = false;
+	netfs_prepare_game(path); // a game on a share: its folder listed first (nothing for any other path)
 	if (!retro_load_game(&gi))
 	{
+		netfs_end_game();
 		OrbisLog("[emu] could not start %s", path.c_str());
 		if (error)
 		{
@@ -1171,6 +1174,9 @@ bool LoadGame(const std::string& path, std::string* error)
 	LoadSram();
 	fe_bram_start();
 	PerfStart();
+	// from here nothing on this thread waits for a share: a Sega CD disc on one streams through netfs's cache
+	// (blocks read ahead of the core), a cartridge was read whole by retro_load_game
+	netfs_set_realtime(true);
 	OrbisLog("[emu] running \"%s\" (%s), %.3f fps, %.0f Hz, aspect %.4f, state size %zu", g.name.c_str(),
 		SystemName().c_str(), g.fps, g.sample_rate, g.core_aspect, retro_serialize_size());
 	return true;
@@ -1190,6 +1196,8 @@ void CloseGame()
 	g.frame.clear();
 	g.rom.clear();
 	RewindClear();
+	netfs_set_realtime(false);
+	netfs_end_game();
 	fe::EndGame();
 	ApplySettings();
 	OrbisLog("[emu] game closed");
