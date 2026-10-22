@@ -13,6 +13,7 @@
 #include "fe_emu.h"
 
 #include "fe_bram.h"
+#include "fe_cheats.h"
 #include "ProsperoNotify.h"
 #include "fe_games.h"
 #include "fe_i18n.h"
@@ -1174,6 +1175,7 @@ bool LoadGame(const std::string& path, std::string* error)
 	LoadSram();
 	fe_bram_start();
 	PerfStart();
+	fe::cheats::GameStarted(g.path, g.name, g.system); // its .cht, the cheats that are on given to the core
 	// from here nothing on this thread waits for a share: a Sega CD disc on one streams through netfs's cache
 	// (blocks read ahead of the core), a cartridge was read whole by retro_load_game
 	netfs_set_realtime(true);
@@ -1191,6 +1193,7 @@ void CloseGame()
 	SaveSram(false);
 	SaveBram();
 	fe_bram_stop();
+	fe::cheats::GameClosing(); // the core gives the ROM its bytes back
 	retro_unload_game(); // (its own Sega CD backup RAM write is off: fe_bram_stop)
 	g.loaded = false;
 	g.frame.clear();
@@ -1609,6 +1612,9 @@ FrameResult RunFrame()
 				usleep(useconds_t((next - Now()) * 1e6));
 		}
 	}
+
+	// -- a cheat file changed while the game runs (one stat a second): its cheats replace the running ones
+	fe::cheats::Frame();
 
 	// -- battery save, every 3 s when it changed; the log, now and then
 	if (now >= g.next_sram_check)

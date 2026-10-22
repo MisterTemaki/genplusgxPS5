@@ -1195,12 +1195,17 @@ for L in 1 2 3 4; do
 	T=$(newroot t35_$L)
 	echo "language=$L" >>"$T/root/genplus-ps5.ini"
 	$ROM "$T/root/roms/Alpha (USA).md" ntsc >/dev/null
-	# the settings screen scrolled through, then a game's pause menu
+	mkdir -p "$T/root/cheats/MegaDrive" # the cheat manager's list (its empty screen: group 85)
+	printf 'cheats = 1\ncheat0_desc = "Infinite lives"\ncheat0_code = "FFA3BF:0003"\ncheat0_enable = false\n' \
+		>"$T/root/cheats/MegaDrive/Alpha (USA).cht"
+	# the settings screen scrolled through, then a game's pause menu (the cheat manager on the way: Down seven times)
 	pad="0:0;20:$TRIANGLE;22:0"; f=30
 	for i in $(seq 1 48); do pad="$pad;$f:$DOWN;$((f + 2)):0"; f=$((f + 6)); done
 	pad="$pad;$((f + 4)):$CIRCLE;$((f + 6)):0;$((f + 20)):$CROSS;$((f + 22)):0"; f=$((f + 120))
 	pad="$pad;$f:$L3R3;$((f + 2)):0"; f=$((f + 10))
-	for i in $(seq 1 11); do pad="$pad;$f:$DOWN;$((f + 2)):0"; f=$((f + 8)); done
+	for i in $(seq 1 7); do pad="$pad;$f:$DOWN;$((f + 2)):0"; f=$((f + 8)); done
+	pad="$pad;$f:$CROSS;$((f + 2)):0;$((f + 20)):$CIRCLE;$((f + 22)):0"; f=$((f + 30))
+	for i in $(seq 1 5); do pad="$pad;$f:$DOWN;$((f + 2)):0"; f=$((f + 8)); done
 	pad="$pad;$((f + 10)):$UP;$((f + 12)):0;$((f + 20)):$CROSS;$((f + 22)):0"
 	rm -f $T/missing.txt
 	rc=$(GENPLUS_HOST_I18N_MISSING=$T/missing.txt run "$T" "$pad" "")
@@ -1722,6 +1727,194 @@ rc=$(GENPLUS_HOST_REALTIME=1 MAXFLIPS=900 GENPLUS_HOST_NETFS_DIR="$T/share" run 
 expect "[ $rc = 0 ] && grep -q 'loading .*/Game 11 (USA).md' $T/root/logs/boot.log" "R2 skips 10 games (Game 01 -> Game 11)"
 expect "grep -q '\[shelf\] tab Game Gear: 1 game' $T/root/logs/boot.log && grep -q 'loading /smb/10.0.0.5/games/Net Pocket (USA).gg' $T/root/logs/boot.log" "on the Network tab, Down shows its Game Gear game, which runs"
 nosan "$T"
+fi
+
+# ---- the cheats (2.1): libretro .cht files, the cheat manager, the reload when the file changes -------------------------
+SQUARE=8000; L1=400; R1=800
+CHEATS_TEST=$PWD/build/host/cheats-test
+# the pause menu's Cheat manager (Down seven times), opened at frame $1
+CHEATMENU_AT() { local f=$1 i out="$1:$L3R3;$(($1 + 2)):0"; f=$((f + 10)); for i in 1 2 3 4 5 6 7; do out="$out;$f:$DOWN;$((f + 2)):0"; f=$((f + 8)); done; echo "$out;$f:$CROSS;$((f + 2)):0"; }
+PRESS() { echo "$1:$2;$(($1 + 2)):0"; } # frame button
+# the codes, built for an address of the test ROMs: Mega Drive Game Genie (address, value), Master System Game Genie
+# (address, value, the byte it replaces); checked against the core's own decoder (cheats-test decode)
+ggmd() { python3 - "$1" "$2" <<'PY'
+import sys
+a, d = int(sys.argv[1], 16), int(sys.argv[2], 16)
+n = [(d >> 3) & 31, ((d & 7) << 2) | ((a >> 14) & 3), (a >> 9) & 31, ((a >> 20) & 15) | (((a >> 8) & 1) << 4),
+     ((d >> 12) & 1) | (((a >> 16) & 15) << 1), ((d >> 15) & 1) | (((d >> 8) & 15) << 1), (((d >> 13) & 3) << 3) | ((a >> 5) & 7), a & 31]
+g = "ABCDEFGHJKLMNPRSTVWXYZ0123456789"
+print("".join(g[x] for x in n[:4]) + "-" + "".join(g[x] for x in n[4:]))
+PY
+}
+ggsms() { python3 - "$1" "$2" "$3" <<'PY'
+import sys
+a, d, r = int(sys.argv[1], 16), int(sys.argv[2], 16), int(sys.argv[3], 16)
+x = r ^ 0xBA
+x = ((x << 2) | (x >> 6)) & 0xFF
+print("%02X%X-%02X%X-%X0%X" % (d, (a >> 8) & 15, a & 0xFF, ((a >> 12) & 15) ^ 15, x >> 4, x & 15))
+PY
+}
+# where a byte sequence is in a ROM (hex), plus an offset
+romaddr() { python3 -c "import sys; print('%06X' % (open(sys.argv[1],'rb').read().find(bytes.fromhex(sys.argv[2])) + int(sys.argv[3])))" "$1" "$2" "$3"; }
+cht() { # desc code enable, as libretro-database writes them
+	printf 'cheat%d_desc = "%s"\ncheat%d_code = "%s"\ncheat%d_enable = %s\n\n' "$N" "$1" "$N" "$2" "$N" "$3"; N=$((N + 1))
+}
+
+if want 80; then
+echo "== 80. cheats: the codes as the core reads them, its patches applied and taken back, .cht files, a game's file found"
+OUT=$(ASAN_OPTIONS=detect_leaks=1 timeout 120 "$CHEATS_TEST" 2>&1)
+expect "[ -x $CHEATS_TEST ] && echo \"\$OUT\" | grep -q ', 0 failed'" "the unit test (build/host/cheats-test): $(echo "$OUT" | tail -1) $(echo "$OUT" | grep FAIL | head -3 | tr '\n' '|')"
+# the codes the next groups build, read back by the core's decoder
+expect "[ \"\$($CHEATS_TEST decode md $(ggmd 000234 0000))\" = 000234:0000:00 ]" "a Mega Drive Game Genie code built here ($(ggmd 000234 0000)) is \$000234 = \$0000 to the core"
+expect "[ \"\$($CHEATS_TEST decode sms $(ggsms 0013 30 03))\" = 000013:0030:03 ]" "a Master System Game Genie code built here ($(ggsms 0013 30 03)) is \$0013 = \$30 if \$03 to the core"
+expect "[ \"\$($CHEATS_TEST decode md FF0001:00)\" = FF0001:0000:00 ] && [ \"\$($CHEATS_TEST decode sms 00C0-0030)\" = FF0000:0030:00 ]" "RAM codes: FF0001:00 is the byte \$00 at \$FF0001; 00C0-0030 is \$30 at \$C000"
+fi
+
+if want 81; then
+echo "== 81. cheats, Mega Drive: libretro-database's folder, the cheat manager (switch, all off, all on, page), the ROM given back"
+T=$(newroot t81)
+$ROM "$T/root/roms/Alpha.md" ntsc >/dev/null
+A=$(romaddr "$T/root/roms/Alpha.md" 323C000E 2) # move.w #\$000E,d1: the backdrop's red
+DB="$T/root/cheats/Sega - Mega Drive - Genesis"
+mkdir -p "$DB"
+N=0
+{ echo "cheats = 3"; echo; cht "Blue backdrop" "$A:0E00" false; cht "Fill in the number" "FFA3BF:??" false
+  cht "Black backdrop (Game Genie)" "$(ggmd $A 0000)" false; } >"$DB/Alpha (USA).cht"
+cp "$DB/Alpha (USA).cht" "$T/orig.cht"
+# red; Blue on (Cross); + Black on (Down, Cross); all off (Square); all on (Triangle), R1 (to the last), Black off
+P="0:0;$(CHEATMENU_AT 100);$(PRESS 180 $CROSS);$(PRESS 190 $CIRCLE);$(PRESS 200 $CIRCLE)"
+P="$P;$(CHEATMENU_AT 260);$(PRESS 340 $DOWN);$(PRESS 350 $CROSS);$(PRESS 360 $CIRCLE);$(PRESS 370 $CIRCLE)"
+P="$P;$(CHEATMENU_AT 430);$(PRESS 510 $SQUARE);$(PRESS 520 $CIRCLE);$(PRESS 530 $CIRCLE)"
+P="$P;$(CHEATMENU_AT 590);$(PRESS 670 $TRIANGLE);$(PRESS 680 $R1);$(PRESS 690 $CROSS);$(PRESS 700 $CIRCLE);$(PRESS 710 $CIRCLE)"
+rc=$(run "$T" "$P;$(QUITAT 770)" "90,175,240,410,570,750" "$T/root/roms/Alpha.md")
+OWN="$T/root/cheats/MegaDrive/Alpha.cht"
+expect "[ $rc = 0 ] && grep -q 'Loaded 2 cheats from .*Sega - Mega Drive - Genesis/Alpha (USA).cht (3 in the file)' $T/root/logs/boot.log" "Alpha.md finds 'Sega - Mega Drive - Genesis/Alpha (USA).cht': 2 usable cheats of 3 (FFA3BF:?? isn't a code)"
+expect "$CHECK $T/dump/flip00090.ppm 960 540 red >/dev/null" "the cheats are off: red"
+expect "$CHECK $T/dump/flip00240.ppm 960 540 blue >/dev/null" "Blue backdrop switched on: the ROM patched (an Action Replay code), blue"
+expect "$CHECK $T/dump/flip00410.ppm 960 540 black >/dev/null" "Black backdrop (a Game Genie code) on too: the later patch of the same word wins, black"
+expect "$CHECK $T/dump/flip00570.ppm 960 540 red >/dev/null" "Square (all off): the ROM's own word is back, red"
+expect "$CHECK $T/dump/flip00750.ppm 960 540 blue >/dev/null" "Triangle (all on), R1 to the last cheat, Cross: Black off again, blue"
+expect "[ -f '$OWN' ] && grep -q 'cheat0_enable = true' '$OWN' && grep -q 'cheat1_code = \"FFA3BF:??\"' '$OWN' && grep -q 'cheat1_enable = false' '$OWN' && grep -q 'cheat2_enable = false' '$OWN' && grep -q '^cheats = 3' '$OWN'" "each switch saved in cheats/MegaDrive/Alpha.cht: all three cheats, the unusable one as it was"
+expect "cmp -s '$DB/Alpha (USA).cht' $T/orig.cht" "libretro-database's file is left as it was"
+nosan "$T"
+rc=$(run "$T" "0:0;$(QUITAT 120)" "90" "$T/root/roms/Alpha.md")
+expect "[ $rc = 0 ] && grep -q 'Loaded 2 cheats from .*cheats/MegaDrive/Alpha.cht' $T/root/logs/boot.log && $CHECK $T/dump/flip00090.ppm 960 540 blue >/dev/null" "the next start: the game's own file, Blue backdrop on from the first frame"
+nosan "$T"
+fi
+
+if want 82; then
+echo "== 82. cheats, Master System and Game Gear: Game Genie ROM patches (with the byte they replace), RAM codes"
+T=$(newroot t82)
+$ROM "$T/root/roms/test.sms" >/dev/null
+$ROM "$T/root/roms/test.gg" >/dev/null
+$ROM "$T/root/roms/ramcolor.sms" cheat >/dev/null
+$ROM "$T/root/roms/ramcolor.gg" cheat >/dev/null
+mkdir -p "$T/root/cheats/MasterSystem" "$T/root/cheats/Sega - Game Gear"
+S=$(romaddr "$T/root/roms/test.sms" 0603 1) # LD B,\$03: red
+G=$(romaddr "$T/root/roms/test.gg" 060F 1) # LD B,\$0F: red
+N=0; { echo "cheats = 2"; cht "Wrong reference" "$(ggsms ${S:2} 0C 55)" true; cht "Blue" "$(ggsms ${S:2} 30 03)" true; } >"$T/root/cheats/MasterSystem/test.cht"
+N=0; { echo "cheats = 1"; cht "Black" "$(ggsms ${G:2} 00 0F)" true; } >"$T/root/cheats/Sega - Game Gear/test.cht"
+N=0; { echo "cheats = 1"; cht "Blue (Action Replay)" "00C0-0030" true; } >"$T/root/cheats/ramcolor.cht"
+for g in test.sms ramcolor.sms; do
+	rc=$(run "$T" "0:0;$(QUITAT 120)" "90" "$T/root/roms/$g")
+	expect "[ $rc = 0 ] && $CHECK $T/dump/flip00090.ppm 960 540 blue >/dev/null" "Master System $g: blue ($([ $g = test.sms ] && echo 'a Game Genie ROM patch; the one whose reference byte is not there does nothing' || echo 'an Action Replay RAM code at \$C000'))"
+	nosan "$T"
+done
+N=0; { echo "cheats = 1"; cht "Black (Fusion RAM)" "C000:00" true; } >"$T/root/cheats/ramcolor.cht"
+for g in test.gg ramcolor.gg; do
+	rc=$(run "$T" "0:0;$(QUITAT 120)" "90" "$T/root/roms/$g")
+	expect "[ $rc = 0 ] && $CHECK $T/dump/flip00090.ppm 960 540 black >/dev/null" "Game Gear $g: black ($([ $g = test.gg ] && echo "a Game Genie ROM patch, from 'Sega - Game Gear/'" || echo 'a RAM code at \$C000'))"
+	nosan "$T"
+done
+fi
+
+if want 83; then
+echo "== 83. cheats on RAM: Mega Drive words and bytes written every frame; Sega CD (Work-RAM, 'Sega - Mega-CD - Sega CD/')"
+T=$(newroot t83)
+$ROM "$T/root/roms/ram.md" cheat >/dev/null
+mkdir -p "$T/root/cheats/MegaDrive"
+N=0; { echo "cheats = 1"; cht "Blue" "FF0000:0E00" true; } >"$T/root/cheats/MegaDrive/ram.cht"
+rc=$(run "$T" "0:0;$(QUITAT 120)" "90" "$T/root/roms/ram.md")
+expect "[ $rc = 0 ] && $CHECK $T/dump/flip00090.ppm 960 540 blue >/dev/null" "FF0000:0E00: the word the game reads its colour from, blue"
+nosan "$T"
+# a byte: libretro-database's 2-digit Action Replay codes, and a 4-digit one with a value under \$100
+for code in FF0001:00 FF0001:0000; do
+	N=0; { echo "cheats = 1"; cht "Black" "$code" true; } >"$T/root/cheats/MegaDrive/ram.cht"
+	rc=$(run "$T" "0:0;$(QUITAT 120)" "90" "$T/root/roms/ram.md")
+	expect "[ $rc = 0 ] && $CHECK $T/dump/flip00090.ppm 960 540 black >/dev/null" "$code: the byte at \$FF0001 (red \$000E -> \$0000), not its neighbour: black"
+done
+nosan "$T"
+CDMK="python3 $PWD/tests/make_test_cd.py"
+T=$(newroot t83cd)
+mkdir -p "$T/root/bios" "$T/root/cheats/Sega - Mega-CD - Sega CD"
+$ROM "$T/root/bios/bios_CD_U.bin" cdbioscheat >/dev/null
+$CDMK "$T/root/roms/Test (USA).cue" --region U >/dev/null
+N=0; { echo "cheats = 2"; cht "Blue" "FF0000:0E00" true; cht "PRG-RAM" "01A000:12" true; } >"$T/root/cheats/Sega - Mega-CD - Sega CD/Test (USA).cht"
+rc=$(run "$T" "0:0;$(QUITAT 200)" "90" "$T/root/roms/Test (USA).cue")
+expect "[ $rc = 0 ] && grep -q 'running \"Test (USA)\" (Sega CD)' $T/root/logs/boot.log && grep -q 'Loaded 2 cheats from .*Sega - Mega-CD - Sega CD/Test (USA).cht' $T/root/logs/boot.log" "a Sega CD disc finds its file in 'Sega - Mega-CD - Sega CD/' (a PRG-RAM code is usable there)"
+expect "$CHECK $T/dump/flip00090.ppm 960 540 blue >/dev/null" "Sega CD: the Work-RAM code runs, blue"
+nosan "$T"
+fi
+
+if want 84; then
+echo "== 84. cheats follow their file (2.7): codes added while the game runs or the cheat manager is open apply at once"
+# the game runs paced (GENPLUS_HOST_REALTIME) while this script writes the .cht as an FTP upload would (all of it at once)
+T=$(newroot t84)
+$ROM "$T/root/roms/live.md" cheat >/dev/null
+mkdir -p "$T/root/cheats/MegaDrive"
+CHT=$T/root/cheats/MegaDrive/live.cht
+putcht() { cat >"$T/new.cht" && mv "$T/new.cht" "$CHT"; }
+waitlog() { for i in $(seq 1 300); do grep -q "$1" "$T/root/logs/boot.log" 2>/dev/null && return 0; sleep 0.1; done; return 1; }
+( GENPLUS_HOST_REALTIME=1 MAXFLIPS=2000 run "$T" "0:0;$(QUITAT 1500)" "1480" "$T/root/roms/live.md" >"$T/rc.txt" ) &
+GAME=$!
+waitlog '\[emu\] frame'
+expect "grep -q '\[cheats\] no .cht for live' $T/root/logs/boot.log" "the game started with no cheat file"
+N=0; { echo "cheats = 1"; cht "Blue" "FF0000:0E00" true; } | putcht
+waitlog 'reloaded: 1 cheats'
+expect "grep -q 'reloaded: 1 cheats from live.cht' $T/root/logs/boot.log" "a cheat file that appeared while the game runs was loaded"
+N=0; { echo "cheats = 2"; cht "Blue" "FF0000:0E00" true; cht "Black" "FF0000:00" false; } | putcht
+waitlog 'reloaded: 2 cheats'
+expect "grep -q 'reloaded: 2 cheats from live.cht' $T/root/logs/boot.log" "a cheat added to the file was loaded"
+echo "this is not a cheat file" | putcht
+waitlog 'has no usable cheat'
+expect "grep -q 'live.cht has no usable cheat: the 2 that run stay' $T/root/logs/boot.log" "a file with no usable cheat leaves the running cheats alone"
+N=0; { echo "cheats = 3"; cht "Blue" "FF0000:0E00" false; cht "Black" "FF0000:00" true; cht "Extra" "FF0100:0001" true; } | putcht
+waitlog 'reloaded: 3 cheats'
+expect "grep -q 'reloaded: 3 cheats from live.cht' $T/root/logs/boot.log" "and the file written next is loaded too"
+wait $GAME
+rc=$(cat "$T/rc.txt")
+expect "[ $rc = 0 ]" "exit code 0 (got $rc)"
+expect "$CHECK $T/dump/flip01480.ppm 960 540 black >/dev/null" "the last file's cheats run: Blue off, Black on (black)"
+expect "grep -q 'cheat2_desc = \"Extra\"' $CHT && ! grep -q 'saved' <(grep '\[cheats\]' $T/root/logs/boot.log)" "the file is left as written (closing the game writes nothing over it)"
+nosan "$T"
+# the cheat manager open, empty: libretro-database's file copied meanwhile shows up in it; Cross switches its cheat on
+T=$(newroot t84b)
+$ROM "$T/root/roms/live2.md" cheat >/dev/null
+mkdir -p "$T/root/cheats/Sega - Mega Drive - Genesis"
+P="0:0;$(CHEATMENU_AT 60);$(PRESS 700 $CROSS);$(PRESS 710 $CIRCLE);$(PRESS 720 $CIRCLE)"
+( GENPLUS_HOST_REALTIME=1 MAXFLIPS=2000 run "$T" "$P;$(QUITAT 800)" "780" "$T/root/roms/live2.md" >"$T/rc.txt" ) &
+GAME=$!
+waitlog '\[emu\] frame'
+sleep 3 # the cheat manager is open (frame 130 on), showing "No cheats found"
+N=0; { echo "cheats = 1"; cht "Blue" "FF0000:0E00" false; } >"$T/new.cht"
+mv "$T/new.cht" "$T/root/cheats/Sega - Mega Drive - Genesis/Live2 (USA).cht"
+wait $GAME
+rc=$(cat "$T/rc.txt")
+expect "[ $rc = 0 ] && grep -q 'reloaded: 1 cheats from Live2 (USA).cht' $T/root/logs/boot.log" "the file copied while the cheat manager is open is listed in it"
+expect "$CHECK $T/dump/flip00780.ppm 960 540 blue >/dev/null && grep -q 'cheat0_enable = true' '$T/root/cheats/MegaDrive/live2.cht'" "Cross switched its cheat on (blue), saved in cheats/MegaDrive/live2.cht"
+nosan "$T"
+fi
+
+if want 85; then
+echo "== 85. the cheat manager's empty screen in every language"
+for L in 1 2 3 4; do
+	T=$(newroot t85_$L)
+	echo "language=$L" >>"$T/root/genplus-ps5.ini"
+	$ROM "$T/root/roms/test.md" ntsc >/dev/null
+	rc=$(GENPLUS_HOST_I18N_MISSING=$T/missing.txt run "$T" "0:0;$(CHEATMENU_AT 60);$(PRESS 150 $CIRCLE);$(PRESS 160 $CIRCLE);$(QUITAT 180)" "140" "$T/root/roms/test.md")
+	expect "[ $rc = 0 ] && [ -f $T/dump/flip00140.ppm ] && ! grep -q -e 'cheat' -e 'Cheat' -e '\.cht' -e 'Back' -e 'FTP' $T/missing.txt" "language $L: the empty cheat manager is translated ($(grep -i -e cheat -e cht -e Back $T/missing.txt | head -3 | tr '\n' '|'))"
+	nosan "$T"
+done
 fi
 
 echo

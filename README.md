@@ -27,9 +27,11 @@ from:
 - `ps5/installer` is the installer and helper payload.
 
 Everything outside `ps5/` is the original Genesis Plus GX source, unchanged, apart from this README (the original
-one is [README-Genesis-Plus-GX.md](README-Genesis-Plus-GX.md)). The core (`core/`, with its CD
+one is [README-Genesis-Plus-GX.md](README-Genesis-Plus-GX.md)) and one fix in `libretro/libretro.c`'s cheats (see
+[Cheats](#cheats)). The core (`core/`, with its CD
 hardware, libchdr, Tremor and the Nuked/MAME sound chips) and its libretro port (`libretro/libretro.c`) are
-compiled as they are: all 100 of their C files build for the PS5 without a single change. The frontend drives the
+compiled as they are: all 100 of their C files build for the PS5 without a single change (one fix to the
+libretro port's cheats aside). The frontend drives the
 core through its libretro interface -- the most complete of its ports -- and plays the part RetroArch plays on a
 PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
 
@@ -274,6 +276,7 @@ running. Send `GenesisPlusGXPS5.elf` and open the icon again.
 | `/data/genplus/saves` | battery saves, one folder per system (`saves/MegaDrive/<game>.srm`, written within 3 seconds of a change and when the game closes, an erase included) and the Sega CD backup RAM (`scd_U.brm`..., also written within 3 seconds of a change) |
 | `/data/genplus/games` | the settings of games that have their own (`games/<system>/<game>.ini`, see [Settings](#settings)) |
 | `/data/genplus/states` | save states, one folder per system: `states/MegaDrive/<game>.state1` to `.state10`, each with the one it replaced as `.prev` (a Mega Drive and a Master System game of the same name never share one; saves of the first 1.0 builds, directly in `saves/` and `states/`, are moved there the first time the game starts) |
+| `/data/genplus/cheats` | cheats (libretro `.cht` files): the game's own in `cheats/<system>/<game>.cht`, libretro-database's folders as they are (see [Cheats](#cheats)) |
 | `/data/genplus/covers/<system>` | downloaded covers and your own, one folder per system (the same names as in `roms/`); `covers/` itself keeps `wanted.txt` and `crc-cache.txt` |
 | `/data/genplus/logs` | `boot.log` (the app), `installer.log` (installer/helper), `helper.log` (the helper the app starts), and the previous session's `.prev.log` files |
 | `/data/genplus/genplus-ps5.ini` | the menu settings |
@@ -420,7 +423,7 @@ unless the settings choose one.
 
 | Combination | Does |
 |---|---|
-| L3 + R3 | pause menu: save / load state, load the previous state, slot, settings, settings for this game, reset, power cycle, back to the list, quit |
+| L3 + R3 | pause menu: save / load state, load the previous state, slot, settings, settings for this game, cheat manager, reset, power cycle, back to the list, quit |
 | L2 + Up / Down | save / load the state in the current slot |
 | L2 + Left / Right | change slot (1-10) |
 | hold R2 | fast forward (speed in the settings) |
@@ -428,6 +431,45 @@ unless the settings choose one.
 
 Two players: player 2 is the second signed-in user's controller. With a 4-player adapter (Settings, CONTROLS),
 up to four: players 2 to 4 are the other signed-in users. The light bar shows the player.
+
+## Cheats
+
+The **cheat manager** (L3 + R3 in a game, then "Cheat manager") lists the game's cheats: **Cross** (or Left /
+Right) turns one on or off, **Triangle** turns them all on, **Square** all off, **L1 / R1** go a page up / down.
+Every change is saved at once, and the game gets it at once. This is Snes9x PS5's cheat manager, by
+[thatboialex](https://github.com/thatboialex), with its reload from Snes9x PS5 2.7.
+
+- **The files** are libretro's (RetroArch's) `.cht` files, the ones of
+  [libretro-database](https://github.com/libretro/libretro-database)'s `cht/` folder: copy them to
+  `/data/genplus/cheats/` over FTP. Either copy the database's folders as they are -- `Sega - Mega Drive -
+  Genesis`, `Sega - Mega-CD - Sega CD`, `Sega - Master System - Mark III`, `Sega - Game Gear`, `Sega - SG-1000`
+  -- or put a game's file in `cheats/` or `cheats/<system>/` (`MegaDrive`, `SegaCD`, `MasterSystem`, `GameGear`,
+  `SG1000`).
+- **A game finds its file** by name: `cheats/<system>/<game>.cht` (the ROM's file name) first; otherwise the
+  closest name in those folders (and in the ROM's own folder, unless it is on a network share), by the ROM's
+  file name or its official No-Intro / Redump name: `Sonic The Hedgehog (USA, Europe).cht` is found for
+  `sonic.md`. A complete file is preferred to its "(Game Genie)" / "(Action Replay)" subsets, the game's region to
+  another, and nothing is taken when the names are not close (never another game's cheats).
+- **Your choices** are kept in `cheats/<system>/<game>.cht`, written when a cheat is turned on or off (all the
+  file's cheats, in the same format); the database's file is never changed. That file is used from then on.
+- **It loads by itself:** while the game runs (and while the cheat manager is open) the app looks at the file
+  once a second. A cheat added over FTP is applied with no restart ("Cheats updated" on the screen); a file still
+  being copied is read once it stops changing; a file with no usable cheat leaves the running ones alone. With
+  the cheat manager open and no cheats yet, a file copied for the game shows up in it.
+- **The codes** are read by Genesis Plus GX itself, as RetroArch gives them to it (its libretro port's
+  `retro_cheat_set`): for Mega Drive and Sega CD games, **Game Genie** (`ABCD-EFGH`) and **Pro Action Replay**
+  (`FFxxxx:yyyy`, RAM, and `xxxxxx:yyyy`, ROM) codes; for Master System, Game Gear and SG-1000 games, **Game
+  Genie** (`xxx-xxx`, `xxx-xxx-xxx` with the byte it replaces), **Action Replay** (`00xx-xxyy`) and Fusion codes.
+  Several codes joined with `+` are one cheat. ROM patches are taken back when the cheat is turned off (the
+  ROM's own bytes return); RAM values are written every frame. Sega CD codes reach the Work-RAM, PRG-RAM and
+  Word-RAM.
+- A code the core can't read -- an empty one, a placeholder such as `FFA3BF:??` ("fill in the number"), a code
+  cut short -- makes its cheat unusable: it is not listed, and stays in the file as it was. Action Replay codes
+  with a 2-digit value (`FF92A7:78`, about 2,800 of the database's Mega Drive codes) are read as the byte they
+  mean, on RAM. The core applies at most 150 codes at once; beyond that the screen says so.
+- **One fix in the core's libretro port:** on a little-endian machine (the PS5, a PC) its byte-sized RAM codes for
+  the Mega Drive and Sega CD wrote the byte next to the one meant (the 68000's RAM is kept in 16-bit words);
+  `libretro/libretro.c` now writes it where the 68000 reads it. Word codes and the 8-bit systems were right.
 
 ## Settings
 
@@ -848,7 +890,7 @@ take from them:
 - No light guns (Menacer, Justifier, Light Phaser), mice or Sega Pico pen, although the core supports them; no
   Master System multitap.
 - No 32X: Genesis Plus GX doesn't emulate it (it would take another emulator, such as PicoDrive).
-- No cheats or MegaSD/MSU-MD menus in the frontend yet.
+- No MegaSD/MSU-MD menus in the frontend yet.
 - No HDR (see [HDR: not done, and why](#hdr-not-done-and-why)); the CPU build has no 4K and no multi-pass shaders.
 - Real Sega CD, MD+ and MSU-MD games have not been tried on a PS5 yet (see [Sega CD](#sega-cd-what-is-tested-and-how-to-check-a-game)).
 - `.7z` archives are not read (`.zip` is); Sega CD, MD+ and MSU-MD games are not read from inside a zip.
@@ -941,6 +983,10 @@ The build has three stages:
     Mozilla's CA list);
   - `fe_menu.cpp`, `fe_settings.cpp`, `fe_text.cpp`: menus, settings, text with PS5SX2's fonts;
   - `fe_i18n.cpp`: the five languages (`tests/check_i18n.py` checks them);
+  - `fe_cheats.cpp`: the game's cheats -- its `.cht` found, the codes given to the core, the file watched;
+    `fe_chtfile.cpp`: libretro `.cht` files read and written, and the lookup by name; `fe_cheatcode.cpp`: the codes
+    checked the way the core's libretro port reads them (under Genesis Plus GX's licence); the cheat manager is in
+    `fe_menu.cpp`;
   - `fe_chdcache.cpp`: a `.chd`'s blocks decompressed ahead on a thread of their own (`chd_read` wrapped at link
     time);
   - `fe_netscreen.cpp`, `fe_osk.cpp`, `fe_ui.cpp`: Settings > Network shares, its on-screen keyboard and the screens'
@@ -965,7 +1011,7 @@ The build has three stages:
 - **`ps5/app/sce_sys/`**: param.json, icon and backgrounds.
 - **`ps5/host/sce_host.cpp`** and **`ps5/tests/`**: the PS5 functions implemented on Linux, test programs for
   Mega Drive (NTSC and PAL), Master System and Game Gear (`make_test_rom.py`, tiny hand-assembled 68000 and Z80
-  programs; `mdplus` asks an MD+ for a CD track, `cdbios` is a stand-in Sega CD BIOS), stand-in discs
+  programs; `mdplus` asks an MD+ for a CD track, `cdbios` is a stand-in Sega CD BIOS; `cheat` reads its colour from RAM, for the RAM cheats), stand-in discs
   (`make_test_cd.py`: `.cue`/`.bin`, `.wav`, `.chd`), the sound check (`check_tone.py`), and the 420 tests:
   picture and input on each system, the Sega CD BIOS message and `.cue` tracks, Sega CD discs booting (cue, chd,
   the region's BIOS), MD+ CD music (bin, wav, chd), the safety copies of saves and states, settings for one game,
@@ -989,7 +1035,12 @@ The build has three stages:
   commercial product or activity, and every binary is distributed with its complete source. The core's
   components keep their own licenses, listed in `LICENSE.txt` (Nuked OPN2/OPLL: LGPL-2.1; libchdr, LZMA, zstd,
   zlib, Tremor: BSD-style / public domain).
-- **New code in `ps5/`**: MIT (each file says so), shared with Snes9x PS5 and Mesen2 PS5.
+- **New code in `ps5/`**: MIT (each file says so), shared with Snes9x PS5 and Mesen2 PS5, except
+  `ps5/frontend/fe_cheatcode.cpp/.h` (the code check, rewritten from `libretro/libretro.c`'s `decode_cheat`:
+  Genesis Plus GX's licence, Eke-Eke and Daniel De Matteis). The **cheat manager** and its `.cht` lookup are
+  [thatboialex](https://github.com/thatboialex)'s, from Snes9x PS5 (pull requests #1 and #3).
+- **Cheat files:** [libretro-database](https://github.com/libretro/libretro-database)'s `cht/` folder (its
+  contributors), not included: you copy them yourself.
 - **The home-screen idea** follows [PS5SX2](https://github.com/Swordpdf/PS5SX2) (Spyros): the PS5 layer's
   pattern (Prospero* shims, kernel toast, `/data` layout, the sandbox request, the cover prefetch and exiting
   through the system).

@@ -5,11 +5,13 @@ Each ROM shows a red backdrop; while the pad's Cross button is held -- Mega Driv
 button 1 with the port's mapping -- the backdrop turns green. So a de-tiled flip shows whether the whole chain
 works: the core's CPU and video for that system, the port's scaler and tiler, and the pad -> core input mapping.
 
-    make_test_rom.py out.<md|gen|bin|sms|gg> [ntsc|pal|sram|mdplus|cdbios]
+    make_test_rom.py out.<md|gen|bin|sms|gg> [ntsc|pal|sram|mdplus|cdbios|cheat|cdbioscheat]
 
 mdplus: a Mega Drive ROM that asks an MD+ (MegaSD) for CD track 2, looped (tests/make_test_cd.py's tones).
 cdbios: a stand-in Sega CD BIOS (save it as bios/bios_CD_U.bin): the picture as above, and the RAM cartridge's
 first byte $42, or $FF while Cross is held.
+cheat (any system), cdbioscheat: the backdrop's colour is read from RAM every frame ($FF0000 on the Mega Drive, $C000 on
+the 8-bit systems), where the ROM puts red at boot: a RAM cheat changes the picture's colour.
 """
 import struct
 import sys
@@ -44,16 +46,17 @@ def assemble(base, items):
     return bytes(out), labels
 
 
-def sms():
+def sms(ramcolor=False):
     # Master System: all 32 CRAM entries red (green while button 1 is held), display on.
     items = [
         bytes([0xF3, 0xED, 0x56, 0x31, 0xF0, 0xDF]),  # DI; IM 1; LD SP,$DFF0
+        bytes([0x3E, 0x03, 0x32, 0x00, 0xC0]) if ramcolor else b"",  # LD A,$03; LD ($C000),A
         bytes([0x3E, 0x40, 0xD3, 0xBF, 0x3E, 0x81, 0xD3, 0xBF]),  # VDP reg 1 = $40 (display on)
         bytes([0x3E, 0x00, 0xD3, 0xBF, 0x3E, 0x87, 0xD3, 0xBF]),  # VDP reg 7 = 0 (backdrop = colour 16)
         ("label", "loop"),
         bytes([0xDB, 0xDC]),                      # IN A,($DC)
         bytes([0xE6, 0x10]),                      # AND $10   button 1 (0 = pressed)
-        bytes([0x06, 0x03]),                      # LD B,$03  red
+        bytes([0x3A, 0x00, 0xC0, 0x47]) if ramcolor else bytes([0x06, 0x03]),  # LD A,($C000); LD B,A / LD B,$03 red
         (bytes([0x20]), "write"),                 # JR NZ,write
         bytes([0x06, 0x0C]),                      # LD B,$0C  green
         ("label", "write"),
@@ -72,7 +75,7 @@ def sms():
     return bytes(rom)
 
 
-def md(region, sram=False, mdplus=False, cdram=False):
+def md(region, sram=False, mdplus=False, cdram=False, ramcolor=False):
     # Mega Drive (68000, big endian): backdrop = CRAM colour 0, red; green while B is held (pad port A, TH high:
     # bit 4 = B, 0 = pressed). No TMSS: the core boots the cartridge directly.
     code = bytes.fromhex(
@@ -83,6 +86,8 @@ def md(region, sram=False, mdplus=False, cdram=False):
         "30BC8700"          # move.w #$8700,(a0)  backdrop: palette 0, colour 0
         "13FC004000A10009"  # move.b #$40,$A10009 port A: TH is an output
     )
+    if ramcolor:
+        code += bytes.fromhex("33FC000E00FF0000")  # move.w #$000E,$FF0000   red, in RAM
     if mdplus:
         # MD+ (MegaSD): open the overlay, then "play track 2 and loop" (command $12): the test disc's tones
         code += bytes.fromhex(
@@ -110,8 +115,9 @@ def md(region, sram=False, mdplus=False, cdram=False):
             # keep:
         )
         code += bytes.fromhex("13C200600001" if cdram else "13C200200001")  # move.b d2,$600001 / $200001
+    # move.w $FF0000,d1: the colour in RAM / move.w #$000E,d1: red (0000 BBB0 GGG0 RRR0)
+    code += bytes.fromhex("323900FF0000" if ramcolor else "323C000E")
     code += bytes.fromhex(
-        "323C000E"          # move.w #$000E,d1    red (0000 BBB0 GGG0 RRR0)
         "08000004"          # btst #4,d0          B
         "6604"              # bne.s write
         "323C00E0"          # move.w #$00E0,d1    green
@@ -140,16 +146,17 @@ def md(region, sram=False, mdplus=False, cdram=False):
     return bytes(rom)
 
 
-def gg():
+def gg(ramcolor=False):
     # Game Gear: 12-bit colours, two bytes each (----BBBB GGGGRRRR): all 32 red, green while button 1 is held.
     items = [
         bytes([0xF3, 0xED, 0x56, 0x31, 0xF0, 0xDF]),  # DI; IM 1; LD SP,$DFF0
+        bytes([0x3E, 0x0F, 0x32, 0x00, 0xC0]) if ramcolor else b"",  # LD A,$0F; LD ($C000),A
         bytes([0x3E, 0x40, 0xD3, 0xBF, 0x3E, 0x81, 0xD3, 0xBF]),  # VDP reg 1 = $40 (display on)
         bytes([0x3E, 0x00, 0xD3, 0xBF, 0x3E, 0x87, 0xD3, 0xBF]),  # VDP reg 7 = 0
         ("label", "loop"),
         bytes([0xDB, 0xDC]),                      # IN A,($DC)
         bytes([0xE6, 0x10]),                      # AND $10   button 1 (0 = pressed)
-        bytes([0x06, 0x0F]),                      # LD B,$0F  red (low byte)
+        bytes([0x3A, 0x00, 0xC0, 0x47]) if ramcolor else bytes([0x06, 0x0F]),  # LD A,($C000); LD B,A / LD B,$0F red
         (bytes([0x20]), "write"),                 # JR NZ,write
         bytes([0x06, 0xF0]),                      # LD B,$F0  green
         ("label", "write"),
@@ -179,8 +186,13 @@ def main():
             return md("ntsc", mdplus=True)
         if region == "cdbios":
             return md("ntsc", cdram=True)
+        if region == "cheat":
+            return md("ntsc", ramcolor=True)
+        if region == "cdbioscheat":
+            return md("ntsc", cdram=True, ramcolor=True)
         return md(region)
-    data = {"md": mega, "gen": mega, "bin": mega, "sms": sms, "gg": gg}[ext]()
+    cheat = region == "cheat"
+    data = {"md": mega, "gen": mega, "bin": mega, "sms": lambda: sms(cheat), "gg": lambda: gg(cheat)}[ext]()
     with open(out, "wb") as f:
         f.write(data)
     print(f"wrote {out} ({ext}, {region}, {len(data)} bytes)")

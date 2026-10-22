@@ -2618,6 +2618,13 @@ static void RAMCheatUpdate(void)
       {
           /* byte patch */
           mask |= 1;
+#ifdef LSB_FIRST
+          /* Genesis Plus GX PS5: the 68000's RAM holds 16-bit words in the host's byte order (READ_BYTE reads
+             address ^ 1): a byte goes where the 68000 reads it, not to its neighbour. The Z80's RAM is not swapped. */
+          if ((system_hw & SYSTEM_PBC) == SYSTEM_MD)
+             base[(cheatlist[index].address & mask) ^ 1] = cheatlist[index].data;
+          else
+#endif
           base[cheatlist[index].address & mask] = cheatlist[index].data;
       }
    }
