@@ -169,6 +169,7 @@ typedef struct
  uint16_t old;
  uint32_t address;
  uint8_t *prev;
+ uint8_t orig; /* Genesis Plus GX PS5: the ROM byte a Master System / Game Gear / SG-1000 patch replaced (see ROMCheatUpdate) */
 } CHEATENTRY;
 
 static int maxcheats = 0;
@@ -2515,10 +2516,12 @@ static void apply_cheats(void)
                cheatIndexes[MAX_CHEATS - maxROMcheats] = i;
                /* get current banked ROM address */
                ptr = &z80_readmap[(cheatlist[i].address) >> 10][cheatlist[i].address & 0x03FF];
-               /* check if reference matches original ROM data */
-               if (((uint8_t)cheatlist[i].old) == *ptr)
+               /* check if reference exists and matches original ROM data (Genesis Plus GX PS5: a code with no
+                  reference applies too, as in ROMCheatUpdate) */
+               if (!cheatlist[i].old || ((uint8_t)cheatlist[i].old) == *ptr)
                {
-                  /* patch data */
+                  /* save original ROM data, then patch data */
+                  cheatlist[i].orig = *ptr;
                   *ptr = cheatlist[i].data;
                   /* save patched ROM address */
                   cheatlist[i].prev = ptr;
@@ -2561,7 +2564,7 @@ static void clear_cheats(void)
                if (cheatlist[i-1].prev != NULL)
                {
                   /* restore original data */
-                  *cheatlist[i-1].prev = cheatlist[i-1].old;
+                  *cheatlist[i-1].prev = cheatlist[i-1].orig;
                   /* no more patched ROM address */
                   cheatlist[i-1].prev = NULL;
                }
@@ -2649,8 +2652,9 @@ void ROMCheatUpdate(void)
     /* check if previous banked ROM address was patched */
     if (cheatlist[index].prev != NULL)
     {
-      /* restore original data */
-      *cheatlist[index].prev = cheatlist[index].old;
+      /* restore original data (Genesis Plus GX PS5: the byte saved when patching, not the code's reference,
+         which is 0 for a code without one) */
+      *cheatlist[index].prev = cheatlist[index].orig;
 
       /* no more patched ROM address */
       cheatlist[index].prev = NULL;
@@ -2662,7 +2666,8 @@ void ROMCheatUpdate(void)
     /* check if reference exists and matches original ROM data */
     if (!cheatlist[index].old || ((uint8_t)cheatlist[index].old) == *ptr)
     {
-      /* patch data */
+      /* save original ROM data, then patch data */
+      cheatlist[index].orig = *ptr;
       *ptr = cheatlist[index].data;
 
       /* save patched ROM address */

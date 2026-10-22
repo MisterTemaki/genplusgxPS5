@@ -164,6 +164,17 @@ void DecodeTests()
 	}
 	Agree("FF92A7:78", true, false, true);
 	Agree("01A000:12", true, true, true);
+	// a Sega CD game: RAM codes only (the core patches no ROM for a disc: a ROM code would show On and do nothing)
+	Agree("100000:1234", true, false, true);
+	Agree("100000:1234", true, true, false);
+	Agree("240000:1234", true, true, false);
+	Agree("01A000:1234", true, true, true);
+	Agree("210000:1234", true, true, true);
+	Agree("FF1234:1234", true, true, true);
+	Agree(MdGameGenie(0x100000, 0x4E71), true, true, false);
+	Agree(MdGameGenie(0x100000, 0x4E71), true, false, true);
+	Agree(MdGameGenie(0x01A000, 0x4E71), true, true, true);
+	Agree(MdGameGenie(0xFF1234, 0x0001), true, true, true);
 	// Master System / Game Gear / SG-1000: Game Genie (with and without the reference), Action Replay, Fusion
 	Agree("00C0-0B09", false, false, true);
 	Agree("00C4-2299", false, false, true);
@@ -302,6 +313,32 @@ void ApplyTests()
 		up_frame();
 		Check(up_work_ram()[0x0000] == 0x30 && up_work_ram()[0x0010] == 0x55, sys + ": RAM values ($C000, $C010)");
 	}
+	// ROM codes with no reference byte (6-character Game Genie, Action Replay and Fusion AAAA:DD below $C000): applied
+	// at once, also on a game that never switches banks, and undone with the ROM's own byte, never 0
+	for (uint8_t hw : {kSms, kGgHw, kSg})
+	{
+		const std::string sys = hw == kSms ? "Master System" : hw == kGgHw ? "Game Gear" : "SG-1000";
+		up_setup(hw, 0x40000);
+		up_rom()[0x0123] = 0x03;
+		up_rom()[0x0456] = 0x77;
+		up_rom()[0x0789] = 0x42;
+		const std::string gg = SmsGameGenie(0x0123, 0x30);
+		up_cheat_set(0, true, gg.c_str());
+		up_cheat_set(1, true, "0004-5611");
+		up_cheat_set(2, true, "0789:22");
+		Check(up_rom()[0x0123] == 0x30 && up_rom()[0x0456] == 0x11 && up_rom()[0x0789] == 0x22,
+			sys + ": codes with no reference (" + gg + ", 0004-5611, 0789:22) patch the ROM with no bank switch");
+		up_bank_switch();
+		Check(up_rom()[0x0123] == 0x30 && up_rom()[0x0456] == 0x11 && up_rom()[0x0789] == 0x22, sys + ": ... still after a bank switch");
+		up_cheat_set(3, true, "C000:01"); // another cheat switched on: the core takes all its patches back and applies them again
+		up_cheat_set(1, false, "0004-5611"); // one switched off
+		Check(up_rom()[0x0123] == 0x30 && up_rom()[0x0456] == 0x77 && up_rom()[0x0789] == 0x22,
+			sys + ": ... switching other cheats keeps them; the one switched off gives the ROM its byte back");
+		up_bank_switch();
+		up_cheat_reset();
+		Check(up_rom()[0x0123] == 0x03 && up_rom()[0x0456] == 0x77 && up_rom()[0x0789] == 0x42,
+			sys + ": ... all off: the ROM's own bytes are back (not 0)");
+	}
 	// a bank switch: the patch follows the page the Z80 reads; the page left gets its byte back
 	up_setup(kSms, 0x40000);
 	up_rom()[0x8123] = 0x03; // bank 2, page 0x20 of the map
@@ -314,6 +351,18 @@ void ApplyTests()
 	Check(up_rom()[0x8123] == 0x03 && up_rom()[0xC123] == 0x30, "... after a bank switch it is on the new bank, the old one restored");
 	up_cheat_reset();
 	Check(up_rom()[0xC123] == 0x03, "... and taken back from there");
+	// the same with no reference: both banks keep their own bytes
+	up_setup(kSms, 0x40000);
+	up_rom()[0x8123] = 0x05;
+	up_rom()[0xC123] = 0x06;
+	up_map(0x20, 0x8000);
+	up_cheat_set(0, true, SmsGameGenie(0x8123, 0x30).c_str());
+	Check(up_rom()[0x8123] == 0x30, "Master System: a patch with no reference in the banked area");
+	up_map(0x20, 0xC000);
+	up_bank_switch();
+	Check(up_rom()[0x8123] == 0x05 && up_rom()[0xC123] == 0x30, "... after a bank switch: on the new bank, the old one's byte back");
+	up_cheat_reset();
+	Check(up_rom()[0xC123] == 0x06 && up_rom()[0x8123] == 0x05, "... and taken back from there");
 }
 
 void FileTests()

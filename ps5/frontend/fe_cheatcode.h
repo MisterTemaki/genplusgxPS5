@@ -39,7 +39,8 @@ struct Code
 };
 
 // One code (no '+'). md: a Mega Drive or Sega CD game (68000 codes); otherwise an 8-bit game (Z80 codes). sega_cd: the
-// RAM areas of the Sega CD count as RAM. False when the core would not read the code, or would read it wrongly.
+// RAM areas of the Sega CD count as RAM, and only RAM codes are taken (the core patches no ROM for a disc). False when
+// the core would not read the code, would read it wrongly, or would do nothing with it.
 bool Decode(const std::string& code, bool md, bool sega_cd, Code* out);
 // A cheat's codes, "A+B+C" as libretro cheat files write them: true when every one of them decodes.
 bool DecodeAll(const std::string& codes, bool md, bool sega_cd, std::vector<Code>* out);

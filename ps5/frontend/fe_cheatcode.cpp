@@ -48,7 +48,9 @@
  *   - a Mega Drive Action Replay code with a 2-digit value, AAAAAA:DD (about 2,800 of libretro-database's Mega
  *     Drive codes), is read as what it means, the byte DD at AAAAAA, when AAAAAA is RAM: the core gets
  *     AAAAAA:00DD. decode_cheat() would take the missing digits as zeros and write the word DD00 at the even
- *     address below. On ROM such a code is ambiguous and refused.
+ *     address below. On ROM such a code is ambiguous and refused;
+ *   - a Sega CD game's codes must be for its RAM (Work-RAM, PRG-RAM, Word-RAM): the core's apply_cheats skips any
+ *     other address for a disc, so such a code would show On and do nothing.
  */
 #include "fe_cheatcode.h"
 
@@ -99,7 +101,8 @@ uint32_t Hex(const std::string& s, size_t pos, size_t n)
 }
 
 // The RAM a 68000 cheat may write a byte to: Work-RAM, and with a Sega CD game its PRG-RAM and 2M Word-RAM
-// (libretro.c's apply_cheats and RAMCheatUpdate).
+// (libretro.c's apply_cheats and RAMCheatUpdate). A Sega CD game's codes must all be there: the core applies nothing
+// else for a disc (no cartridge ROM to patch).
 bool IsRam(uint32_t address, bool sega_cd)
 {
 	if (address >= 0xFF0000)
@@ -141,6 +144,8 @@ bool DecodeMd(const std::string& s, bool sega_cd, Code* c)
 				case 7: address |= n; break;
 			}
 		}
+		if (sega_cd && !IsRam(address, true))
+			return false; // a Sega CD game has no cartridge ROM: the core patches only its RAM
 		c->kind = Kind::MdGameGenie;
 		c->address = address;
 		c->data = data;
@@ -149,6 +154,8 @@ bool DecodeMd(const std::string& s, bool sega_cd, Code* c)
 	}
 	if (Shape(s, "hhhhhh:hhhh"))
 	{
+		if (sega_cd && !IsRam(Hex(s, 0, 6), true))
+			return false; // as above: on ROM, a Sega CD code would do nothing
 		c->kind = Kind::MdActionReplay;
 		c->address = Hex(s, 0, 6);
 		c->data = uint16_t(Hex(s, 7, 4));

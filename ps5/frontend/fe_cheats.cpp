@@ -138,10 +138,12 @@ void Official()
 	s.official_done = true;
 	System found = s.system;
 	std::string n = gamedb::Exact(s.system, s.name, &found);
-	if (n.empty() && s.system != System::SegaCd && !NetworkPath(s.path))
+	if (n.empty() && s.system != System::SegaCd)
 	{
+		// the CRC the scan (or the border's DescribeGame) already took: the ROM is read again only if it has none
+		// (never a ROM on a share)
 		uint32_t whole = 0, body = 0;
-		if (RomCrc32(s.path, &whole, &body))
+		if (CachedRomCrc32(s.path, &whole, &body, !NetworkPath(s.path)))
 		{
 			n = gamedb::ByCrc(s.system, whole, &found);
 			if (n.empty() && body != whole)
