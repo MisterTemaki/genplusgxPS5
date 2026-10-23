@@ -13,8 +13,8 @@ a jailbroken PS5 as a **native home-screen app** with its own icon and backgroun
 | Game Gear | `.gg` | none |
 | SG-1000 | `.sg` | none |
 
-Cartridge games can also be inside a `.zip`. A Sega CD game started without a BIOS says which files are needed,
-and where they go, on the screen. The `.bin` tracks named in a `.cue` are not listed as games of their own.
+Cartridge games can also be inside a `.zip` or (since 2.2) a `.7z`; see [Games in a .zip or .7z](#games-in-a-zip-or-7z).
+A Sega CD game started without a BIOS says which files are needed, and where they go, on the screen. The `.bin` tracks named in a `.cue` are not listed as games of their own.
 
 **Inside the emulator, to access the main menu press L3 + R3.**
 
@@ -35,9 +35,9 @@ libretro port's cheats aside). The frontend drives the
 core through its libretro interface -- the most complete of its ports -- and plays the part RetroArch plays on a
 PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
 
-> **Status (2.1.1):** builds with the ps5-payload-dev SDK into a signed native app, in two builds: **GPU** (RADV,
+> **Status (2.2):** builds with the ps5-payload-dev SDK into a signed native app, in two builds: **GPU** (RADV,
 > Mesa's Vulkan driver for AMD GPUs, ported to the PS5 by [PS5_Vulkan](https://github.com/mihawk-99/PS5_Vulkan),
-> linked into the app) and **CPU-only**. It passes 634 host tests, which run the same code (the core, the
+> linked into the app) and **CPU-only**. It passes 681 host tests, which run the same code (the core, the
 > frontend, the GPU renderer, every built-in slang shader, the shelf on the GPU) on Linux with the PS5 calls
 > simulated and the GPU renderer on a software Vulkan driver (lavapipe). **1.9 has run on a PS5** (a user's
 > console, 4K at 59.94 Hz): the GPU renderer started, the 26 built-in shaders loaded, crt-easymode took 0.6 ms of
@@ -45,7 +45,7 @@ PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
 > 60 fps with its CD music and no sound/picture drift. **What 2.0 and 2.1 add has only run in the host tests so far**:
 > the shader cache, the shader parameters, your own `.slangp` presets and the shelf drawn by the GPU, and **all of
 > 2.1** (network shares, shelf tabs, borders, the new covers, cheats). 2.1 has started on a PS5 Pro (11.60), where its
-> GPU build could not reach a share (fixed in 2.1.1). If the GPU
+> GPU build could not reach a share (fixed in 2.1.1). 2.2's `.7z` support has only run in the host tests. If the GPU
 > fails to start, the app draws with the CPU (see [The GPU renderer](#the-gpu-renderer)). If something fails, turn
 > on Settings, SYSTEM, Debug logs, and send the logs in `/data/genplus/logs/`.
 
@@ -76,10 +76,20 @@ Genesis Plus GX PS5 only uses `/data/genplus/`, `/data/homebrew/PPSA99921/` and 
 
 ## Versions
 
-Every release carries its version in the file name: `GenesisPlusGXPS5-v2.1.1.elf` (GPU build),
-`GenesisPlusGXPS5-v2.1.1-cpu.elf` (CPU-only build) and `genplus-ps5-v2.1.1-src.zip`
+Every release carries its version in the file name: `GenesisPlusGXPS5-v2.2.elf` (GPU build),
+`GenesisPlusGXPS5-v2.2-cpu.elf` (CPU-only build) and `genplus-ps5-v2.2-src.zip`
 (`make dist`). When updating, replace the old ELF with the new one in your autoload or Payload Manager. In this
 README, "`GenesisPlusGXPS5.elf`" always means the current release's ELF.
+
+**2.2:** **games inside `.7z` archives** ([issue #3](https://github.com/MisterTemaki/genplusgxPS5/issues/3);
+thanks to CroCop86 for the request). Mega Drive, Master System, Game Gear and SG-1000 games can now sit in a `.7z` as
+they can in a `.zip`: on the shelf with their name, cover, border and cheats (named by the CRC the archive stores,
+nothing unpacked), started from the console's drive, a USB drive or a network share. Sega CD discs inside a `.7z` are
+not supported (see [Games in a .zip or .7z](#games-in-a-zip-or-7z)). A damaged, encrypted or too large archive says
+why on the screen. The decoder is the LZMA SDK's (7-Zip 26.05, public domain). Tested on the PC only so far: 681 host
+tests, 47 of them new (a 7z named, covered, bordered, with cheats and played like its zip twin; a disc, broken,
+encrypted, unsupported and too large archives; a 7z on a share), and the reader's own 62 checks (LZMA, LZMA2, PPMd,
+BCJ, ARM, Delta, solid, empty, cut short, changed bytes). Not yet on a PS5.
 
 **2.1.1:** **a fix for network shares in the GPU build** (not yet confirmed on a PS5). In 2.1's GPU build (`GenesisPlusGXPS5-v2.1.elf`) every
 share failed with "No server named ... was found. Use its IP address.", even with an IP address: PS5_Vulkan's platform
@@ -341,6 +351,33 @@ ps5-native-app-boilerplate's `tools/prepare-assets.sh --background` does). For a
 moment. The installer keeps that folder current on every update, but if the title was registered before the art
 changed, register it again once: select **Genesis Plus GX PS5** on the home screen, press **OPTIONS**, choose
 **Delete** (your games, saves and covers in `/data/genplus/` stay), then send `GenesisPlusGXPS5.elf` again.
+
+## Games in a .zip or .7z
+
+Cartridge games (`.md` `.gen` `.smd` `.bin` `.mdx` `.sms` `.gg` `.sg`) can be packed in a `.zip` or, since 2.2, a `.7z`.
+
+- **What the shelf shows:** the archive is listed under the system of the ROM inside it (its extension), named the way
+  the same ROM would be: by its file name, else by the CRC32 the archive stores for the ROM (nothing is unpacked for
+  that), so the cover, the border and the cheats are the game's. Each archive's system and CRC are remembered in
+  `covers/crc-cache.txt`, so the next start doesn't open it again. A ROM with a 512-byte copier header is unpacked once
+  to take its CRC without the header.
+- **Several files in one archive:** the first ROM in the archive's order is the game (other files, such as a
+  `.txt`, are skipped). One game per archive is the way to go.
+- **Sega CD discs are not read from inside an archive.** A disc (`.cue`/`.bin`, `.chd`, `.iso`) would have to be
+  unpacked whole first, hundreds of MB. A `.7z` that holds a `.cue`, `.chd` or `.iso` is not listed; unpack the disc
+  into a folder of its own (a `.chd` is already compressed).
+- **`.7z` methods:** LZMA and LZMA2 (7-Zip's defaults), PPMd, BCJ/BCJ2 and the other branch filters, Delta, and stored
+  files. Archives packed with BZip2, Deflate or Zstandard, and **encrypted (password-protected) archives**, are refused
+  with a message saying so. An archive whose list of files is encrypted (7-Zip's "Encrypt file names") can't be looked
+  into, so it is not listed.
+- **Limits:** the ROM inside may be 16 MiB at most (Mega Drive games are 10 MiB at most). A `.7z` packs files in
+  *solid blocks* and a block is unpacked whole, in memory: the block holding the game may be 64 MiB at most, and the
+  decoder may use 136 MiB in all (a PPMd archive made with a very large model is refused). A game in a block over
+  64 MiB (a big archive of many games, packed solid) says so on the screen: pack it again non-solid (7-Zip: Solid Block
+  size, Non-solid) or one game per archive. A damaged or cut-short archive is not listed, as a damaged zip; started
+  anyway (the last game played, say), it says it is damaged.
+- **On a network share** a `.7z` works as a `.zip` does: the scan does not open it (its folder's name gives its system
+  until then), the background pass reads its list of files once, and the game is read into memory when it starts.
 
 ## The game shelf and covers
 
@@ -867,8 +904,8 @@ Use the server's IP address. Inside a user name, password or folder, write `& = 
   listings and connects the shares that were down once more. The system folders work there too
   (`MegaDrive/`, `SegaCD/`...), and Up / Down pick a system inside the tab.
 - Network games are first named from their file names; a background pass then reads each cartridge once to name it
-  by checksum (a `.zip`: only its directory, which also says its system), and the answer is remembered in
-  `covers/crc-cache.txt`. A cover for a game named late is fetched when it is. Until a zip on a share has been
+  by checksum (a `.zip` or `.7z`: only its list of files, which also says its system), and the answer is remembered in
+  `covers/crc-cache.txt`. A cover for a game named late is fetched when it is. Until an archive on a share has been
   looked into, its folder's name gives its system (`GameGear/`, `Master System`...), else it is listed with the
   Mega Drive games.
 - A share is read-only. Saves, states, the Sega CD backup RAM, covers and settings stay on the console.
@@ -1016,7 +1053,7 @@ take from them:
 - No MegaSD/MSU-MD menus in the frontend yet.
 - No HDR (see [HDR: not done, and why](#hdr-not-done-and-why)); the CPU build has no 4K and no multi-pass shaders.
 - Real Sega CD, MD+ and MSU-MD games have not been tried on a PS5 yet (see [Sega CD](#sega-cd-what-is-tested-and-how-to-check-a-game)).
-- `.7z` archives are not read (`.zip` is); Sega CD, MD+ and MSU-MD games are not read from inside a zip.
+- Sega CD, MD+ and MSU-MD games are not read from inside a `.zip` or `.7z`; no `.rar`, `.gz` or other archives.
 
 ## Building
 
@@ -1097,8 +1134,9 @@ The build has three stages:
   - `fe_emu.cpp`: the libretro frontend -- the core's environment calls (folders, options, log, the game in
     memory for zips), its video, audio and input callbacks, the pacing, battery saves, save states, rewind, the
     hot keys and the BIOS check;
-  - `fe_games.cpp` + `data/nointro.tsv`: the library, systems, `.cue` tracks, zips and names
-    (`ps5/tools/make_gamedb.py` makes the table);
+  - `fe_games.cpp` + `data/nointro.tsv`: the library, systems, `.cue` tracks, zips and 7z and names
+    (`ps5/tools/make_gamedb.py` makes the table); `fe_7z.cpp`: `.7z` archives read through the app's file calls
+    (so netfs reads them on a share), with a memory budget;
   - `fe_shelf.cpp`, `fe_covers.cpp`, `fe_prefetch.cpp`, `fe_http.cpp`: the 3D shelf and covers;
   - `fe_coverworker.cpp`, `fe_coverfetch.cpp`: the helper's background downloads, and the fetch code the app and
     the helper share;
@@ -1122,6 +1160,9 @@ The build has three stages:
   link's `--wrap` list, so the core, libchdr and minizip read a share like a drive), the SMB and NFS backends
   (`backend_smb.cpp`, `backend_nfs.cpp`) and the console's socket and resolver shims (`netfs_shims_ps5.cpp`).
   **`ps5/third_party/libsmb2/`**, **`ps5/third_party/libnfs/`**: the two libraries, as Snes9x PS5 carries them.
+- **`ps5/third_party/lzma7z/`**: the LZMA SDK's C 7z decoder (7-Zip 26.05, public domain), every name prefixed `fe7z_`
+  so it can't meet libchdr's older LZMA SDK (its `README.md`); `tests/test_7z.cpp` checks it on the archives in
+  `tests/7z/` (`tests/make_7z_fixtures.py`, with py7zr, made them).
   On the host, `ps5/host/netfs_dirbackend.cpp` turns a share into a local folder (`GENPLUS_HOST_NETFS_DIR`); netfs's
   own tests are `test-netfs` (an in-memory share), `make test-nfs` (the NFS backend on a mock and on loopback
   sockets), `make test-nfs-server` (a real unfsd), `smb-test` (a real Samba, skipped without `smbd`) and
@@ -1138,7 +1179,7 @@ The build has three stages:
   (`make_test_cd.py`: `.cue`/`.bin`, `.wav`, `.chd`), the sound check (`check_tone.py`), and the 420 tests:
   picture and input on each system, the Sega CD BIOS message and `.cue` tracks, Sega CD discs booting (cue, chd,
   the region's BIOS), MD+ CD music (bin, wav, chd), the safety copies of saves and states, settings for one game,
-  save states, PAL timing, zip, sound latency, integer scale and scanlines, the shelf's tabs, the system
+  save states, PAL timing, zip and 7z, sound latency, integer scale and scanlines, the shelf's tabs, the system
   folders, the controls (pad type, 4-player adapter, button layout), the CRT shaders (the default, each one
   drawing under ASan/UBSan, the menu), settings, fast forward and rewind, covers per system, install, helper and
   sandbox request (unknown titles refused, slow clients, links), saves per system and their integrity (old saves
@@ -1184,6 +1225,8 @@ The build has three stages:
   `app_cpp_runtime.cpp`, `ps5-pie.ld` and the `libc.prx` generator, via PS5SX2 and PS5_Vulkan (mihawk-99).
 - The VideoOut tiling and setup follow the SDK's SDL2 port (zlib license).
 - **minizip** (Gilles Vollant): zlib license.
+- **LZMA SDK** (Igor Pavlov, [7-zip.org](https://www.7-zip.org/sdk.html)): the C 7z decoder of 7-Zip 26.05, in
+  `ps5/third_party/lzma7z/`, **public domain** (each of its files says so).
 - **libsmb2** (Ronnie Sahlberg and contributors, [github.com/sahlberg/libsmb2](https://github.com/sahlberg/libsmb2))
   and **libnfs** (Ronnie Sahlberg and contributors, [github.com/sahlberg/libnfs](https://github.com/sahlberg/libnfs)):
   LGPL-2.1-or-later, linked statically into the app for the network shares. Their full source, with the port's few

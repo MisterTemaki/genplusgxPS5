@@ -25,7 +25,7 @@
 PS5_PAYLOAD_SDK ?= /opt/ps5-payload-sdk
 PS5_HOST ?= ps5
 PS5_PORT ?= 9021
-VERSION ?= 2.1.1
+VERSION ?= 2.2
 CORE_VERSION := 1.7.4
 # the GPU's shader tables, generated from shaders/presets.txt (see "shaders:" below)
 SLANG_CPP := build/gen/slang_presets.cpp
@@ -110,6 +110,24 @@ EMU_SRC += frontend/fe_cheats.cpp frontend/fe_cheatcode.cpp frontend/fe_chtfile.
 EMU_SRC += frontend/fe_border.cpp frontend/fe_borderimg.cpp frontend/fe_borderfetch.cpp
 # minizip (zlib licence) for games inside a .zip, built as C with the core's zlib
 EMU_C_SRC := frontend/third_party/unzip.c frontend/third_party/ioapi.c
+# 2.2: games inside a .7z (fe_7z.cpp), with the LZMA SDK 26.05's C 7z decoder (public domain; third_party/lzma7z/README.md):
+# single-threaded, no AES (an encrypted archive is refused), no assembler. libchdr links an older LZMA SDK (24.05): every
+# external name of this copy is prefixed fe7z_ (fe7z_names.h, force-included), so the two can't meet, and lzma7z-names
+# checks the objects after each build.
+EMU_SRC += frontend/fe_7z.cpp
+LZMA7Z := third_party/lzma7z
+LZMA7Z_SRC := $(sort $(wildcard $(LZMA7Z)/*.c))
+LZMA7Z_DEFS := -DZ7_ST -DZ7_PPMD_SUPPORT -DZ7_EXTRACT_ONLY
+LZMA7Z_FLAGS := $(LZMA7Z_DEFS) -include $(LZMA7Z)/fe7z_names.h -I$(LZMA7Z)
+%/port/frontend/fe_7z.o: EXTRA_FLAGS = $(LZMA7Z_DEFS) -isystem $(LZMA7Z)
+%/port/frontend/fe_7z.o: $(LZMA7Z)/fe7z_names.h
+# every global name the objects define must carry the prefix (a name the SDK adds in a later version, left out of
+# fe7z_names.h, would otherwise clash with libchdr's copy, or silently mix the two versions)
+define LZMA7Z_NAMES_CHECK
+	@bad=$$($(1) -g --defined-only $(2) | awk 'NF==3 && $$3 !~ /^(fe7z_|__odr_asan\.fe7z_)/ {print $$3}'); \
+	if [ -n "$$bad" ]; then echo "lzma7z: names without the fe7z_ prefix: $$bad (add them to $(LZMA7Z)/fe7z_names.h)"; exit 1; fi
+	@touch $@
+endef
 # a C bridge to the core's own state (the Sega CD backup RAM), built with the core's defines and headers
 BRIDGE_C_SRC := frontend/fe_bram.c
 # the payloads: the helper, and the installer (= helper + install)
@@ -205,6 +223,7 @@ PS5_HELPER_OBJ := $(PS5_OUT)/port/installer/helper_main.o $(patsubst %.cpp,$(PS5
 PS5_INSTALLER_OBJ := $(patsubst %.cpp,$(PS5_OUT)/port/%.o,$(INSTALLER_SRC)) $(PS5_MBEDTLS_OBJ)
 PS5_LIBSMB2_OBJ := $(patsubst $(LIBSMB2)/%.c,$(PS5_OUT)/libsmb2/%.o,$(LIBSMB2_SRC))
 PS5_LIBNFS_OBJ := $(patsubst $(LIBNFS)/%.c,$(PS5_OUT)/libnfs/%.o,$(LIBNFS_SRC))
+PS5_LZMA7Z_OBJ := $(patsubst $(LZMA7Z)/%.c,$(PS5_OUT)/lzma7z/%.o,$(LZMA7Z_SRC))
 
 ps5: $(PS5_OUT)/GenesisPlusGXPS5.elf
 # the core alone
@@ -238,6 +257,12 @@ $(PS5_OUT)/libsmb2/%.o: $(LIBSMB2)/%.c
 $(PS5_OUT)/libnfs/%.o: $(LIBNFS)/%.c
 	@mkdir -p $(dir $@)
 	$(PS5_CC) -O2 -fPIC -march=znver2 $(LIBNFS_FLAGS) -w -c -o $@ $<
+
+$(PS5_OUT)/lzma7z/%.o: $(LZMA7Z)/%.c $(wildcard $(LZMA7Z)/*.h)
+	@mkdir -p $(dir $@)
+	$(PS5_CC) $(PS5_OPT) $(LZMA7Z_FLAGS) -c -o $@ $<
+$(PS5_OUT)/lzma7z/names.ok: $(PS5_LZMA7Z_OBJ)
+	$(call LZMA7Z_NAMES_CHECK,$(PS5_PAYLOAD_SDK)/bin/llvm-nm,$^)
 $(PS5_OUT)/port/coreorbis/orbis-shims/ProsperoGpu.o: EXTRA_FLAGS = $(PS5_GPU_DEFS)
 
 $(PS5_OUT)/port/installer/helper_main.o: installer/installer_main.cpp coreorbis/include-orbis/*.h coreorbis/orbis-shims/*.h
@@ -335,10 +360,10 @@ build/app/app_crt.o build/app/app_cpp_runtime.o: build/app/%.o: $(NATIVE)/toolin
 		-c -o $@ $<
 
 EBOOT_OBJS = build/app/app_crt.o build/app/app_cpp_runtime.o $(PS5_CORE_OBJ) $(PS5_EMU_OBJ) $(PS5_LIBSMB2_OBJ) $(PS5_LIBNFS_OBJ) \
-	$(PS5_OUT)/helper_data.o
+	$(PS5_LZMA7Z_OBJ) $(PS5_OUT)/helper_data.o
 ifeq ($(PS5_VULKAN),)
 build/app/genplus-pie.elf: $(EBOOT_OBJS) $(NATIVE)/tooling/native/ps5-pie.ld $(NATIVE)/tooling/native/ehframe.ld \
-		$(NATIVE)/tooling/native/app-symbols.map $(NATIVE)/tooling/native/localize.map
+		$(NATIVE)/tooling/native/app-symbols.map $(NATIVE)/tooling/native/localize.map $(PS5_OUT)/lzma7z/names.ok
 	$(LLD) -m elf_x86_64 -pie -z max-page-size=0x4000 --hash-style=gnu \
 		-T $(NATIVE)/tooling/native/ps5-pie.ld -T $(NATIVE)/tooling/native/ehframe.ld --eh-frame-hdr \
 		--version-script $(NATIVE)/tooling/native/app-symbols.map --version-script $(NATIVE)/tooling/native/localize.map \
@@ -388,7 +413,7 @@ $(PS5_OUT)/slang_presets.o: $(SLANG_CPP) coreorbis/orbis-shims/ProsperoSlang.h
 	@mkdir -p $(dir $@)
 	$(PS5_CXX) -std=c++17 -O0 -fPIC -Icoreorbis/orbis-shims -c -o $@ $<
 build/app/genplus-pie.elf: $(EBOOT_OBJS) $(AGC_STUBS) build/app/radv-link.args $(NATIVE)/tooling/native/app-symbols.map \
-		$(NATIVE)/tooling/native/localize.map
+		$(NATIVE)/tooling/native/localize.map $(PS5_OUT)/lzma7z/names.ok
 	$(PS5_PAYLOAD_SDK)/bin/prospero-lld --eh-frame-hdr --no-dynamic-linker -z nodynamic-undefined-weak --version-script $(NATIVE)/tooling/native/app-symbols.map \
 		--version-script $(NATIVE)/tooling/native/localize.map --exclude-libs=ALL $(CHD_WRAP) $(NETFS_WRAP_LLD) \
 		-e _start -o $@ $(EBOOT_OBJS) $(AGC_STUBS) $$(cat build/app/radv-link.args) \
@@ -441,6 +466,7 @@ HOST_HELPER_OBJ := $(HOST_OUT)/port/installer/helper_main.o $(patsubst %.cpp,$(H
 HOST_INSTALLER_OBJ := $(patsubst %.cpp,$(HOST_OUT)/port/%.o,$(INSTALLER_SRC) host/sce_host.cpp) $(HOST_MBEDTLS_OBJ)
 HOST_LIBSMB2_OBJ := $(patsubst $(LIBSMB2)/%.c,$(HOST_OUT)/libsmb2/%.o,$(LIBSMB2_SRC))
 HOST_LIBNFS_OBJ := $(patsubst $(LIBNFS)/%.c,$(HOST_OUT)/libnfs/%.o,$(LIBNFS_SRC))
+HOST_LZMA7Z_OBJ := $(patsubst $(LZMA7Z)/%.c,$(HOST_OUT)/lzma7z/%.o,$(LZMA7Z_SRC))
 
 host-core: $(HOST_CORE_OBJ)
 host: $(HOST_OUT)/genplus-ps5-host $(HOST_OUT)/genplus-ps5-installer $(HOST_OUT)/genplus-ps5-helper
@@ -472,6 +498,13 @@ $(HOST_OUT)/libsmb2/%.o: $(LIBSMB2)/%.c
 $(HOST_OUT)/libnfs/%.o: $(LIBNFS)/%.c
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -O2 -g1 $(LIBNFS_FLAGS) -w -c -o $@ $<
+
+# the 7z decoder under AddressSanitizer too (it reads archives from anywhere; UBSan would report its unaligned reads)
+$(HOST_OUT)/lzma7z/%.o: $(LZMA7Z)/%.c $(wildcard $(LZMA7Z)/*.h)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -fPIC $(HOST_OPT) $(HOST_CORE_SAN) $(LZMA7Z_FLAGS) -c -o $@ $<
+$(HOST_OUT)/lzma7z/names.ok: $(HOST_LZMA7Z_OBJ)
+	$(call LZMA7Z_NAMES_CHECK,nm,$^)
 
 $(HOST_OUT)/port/installer/helper_main.o: installer/installer_main.cpp coreorbis/include-orbis/*.h coreorbis/orbis-shims/*.h
 	@mkdir -p $(dir $@)
@@ -509,9 +542,9 @@ $(HOST_OUT)/glslang/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(HOST_CXX) $(GLSLANG_FLAGS) -O2 -g1 -c -o $@ $<
 
-$(HOST_OUT)/genplus-ps5-host: $(HOST_CORE_OBJ) $(HOST_EMU_OBJ) $(HOST_LIBSMB2_OBJ) $(HOST_LIBNFS_OBJ) $(HOST_OUT)/helper_data.o \
-		$(HOST_OUT)/slang_presets.o $(HOST_GLSLANG_OBJ)
-	$(HOST_CXX) $(HOST_SAN) -o $@ $^ -Wl,--wrap=chd_read -Wl,--wrap=chd_close $(NETFS_WRAP_GCC) -lpthread -lm -lvulkan
+$(HOST_OUT)/genplus-ps5-host: $(HOST_CORE_OBJ) $(HOST_EMU_OBJ) $(HOST_LIBSMB2_OBJ) $(HOST_LIBNFS_OBJ) $(HOST_LZMA7Z_OBJ) \
+		$(HOST_OUT)/helper_data.o $(HOST_OUT)/slang_presets.o $(HOST_GLSLANG_OBJ) | $(HOST_OUT)/lzma7z/names.ok
+	$(HOST_CXX) $(HOST_SAN) -o $@ $(filter %.o,$^) -Wl,--wrap=chd_read -Wl,--wrap=chd_close $(NETFS_WRAP_GCC) -lpthread -lm -lvulkan
 
 # netfs's own test: the netfs code, the stub backends and an in-memory share, linked with the same --wrap list
 HOST_NETFS_TEST_OBJ := $(patsubst %.cpp,$(HOST_OUT)/port/%.o,$(NETFS_CORE_SRC) netfs/backend_smb_stub.cpp netfs/backend_nfs_stub.cpp \
@@ -598,7 +631,13 @@ DOWNLOAD_WORKER_OBJ := $(patsubst %.cpp,$(HOST_OUT)/port/%.o,tests/test_download
 	frontend/fe_http.cpp coreorbis/orbis-shims/orbis_paths.cpp coreorbis/orbis-shims/ProsperoCrash.cpp host/sce_host.cpp)
 $(DOWNLOAD_WORKER_TEST): $(DOWNLOAD_WORKER_OBJ)
 	$(HOST_CXX) $(HOST_SAN) -o $@ $^ -lpthread
-unit-tests: $(TITLEMATCH_TEST) $(BORDER_TEST) $(BORDER_RENDER_TEST) $(DOWNLOAD_WORKER_TEST)
+# 2.2: the 7z reader (fe_7z.cpp and the decoder) on the archives in tests/7z/ (tests/make_7z_fixtures.py made them)
+SEVENZIP_TEST := $(HOST_OUT)/7z-test
+$(SEVENZIP_TEST): $(HOST_OUT)/port/tests/test_7z.o $(HOST_OUT)/port/frontend/fe_7z.o $(HOST_LZMA7Z_OBJ) | $(HOST_OUT)/lzma7z/names.ok
+	$(HOST_CXX) $(HOST_SAN) -o $@ $(filter %.o,$^) -lz
+test-7z: $(SEVENZIP_TEST)
+	$(SEVENZIP_TEST) tests/7z
+unit-tests: $(TITLEMATCH_TEST) $(BORDER_TEST) $(BORDER_RENDER_TEST) $(DOWNLOAD_WORKER_TEST) $(SEVENZIP_TEST)
 
 # The GPU's shaders: shaders/presets.txt (RetroArch slang presets, in shaders/slang/) compiled to SPIR-V tables
 # with their reflection and textures (tools/slang_compile.py, which needs glslangValidator).
@@ -640,5 +679,7 @@ clean:
 # the SMB backend against a real Samba (adds `smb-test`, run before the other tests; skipped without smbd)
 include tests/smb/smb.mk
 
+
+.PHONY: test-7z
 .PHONY: shaders shader-bench ps5 ps5-core host-core host test test-nfs test-nfs-server test-tabs unit-tests send strip app dist clean
 .SECONDARY:

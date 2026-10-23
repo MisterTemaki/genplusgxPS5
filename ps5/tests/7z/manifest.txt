@@ -1,0 +1,19 @@
+# archive	entry	size	CRC32 (tests/make_7z_fixtures.py)
+lzma.7z	code.bin	16384	E6DE1446
+lzma2.7z	code.bin	16384	E6DE1446
+ppmd.7z	code.bin	16384	E6DE1446
+bcj.7z	code.bin	16384	E6DE1446
+arm.7z	code.bin	16384	E6DE1446
+delta.7z	code.bin	16384	E6DE1446
+solid.7z	readme.txt	520	A45ADAD0
+solid.7z	Game B.gg	32768	4804209A
+solid.7z	Game A.md	131072	B91DBDAD
+game.7z	game.md	131072	B91DBDAD
+mystery.7z	mystery.md	131076	E01FA526
+copier.7z	copier.md	131584	FF8D15D1
+pocket.7z	Pocket.gg	32768	4804209A
+several.7z	notes.txt	40	B1AB90C0
+several.7z	Pocket.gg	32768	4804209A
+several.7z	game.md	131072	B91DBDAD
+disc.7z	Game (USA).cue	87	3301126C
+disc.7z	Game (USA) (Track 01).bin	37632	74D9E17B

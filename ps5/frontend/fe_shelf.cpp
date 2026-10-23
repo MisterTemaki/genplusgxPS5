@@ -1316,7 +1316,7 @@ std::string Shelf()
 			CenterText(450, "/data/genplus/roms   or   genplus/roms  on a USB drive", 4, Rgb(200, 190, 255));
 			CenterText(520, "MegaDrive  .md .gen .bin .smd     SegaCD  .cue .chd .iso     MasterSystem  .sms", 3,
 				Rgb(185, 180, 210));
-			CenterText(570, "GameGear  .gg     SG1000  .sg     (cartridges also inside .zip)", 3, Rgb(185, 180, 210));
+			CenterText(570, "GameGear  .gg     SG1000  .sg     (cartridges also inside .zip and .7z)", 3, Rgb(185, 180, 210));
 			CenterText(640, "Sega CD needs its BIOS in /data/genplus/bios.  Then open Genesis Plus GX PS5 again.", 3,
 				Rgb(200, 200, 220));
 			CenterRaw(720, std::string(T("Games on a NAS or PC?")) + "  " + icon::Triangle + "  " + T("Settings > Network shares"), 3,

@@ -1975,12 +1975,12 @@ im.save(sys.argv[1])" "$1" ${2:-261} ${3:-21} ${4:-1659} ${5:-1059}
 }
 
 if want 60; then
-echo "== 60. unit tests: the cover and border matcher, the border pack, the border in the renderer (CPU and GPU surface), the helper's two download lanes"
-for t in titlematch-test border-pack-test border-render-test download-worker-test; do
+echo "== 60. unit tests: the cover and border matcher, the border pack, the border in the renderer (CPU and GPU surface), the helper's two download lanes, the 7z reader"
+for t in titlematch-test border-pack-test border-render-test download-worker-test 7z-test; do
 	if [ ! -x build/host/$t ]; then bad "$t is built (make unit-tests)"; continue; fi
 	ASAN_OPTIONS=detect_leaks=1 timeout 600 build/host/$t >$WORK/$t.txt 2>&1
 	rc=$?
-	expect "[ $rc = 0 ] && ! grep -q 'runtime error\|AddressSanitizer\|^FAIL' $WORK/$t.txt" "$t: $(grep -E 'checks,|all checks' $WORK/$t.txt | tail -1)"
+	expect "[ $rc = 0 ] && ! grep -q 'runtime error\|AddressSanitizer\|^ *FAIL' $WORK/$t.txt" "$t: $(grep -E 'checks,|all checks|^passed [0-9]+, failed' $WORK/$t.txt | tail -1)"
 done
 fi
 
@@ -2234,6 +2234,147 @@ expect "grep -q 'glancer-eng.md \[md\] -> \"\" (dump: Advanced Busterhawk Gley L
 expect "[ -f '$C/GameGear/Phantasy Star Gaiden (Japan).png' ]" "a Game Gear translation by its CRC: the Game Gear cover"
 expect "grep -q 'mystery.md \[md\] -> \"\" (header: BARE KNUCKLE II)' $T/root/logs/boot.log && ls '$C/MegaDrive/Bare Knuckle II - Shitou e no Requiem ~ Streets of Rage II (Japan, Europe)'*.png >/dev/null 2>&1" "a ROM nothing names: its header's title finds the cover"
 expect "grep -q 'a database has art for My Homebrew Thing' $T/root/logs/boot.log && cmp -s '$C/MegaDrive/My Homebrew Thing.png' '$T/srv/db/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'" "a game libretro-thumbnails lacks: the online database's art, after libretro's 404"
+nosan "$T"
+fi
+
+if want 44; then
+echo "== 44. 2.2: games inside a .7z (tests/7z/, tests/make_7z_fixtures.py): named, covered, loaded and run like a zip; a disc, broken, encrypted, too big; on a share"
+Z=$PWD/tests/7z
+# a. the same ROM (the test ROM with Streets of Rage 2 (USA)'s CRC) in a zip and in a 7z, each alone on a shelf: the same name by
+# the CRC the archive stores, the same cover downloaded
+MDREPO=Sega_-_Mega_Drive_-_Genesis
+SRV=$WORK/t44srv
+rm -rf "$SRV" && mkdir -p "$SRV/$MDREPO/Named_Boxarts"
+python3 -c "from PIL import Image; import sys; Image.new('RGB', (512, 357), (0, 255, 0)).save(sys.argv[1])" "$SRV/$MDREPO/Named_Boxarts/Streets of Rage 2 (USA).png"
+PORT=18144
+(cd "$SRV" && exec python3 -m http.server $PORT --bind 127.0.0.1 >/dev/null 2>&1) &
+SRVPID=$!
+sleep 1
+TZ_=$(newroot t44zip)
+$ROM "$TZ_/mystery.md" ntsc >/dev/null
+python3 tests/forge_crc.py "$TZ_/mystery.md" E01FA526 >/dev/null
+python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED); z.write(sys.argv[2],'mystery.md'); z.close()" "$TZ_/root/roms/twin.zip" "$TZ_/mystery.md"
+rc=$(OFFLINE= COVER_URL="http://127.0.0.1:$PORT/\${repo}/Named_Boxarts/\${name}.png" GENPLUS_HOST_REALTIME=1 MAXFLIPS=300 run "$TZ_" "0:0" "")
+T=$(newroot t44)
+mkdir -p "$T/root/roms/MegaDrive"
+cp "$Z/mystery.7z" "$T/root/roms/twin.7z"
+cp "$Z/copier.7z" "$Z/several.7z" "$Z/disc.7z" "$Z/encrypted.7z" "$T/root/roms/"
+cp "$Z/truncated.7z" "$T/root/roms/broken.7z"
+cp "$Z/bzip2.7z" "$T/root/roms/MegaDrive/Packed Oddly.7z"
+rc=$(OFFLINE= COVER_URL="http://127.0.0.1:$PORT/\${repo}/Named_Boxarts/\${name}.png" GENPLUS_HOST_REALTIME=1 MAXFLIPS=300 run "$T" "0:0" "")
+kill $SRVPID 2>/dev/null
+expect "grep -q 'roms/twin.zip \[md\] -> \"Streets of Rage 2 (USA)\" (by CRC)' $TZ_/root/logs/boot.log && grep -q 'roms/twin.7z \[md\] -> \"Streets of Rage 2 (USA)\" (by CRC)' $T/root/logs/boot.log" "the 7z is named by the CRC it stores, as its zip twin"
+expect "[ -f '$T/root/covers/MegaDrive/Streets of Rage 2 (USA).png' ] && cmp -s '$T/root/covers/MegaDrive/Streets of Rage 2 (USA).png' '$TZ_/root/covers/MegaDrive/Streets of Rage 2 (USA).png'" "and gets the same cover"
+expect "grep -q 'roms/copier.7z \[md\] -> \"Streets of Rage 2 (USA)\" (by CRC)' $T/root/logs/boot.log" "a ROM with a copier header: unpacked, named by its body's CRC"
+expect "grep -q 'roms/several.7z \[gg\]' $T/root/logs/boot.log" "several ROMs in one 7z: the first one (Pocket.gg) is the game"
+expect "! grep -q 'roms/disc.7z \[' $T/root/logs/boot.log && grep -q 'disc.7z: a disc image inside a 7z' $T/root/logs/boot.log" "a 7z holding a Sega CD disc is not listed"
+expect "! grep -q 'roms/broken.7z \[' $T/root/logs/boot.log && grep -q 'broken.7z: 7z damaged' $T/root/logs/boot.log" "a broken 7z is not listed (as a broken zip)"
+expect "grep -q 'roms/encrypted.7z \[md\]' $T/root/logs/boot.log && grep -q 'Packed Oddly.7z \[md\]' $T/root/logs/boot.log" "an encrypted 7z and one packed with BZip2 are listed (their lists are readable): starting them says why not"
+expect "grep -q '^sys:.*/roms/twin.7z	[0-9]*	[0-9]*	0$' $T/root/covers/crc-cache.txt && grep -q '^sys:.*/roms/disc.7z	[0-9]*	[0-9]*	none$' $T/root/covers/crc-cache.txt" "each 7z's system is remembered (a disc's as none)"
+expect "[ \$(grep -c '[0-9]\] \[games\] .*7z' $T/root/logs/boot.log) -ge 1 ]" "logged"
+nosan "$T"
+rc=$(GENPLUS_HOST_REALTIME=1 MAXFLIPS=200 run "$T" "0:0" "")
+expect "grep -q 'roms/twin.7z \[md\] -> \"Streets of Rage 2 (USA)\" (by CRC)' $T/root/logs/boot.log && ! grep -q '7z damaged\|disc image inside' $T/root/logs/boot.log" "the next start: everything from the cache, no 7z opened again"
+nosan "$T"
+# b. a game from a 7z runs, and its picture is the zip's
+T=$(newroot t44run)
+$ROM "$T/game.md" ntsc >/dev/null
+python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED); z.write(sys.argv[2],'game.md'); z.close()" "$T/root/roms/game.zip" "$T/game.md"
+cp "$Z/game.7z" "$T/root/roms/game.7z"
+rc=$(run "$T" "0:0;100:$CROSS;140:0;$(QUITAT 200)" "90,130" "$T/root/roms/game.zip")
+mv "$T/dump/flip00090.ppm" "$T/zip90.ppm"; mv "$T/dump/flip00130.ppm" "$T/zip130.ppm"
+rc=$(run "$T" "0:0;100:$CROSS;140:0;$(QUITAT 200)" "90,130" "$T/root/roms/game.7z")
+expect "[ $rc = 0 ] && grep -q 'loading .*game.7z -> game.md' $T/root/logs/boot.log && grep -q 'running \"game\" (Mega Drive)' $T/root/logs/boot.log" "the game inside the 7z is loaded and runs"
+expect "$CHECK $T/dump/flip00090.ppm 960 540 red >/dev/null && $CHECK $T/dump/flip00130.ppm 960 540 green >/dev/null" "red, Cross -> green"
+expect "cmp -s $T/dump/flip00090.ppm $T/zip90.ppm && cmp -s $T/dump/flip00130.ppm $T/zip130.ppm" "the same pictures as from the zip"
+nosan "$T"
+# c. its border and its cheats are the No-Intro name's, as for a zip (the name from the 7z's stored CRC)
+T=$(newroot t44named)
+cp "$Z/mystery.7z" "$T/root/roms/mystery.7z"
+mkborder "$T/root/borders/MegaDrive/Streets of Rage 2 (USA).png"
+printf 'border=1\nborder_download=0\n' >>"$T/root/genplus-ps5.ini"
+mkdir -p "$T/root/cheats/MegaDrive"
+printf 'cheats = 1\ncheat0_desc = "Infinite lives"\ncheat0_code = "FFA3BF:0003"\ncheat0_enable = false\n' >"$T/root/cheats/MegaDrive/Streets of Rage 2 (USA).cht"
+rc=$(run "$T" "0:0;$(QUITAT 100)" "" "$T/root/roms/mystery.7z")
+expect "[ $rc = 0 ] && grep -q '\[border\] mystery -> MegaDrive/Streets of Rage 2 (USA).png' $T/root/logs/boot.log" "the border of the game the 7z's CRC names"
+expect "grep -q 'Loaded 1 cheats from .*cheats/MegaDrive/Streets of Rage 2 (USA).cht' $T/root/logs/boot.log" "and its cheats"
+nosan "$T"
+# d. what can't be played says why, on the screen (and the app goes on)
+T=$(newroot t44bad)
+cp "$Z/disc.7z" "$Z/encrypted.7z" "$Z/encrypted-header.7z" "$Z/bzip2.7z" "$Z/toobig.7z" "$Z/block.7z" "$Z/truncated.7z" "$Z/ppmd-mem.7z" "$T/root/roms/"
+badcase() { # archive, what the log says
+	rc=$(run "$T" "0:0;60:$CROSS;62:0" "40" "$T/root/roms/$1")
+	expect "[ $rc = 0 ] && grep -q 'could not start .*/$1: $2' $T/root/logs/boot.log && [ -f $T/dump/flip00040.ppm ]" "$1: not started, the screen says why ($2)"
+}
+badcase disc.7z "a disc image inside the 7z"
+badcase encrypted.7z "an encrypted 7z"
+badcase encrypted-header.7z "an encrypted 7z"
+badcase bzip2.7z "an unsupported compression method"
+badcase toobig.7z "too large"
+badcase ppmd-mem.7z "too large"
+badcase block.7z "a solid block over 64 MiB"
+badcase truncated.7z "the 7z is damaged"
+nosan "$T"
+# the messages and the empty shelf's list of files in each language
+for L in 1 2 3 4; do
+	T=$(newroot t44_$L)
+	echo "language=$L" >>"$T/root/genplus-ps5.ini"
+	cp "$Z/disc.7z" "$Z/encrypted.7z" "$Z/bzip2.7z" "$Z/toobig.7z" "$Z/block.7z" "$Z/truncated.7z" "$T/"
+	: >"$T/missing.txt"
+	rc=$(GENPLUS_HOST_I18N_MISSING=$T/missing.txt run "$T" "0:0;$(SHELFQUIT_AT 40)" "")
+	for a in disc encrypted bzip2 toobig block truncated; do
+		rc=$(GENPLUS_HOST_I18N_MISSING=$T/missing.txt run "$T" "0:0;60:$CROSS;62:0" "" "$T/$a.7z")
+	done
+	python3 - $T/missing.txt $PWD/frontend/fe_i18n.cpp > $T/untranslated.txt <<'PY'
+import re, sys
+src = open(sys.argv[2], encoding='utf-8').read()
+translated = set(re.findall(r'"((?:[^"\\]|\\.)*)"', src))
+spec = re.compile(r'%(?:%|[-+ #0]*\d*(?:\.\d+)?(?:hh|h|ll|l|z)?[diouxXeEfgGcsp])')
+formats = [re.compile('^' + ''.join('.*' if spec.fullmatch(part) else re.escape(part)
+                                    for part in re.split('(' + spec.pattern + ')', f)) + '$', re.S)
+           for f in translated if '%' in f]
+names = {'English', 'Español', 'Português (Brasil)', 'Français', 'Deutsch', 'USB', 'NFS'}
+try:
+    lines = open(sys.argv[1], encoding='utf-8').read().splitlines()
+except FileNotFoundError:
+    lines = []
+for t in lines:
+    if t in translated or t in names or not re.search('[A-Za-z]{2}', t) or any(f.match(t) for f in formats):
+        continue
+    if re.search(r'Mega Drive {3}MD', t) or re.search(r'MegaDrive  \.md', t):
+        continue
+    print(t)
+PY
+	expect "[ ! -s $T/untranslated.txt ] && [ \$(grep -c 'could not start' $T/root/logs/boot.log) -ge 1 ]" "language $L: the 7z messages and the empty shelf are translated ($(head -c 200 $T/untranslated.txt | tr '\n' '|'))"
+	nosan "$T"
+done
+# e. on a share: a 7z is not opened by the scan (its folder's name gives its system), the naming pass reads its list (system and
+# CRC, nothing unpacked), the next scan names it and hides a disc; a Game Gear 7z started from the share gets its GameGear border
+T=$(newroot t44net)
+mkdir -p "$T/share/misc"
+cp "$Z/pocket.7z" "$T/share/misc/pocket.7z"
+cp "$Z/mystery.7z" "$T/share/mystery.7z"
+cp "$Z/disc.7z" "$T/share/misc/disc.7z"
+echo "smb://10.0.0.5/games" >"$T/root/shares.txt"
+rc=$(GENPLUS_HOST_REALTIME=1 MAXFLIPS=420 GENPLUS_HOST_NETFS_DIR="$T/share" run "$T" "0:0" "")
+expect "grep -q '\[games\] naming 3 network ROM(s) by CRC' $T/root/logs/boot.log" "the scan opened none of the three 7z: the pass reads them"
+expect "grep -q 'misc/pocket.7z \[md\]' $T/root/logs/boot.log && grep -q 'misc/pocket.7z \[gg\]' $T/root/logs/boot.log" "the 7z moves to the Game Gear once its list was read"
+expect "grep -q 'games/mystery.7z \[md\] -> \"Streets of Rage 2 (USA)\" (by CRC)' $T/root/logs/boot.log" "and is named by the CRC it stores"
+expect "grep -q 'misc/disc.7z \[md\]' $T/root/logs/boot.log && grep -q '^sys:/smb/10.0.0.5/games/misc/disc.7z	[0-9]*	[0-9]*	none' $T/root/covers/crc-cache.txt" "a disc 7z: listed until read, then remembered as none"
+nosan "$T"
+rc=$(GENPLUS_HOST_REALTIME=1 MAXFLIPS=200 GENPLUS_HOST_NETFS_DIR="$T/share" run "$T" "0:0" "")
+expect "! grep -q 'disc.7z \[' $T/root/logs/boot.log && grep -q 'misc/pocket.7z \[gg\]' $T/root/logs/boot.log && ! grep -q 'naming .* network ROM' $T/root/logs/boot.log" "the next start: the disc is gone, the rest named from the cache, nothing read"
+nosan "$T"
+T=$(newroot t44netrun)
+mkdir -p "$T/share/misc"
+cp "$Z/pocket.7z" "$T/share/misc/pocket.7z"
+mkborder "$T/root/borders/GameGear/pocket.png" 274 0 1646 1080
+mkborder "$T/root/borders/MegaDrive/pocket.png"
+printf 'border=1\nborder_download=0\n' >>"$T/root/genplus-ps5.ini"
+echo "smb://10.0.0.5/games" >"$T/root/shares.txt"
+rc=$(GENPLUS_HOST_REALTIME=1 MAXFLIPS=900 GENPLUS_HOST_NETFS_DIR="$T/share" run "$T" "0:0;150:$CROSS;152:0;$(QUITAT 300)" "280")
+expect "[ $rc = 0 ] && grep -q 'loading /smb/10.0.0.5/games/misc/pocket.7z -> Pocket.gg' $T/root/logs/boot.log && grep -q 'running \"pocket\" (Game Gear)' $T/root/logs/boot.log" "a Game Gear 7z started from the share runs"
+expect "grep -q '\[border\] pocket -> GameGear/pocket.png (own file)' $T/root/logs/boot.log" "with its GameGear border (the loader's system)"
 nosan "$T"
 fi
 

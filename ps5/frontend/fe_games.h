@@ -1,6 +1,6 @@
 // Genesis Plus GX PS5 frontend: the game library -- every ROM under the ROM folders, with its system and official name.
 //
-// The system comes from the file extension (inside a .zip, from the ROM in it). A game is then named the way
+// The system comes from the file extension (inside a .zip or a .7z, from the ROM in it). A game is then named the way
 // libretro names it:
 //   1. its file name, when it is already a No-Intro name ("Super Mario Bros. (World).nes");
 //   2. otherwise the CRC32 of the ROM (the whole file, then without a 512-byte copier header), looked up in the
@@ -71,7 +71,7 @@ struct GameInfo
 {
 	std::string path; // full path
 	std::string file_base; // file name without extension
-	std::string ext; // ".md", ".zip"... lower case
+	std::string ext; // ".md", ".zip", ".7z"... lower case
 	System system = System::Md;
 	std::string nointro; // official name, "" until known (or unknown)
 	std::string title; // what the shelf shows
@@ -112,12 +112,12 @@ std::string DatabaseCoverUrls(const GameInfo& game);
 // path (a zip's directory is read).
 GameInfo DescribeGame(const std::string& path, const System* system = nullptr);
 
-// The internal header of a Mega Drive ROM or a Sega CD disc (a .zip is read through, a .cue's first track); false if
+// The internal header of a Mega Drive ROM or a Sega CD disc (a .zip or .7z is read through, a .cue's first track); false if
 // there is none to find (the other systems' headers have no title).
 bool ReadRomHeader(const std::string& path, System system, romheader::Info* info);
 
 // The ROM's CRC32s: of the whole file, and without its header (= whole when it has none). For a .zip, of the ROM
-// inside; *inner_ext gets that ROM's extension. False if it can't be read (a disc image: named by file name).
+// inside (a .7z too); *inner_ext gets that ROM's extension. False if it can't be read (a disc image: named by file name).
 // cancel (when given): stops the read when it turns true (false is returned).
 bool RomCrc32(const std::string& path, uint32_t* whole, uint32_t* body, std::string* inner_ext = nullptr,
 	const std::atomic<bool>* cancel = nullptr);
@@ -131,7 +131,7 @@ std::vector<std::string> RomRoots();
 
 // Names the games on shares by their ROM's CRC, in the background (Snes9x PS5's design, by thatboialex). A scan does
 // not read network ROMs (it would make a big library crawl); this does, one at a time, only for the games with
-// crc_pending (a zip: its directory, which also gives its system), and remembers each CRC in crc-cache.txt, so the
+// crc_pending (a zip or 7z: its directory, which also gives its system), and remembers each CRC in crc-cache.txt, so the
 // next ScanGames names them. Add() starts or extends the pass; it stops by itself when a game starts
 // (netfs_realtime) and when Stop() or the destructor is called (leaving the shelf).
 class NetNaming
@@ -149,10 +149,34 @@ private:
 	std::unique_ptr<Impl> m_i;
 };
 
-// The system of a .zip: the extension of the first ROM inside. False if none.
+// ".zip" and ".7z" (2.2): archives that hold a cartridge ROM (any case; ext as ExtOf gives it, with its dot).
+bool IsArchiveExt(const std::string& ext);
+
+// Why a ROM could not be taken out of an archive (the loader's message says it).
+enum class ArchiveError
+{
+	None,
+	NoGame, // no ROM inside that Genesis Plus GX PS5 knows (or a zip that can't be read)
+	Disc, // a .7z that holds a disc image (.cue, .chd, .iso): Sega CD games are not read from inside a .7z
+	Damaged, // a .7z that is broken or cut short, or not a 7z at all
+	Unsupported, // a .7z packed with a method the decoder lacks (BZip2, Deflate...)
+	Encrypted, // a password-protected .7z
+	TooBig, // the ROM is over kMaxArchiveRom, or the .7z needs more memory than allowed
+	BlockTooBig, // the .7z's solid block holding the ROM is over kMax7zBlock
+	ReadError, // the file could not be read (a share that dropped)
+};
+// The largest ROM taken out of an archive (the core takes 10 MiB at most), and the largest solid block of a .7z that
+// is decoded to get it (a solid block is decoded whole, in memory).
+constexpr uint64_t kMaxArchiveRom = 16ull << 20;
+constexpr uint64_t kMax7zBlock = 64ull << 20;
+
+// The system of a .zip or .7z: the extension of the first ROM inside (archive order). False if none; a .7z that holds a
+// disc image has none.
 bool ArchiveSystem(const std::string& path, System* out);
-// The first ROM inside a .zip (its name in the archive) and its bytes. False if none can be read.
-bool ReadFromZip(const std::string& path, std::string* inner, std::vector<uint8_t>* data);
+// The first ROM inside a .zip or .7z (its name in the archive) and its bytes. False if none can be read; *why says why.
+// cancel (when given): a .7z's read stops when it turns true.
+bool ReadFromArchive(const std::string& path, std::string* inner, std::vector<uint8_t>* data, ArchiveError* why = nullptr,
+	const std::atomic<bool>* cancel = nullptr);
 
 // Every ROM under the ROM folders (sub-folders included, 4 levels), sorted by title. Names that need a
 // CRC are resolved here too, with a cache (/data/genplus/covers/crc-cache.txt) so each ROM is read once.

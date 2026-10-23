@@ -1,6 +1,6 @@
 // Genesis Plus GX PS5: the /data/genplus folder layout and the boot log (orbis-shims/orbis_paths.cpp).
 //
-//   /data/genplus/roms         games (.md .gen .smd .bin .sms .gg .sg, also in .zip; Sega CD .cue .chd .iso);
+//   /data/genplus/roms         games (.md .gen .smd .bin .sms .gg .sg, also in .zip or .7z; Sega CD .cue .chd .iso);
 //                             sub-folders are fine
 //   /data/genplus/bios         BIOS files: bios_CD_U.bin / bios_CD_E.bin / bios_CD_J.bin (Sega CD, needed),
 //                             bios_U.sms, bios.gg, bios_MD.bin (optional boot screens)

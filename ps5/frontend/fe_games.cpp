@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "fe_games.h"
+#include "fe_7z.h"
 #include "fe_dbart.h"
 
 #include "OrbisPaths.h"
@@ -422,7 +423,7 @@ bool CachedCrc(CrcCache& cache, const std::string& path, uint32_t* whole, uint32
 	char val[96];
 	if (!RomCrc32(path, whole, body))
 	{
-		// unreadable (or an empty zip): remembered, so the next scans don't read it again until it changes
+		// unreadable (or an empty archive): remembered, so the next scans don't read it again until it changes
 		if (FailureIsTheFiles(path, st))
 		{
 			snprintf(val, sizeof(val), "%sfail", key);
@@ -537,9 +538,11 @@ std::vector<std::string> CueTracks(const std::string& dir, CrcCache& cache)
 	return tracks;
 }
 
-// A zip's system (the ROM inside it), from the cache while the zip hasn't changed: opening every zip at every
-// start is slow on a USB drive with a big library. "sys:<path>" -> "size\tmtime\t<system>".
-// read: false for a zip on a share (*known then says whether the cache had it; NetNaming opens it later).
+bool ArchiveSystemWhy(const std::string& path, System* out, ArchiveError* why);
+
+// A zip's or 7z's system (the ROM inside it), from the cache while the archive hasn't changed: opening every archive
+// at every start is slow on a USB drive with a big library. "sys:<path>" -> "size\tmtime\t<system>".
+// read: false for an archive on a share (*known then says whether the cache had it; NetNaming opens it later).
 bool CachedArchiveSystem(CrcCache& cache, const std::string& path, const struct stat& st, System* out, bool read = true,
 	bool* known = nullptr, const std::atomic<bool>* cancel = nullptr)
 {
@@ -571,14 +574,18 @@ bool CachedArchiveSystem(CrcCache& cache, const std::string& path, const struct 
 			*known = false;
 		return false;
 	}
-	const bool ok = ArchiveSystem(path, out);
-	// "none" hides the zip from the shelf until it changes: only when it is really the zip's (FailureIsTheFiles)
-	if (ok || FailureIsTheFiles(path, st, cancel))
+	ArchiveError why = ArchiveError::None;
+	const bool ok = ArchiveSystemWhy(path, out, &why);
+	// "none" hides the archive from the shelf until it changes: only when it is really the archive's (FailureIsTheFiles).
+	// A 7z whose list was read whole (its CRC checked) and holds a disc or no ROM is: no need to read it all through
+	// (a disc 7z is usually too big for that).
+	const bool sure = why == ArchiveError::Disc || why == ArchiveError::NoGame || why == ArchiveError::Encrypted;
+	if (ok || (ExtOf(path) == ".7z" && sure) || FailureIsTheFiles(path, st, cancel))
 		cache.Put(key, std::string(stamp) + (ok ? std::to_string(int(*out)) : std::string("none")));
 	return ok;
 }
 
-// The system a zip on a share most likely holds before NetNaming has opened it: its folder's name (roms/GameGear/,
+// The system a zip or 7z on a share most likely holds before NetNaming has opened it: its folder's name (roms/GameGear/,
 // "Game Gear", "Master System"...), else the Mega Drive.
 System GuessSystemFromFolder(const std::string& path)
 {
@@ -632,9 +639,9 @@ void Walk(const std::string& dir, int depth, bool usb, bool net, std::vector<Gam
 		if (std::find(tracks.begin(), tracks.end(), Lower(name)) != tracks.end())
 			continue; // a disc's track
 		GameInfo g;
-		if (ext == ".zip")
+		if (IsArchiveExt(ext))
 		{
-			// a zip on a share is not opened by the scan: the cache knows its system, or its folder's name says it
+			// a zip or 7z on a share is not opened by the scan: the cache knows its system, or its folder's name says it
 			// until NetNaming has looked inside
 			bool known = true;
 			if (!CachedArchiveSystem(cache, path, st, &g.system, !net, &known))
@@ -811,8 +818,88 @@ bool FindInZip(unzFile z, F&& fn)
 }
 } // namespace
 
-bool ArchiveSystem(const std::string& path, System* out)
+namespace
 {
+bool IsDiscExt(const std::string& ext)
+{
+	return ext == ".cue" || ext == ".chd" || ext == ".iso";
+}
+
+ArchiveError From7z(sevenzip::Status s)
+{
+	switch (s)
+	{
+		case sevenzip::Status::Ok: return ArchiveError::None;
+		case sevenzip::Status::NotArchive:
+		case sevenzip::Status::Damaged: return ArchiveError::Damaged;
+		case sevenzip::Status::Unsupported: return ArchiveError::Unsupported;
+		case sevenzip::Status::Encrypted: return ArchiveError::Encrypted;
+		case sevenzip::Status::TooBig: return ArchiveError::TooBig;
+		case sevenzip::Status::BlockTooBig: return ArchiveError::BlockTooBig;
+		case sevenzip::Status::CantOpen:
+		case sevenzip::Status::ReadError:
+		case sevenzip::Status::Cancelled: return ArchiveError::ReadError;
+	}
+	return ArchiveError::Damaged;
+}
+
+// Opens a .7z and finds its first ROM in the archive's order, as FindInZip does in a zip: its index, or -1 (*why).
+// A .7z that holds a disc image (.cue, .chd, .iso) has none: a disc is not read from inside a .7z (it would have to be
+// unpacked whole), and its .bin tracks are not Mega Drive ROMs.
+int First7zRom(sevenzip::Archive& a, const std::string& path, System* sys, ArchiveError* why, const std::atomic<bool>* cancel = nullptr)
+{
+	const sevenzip::Status st = a.Open(path, cancel);
+	if (st != sevenzip::Status::Ok)
+	{
+		*why = From7z(st);
+		if (st != sevenzip::Status::Cancelled)
+			OrbisLog("[games] %s: 7z %s", path.c_str(), sevenzip::StatusText(st));
+		return -1;
+	}
+	int found = -1;
+	const std::vector<sevenzip::Entry>& entries = a.Entries();
+	for (size_t i = 0; i < entries.size(); i++)
+	{
+		if (entries[i].dir)
+			continue;
+		const std::string ext = ExtOf(entries[i].name);
+		if (IsDiscExt(ext))
+		{
+			*why = ArchiveError::Disc;
+			OrbisLog("[games] %s: a disc image inside a 7z (%s): not read", path.c_str(), entries[i].name.c_str());
+			return -1;
+		}
+		System s;
+		if (found < 0 && SystemForExt(ext, &s) && s != System::SegaCd)
+		{
+			found = int(i);
+			*sys = s;
+		}
+	}
+	if (found < 0)
+		*why = ArchiveError::NoGame;
+	return found;
+}
+} // namespace
+
+bool IsArchiveExt(const std::string& ext)
+{
+	const std::string e = Lower(ext);
+	return e == ".zip" || e == ".7z";
+}
+
+namespace
+{
+// ArchiveSystem, and why not (a zip: NoGame, whatever went wrong)
+bool ArchiveSystemWhy(const std::string& path, System* out, ArchiveError* why)
+{
+	*why = ArchiveError::None;
+	if (ExtOf(path) == ".7z")
+	{
+		sevenzip::Archive a;
+		return First7zRom(a, path, out, why) >= 0;
+	}
+	*why = ArchiveError::NoGame;
 	unzFile z = unzOpen(path.c_str());
 	if (!z)
 		return false;
@@ -824,13 +911,40 @@ bool ArchiveSystem(const std::string& path, System* out)
 		return true;
 	});
 	unzClose(z);
+	if (ok)
+		*why = ArchiveError::None;
 	return ok;
 }
+} // namespace
 
-// The CRC a zip stores for its ROM, when the ROM has no copier header to skip (its size isn't 512 bytes past a
-// multiple of 1 KiB): true and the name inside; false when the data has to be read.
-bool StoredZipCrc(const std::string& path, std::string* inner, uint32_t* crc)
+bool ArchiveSystem(const std::string& path, System* out)
 {
+	ArchiveError why;
+	return ArchiveSystemWhy(path, out, &why);
+}
+
+namespace
+{
+// The CRC a zip or 7z stores for its ROM, when the ROM has no copier header to skip (its size isn't 512 bytes past a
+// multiple of 1 KiB): true and the name inside; false when the data has to be read.
+bool StoredArchiveCrc(const std::string& path, std::string* inner, uint32_t* crc)
+{
+	auto usable = [](uint64_t size) { return size > 0 && size <= kMaxArchiveRom && (size & 0x3ff) != 0x200; };
+	if (ExtOf(path) == ".7z")
+	{
+		sevenzip::Archive a;
+		System sys;
+		ArchiveError why = ArchiveError::None;
+		const int i = First7zRom(a, path, &sys, &why);
+		if (i < 0)
+			return false;
+		const sevenzip::Entry& e = a.Entries()[size_t(i)];
+		if (!e.has_crc || !usable(e.size))
+			return false;
+		*inner = e.name;
+		*crc = e.crc;
+		return true;
+	}
 	unzFile z = unzOpen(path.c_str());
 	if (!z)
 		return false;
@@ -844,18 +958,50 @@ bool StoredZipCrc(const std::string& path, std::string* inner, uint32_t* crc)
 	if (ok)
 	{
 		unz_file_info info;
-		ok = unzGetCurrentFileInfo(z, &info, nullptr, 0, nullptr, 0, nullptr, 0) == UNZ_OK &&
-			 info.uncompressed_size > 0 && info.uncompressed_size <= 16u * 1024 * 1024 &&
-			 (info.uncompressed_size & 0x3ff) != 0x200;
+		ok = unzGetCurrentFileInfo(z, &info, nullptr, 0, nullptr, 0, nullptr, 0) == UNZ_OK && usable(info.uncompressed_size);
 		if (ok)
 			*crc = uint32_t(info.crc);
 	}
 	unzClose(z);
 	return ok;
 }
+} // namespace
 
-bool ReadFromZip(const std::string& path, std::string* inner, std::vector<uint8_t>* data)
+bool ReadFromArchive(const std::string& path, std::string* inner, std::vector<uint8_t>* data, ArchiveError* why,
+	const std::atomic<bool>* cancel)
 {
+	ArchiveError dummy;
+	if (!why)
+		why = &dummy;
+	*why = ArchiveError::None;
+	data->clear();
+	if (ExtOf(path) == ".7z")
+	{
+		sevenzip::Archive a;
+		System sys;
+		const int i = First7zRom(a, path, &sys, why, cancel);
+		if (i < 0)
+			return false;
+		const sevenzip::Entry& e = a.Entries()[size_t(i)];
+		*inner = e.name;
+		if (e.size == 0)
+		{
+			*why = ArchiveError::NoGame;
+			return false;
+		}
+		const sevenzip::Status st = a.Extract(size_t(i), data, kMaxArchiveRom, kMax7zBlock);
+		if (st != sevenzip::Status::Ok)
+		{
+			*why = From7z(st);
+			if (st != sevenzip::Status::Cancelled)
+				OrbisLog("[games] %s: %s in the 7z: %s (%llu bytes, block of %llu)", path.c_str(), e.name.c_str(),
+					sevenzip::StatusText(st), (unsigned long long)e.size, (unsigned long long)a.BlockSize(size_t(i)));
+			data->clear();
+			return false;
+		}
+		return true;
+	}
+	*why = ArchiveError::NoGame; // a zip: whatever went wrong
 	unzFile z = unzOpen(path.c_str());
 	if (!z)
 		return false;
@@ -870,7 +1016,7 @@ bool ReadFromZip(const std::string& path, std::string* inner, std::vector<uint8_
 	{
 		unz_file_info info;
 		ok = unzGetCurrentFileInfo(z, &info, nullptr, 0, nullptr, 0, nullptr, 0) == UNZ_OK &&
-			 info.uncompressed_size > 0 && info.uncompressed_size <= 16u * 1024 * 1024 /* the core takes 10 MiB at most */ && unzOpenCurrentFile(z) == UNZ_OK;
+			 info.uncompressed_size > 0 && info.uncompressed_size <= kMaxArchiveRom && unzOpenCurrentFile(z) == UNZ_OK;
 		if (ok)
 		{
 			data->resize(info.uncompressed_size);
@@ -879,6 +1025,10 @@ bool ReadFromZip(const std::string& path, std::string* inner, std::vector<uint8_
 		}
 	}
 	unzClose(z);
+	if (ok)
+		*why = ArchiveError::None;
+	else
+		data->clear();
 	return ok;
 }
 
@@ -976,19 +1126,19 @@ bool RomCrc32(const std::string& path, uint32_t* whole, uint32_t* body, std::str
 	std::string ext = ExtOf(path);
 	std::vector<uint8_t> data;
 	System sys;
-	if (ext == ".zip")
+	if (IsArchiveExt(ext))
 	{
-		// the zip keeps its ROM's CRC: read only when a 512-byte copier header has to come off for the body's
+		// a zip or 7z keeps its ROM's CRC: read only when a 512-byte copier header has to come off for the body's
 		std::string inner;
 		uint32_t stored = 0;
-		if (StoredZipCrc(path, &inner, &stored))
+		if (StoredArchiveCrc(path, &inner, &stored))
 		{
 			if (inner_ext)
 				*inner_ext = ExtOf(inner);
 			*whole = *body = stored;
 			return true;
 		}
-		if (!ReadFromZip(path, &inner, &data))
+		if (!ReadFromArchive(path, &inner, &data, nullptr, cancel))
 			return false;
 		ext = ExtOf(inner);
 	}
@@ -1106,7 +1256,7 @@ struct NetNaming::Impl
 				tried.erase(path);
 				continue;
 			}
-			if (ExtOf(path) == ".zip")
+			if (IsArchiveExt(ExtOf(path)))
 			{
 				System sys;
 				CachedArchiveSystem(cache, path, st, &sys, true, nullptr, &stop); // the system of the ROM inside, for the next scan
@@ -1269,7 +1419,7 @@ GameInfo DescribeGame(const std::string& path, const System* system)
 	g.on_network = netfs_is_network_path(path.c_str());
 	if (system)
 		g.system = *system;
-	else if (ext == ".zip")
+	else if (IsArchiveExt(ext))
 	{
 		if (!ArchiveSystem(path, &g.system))
 			g.system = System::Md;
@@ -1342,11 +1492,11 @@ bool ReadRomHeader(const std::string& path, System system, romheader::Info* info
 	}
 	if (system != System::Md)
 		return false; // the Master System's, the Game Gear's and the SG-1000's headers have no title
-	if (ext == ".zip")
+	if (IsArchiveExt(ext))
 	{
 		std::string inner;
 		std::vector<uint8_t> data;
-		if (!ReadFromZip(path, &inner, &data))
+		if (!ReadFromArchive(path, &inner, &data))
 			return false;
 		return romheader::ReadCart(
 			[&data](uint64_t at, uint8_t* out, size_t n) {

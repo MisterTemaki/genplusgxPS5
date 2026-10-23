@@ -246,7 +246,7 @@ struct State
 	bool loaded = false;
 	std::string path, name, dir, ext; // the game; ext without the dot
 	fe::System system = fe::System::Md;
-	std::vector<uint8_t> rom; // a ROM read from a .zip
+	std::vector<uint8_t> rom; // a ROM read from a .zip or .7z
 	retro_game_info_ext info_ext = {};
 	std::string sys_dir, save_dir;
 
@@ -1089,14 +1089,52 @@ bool LoadGame(const std::string& path, std::string* error)
 	g.info_ext = retro_game_info_ext();
 
 	std::string inner;
-	if (ext == ".zip")
+	if (fe::IsArchiveExt(ext))
 	{
-		if (!fe::ReadFromZip(path, &inner, &g.rom))
+		fe::ArchiveError why = fe::ArchiveError::None;
+		if (!fe::ReadFromArchive(path, &inner, &g.rom, &why))
 		{
-			OrbisLog("[emu] could not start %s: no game inside the zip", path.c_str());
+			const char* msg = "There is no game Genesis Plus GX PS5 knows inside %s.";
+			const char* log = "no game inside the archive";
+			switch (why)
+			{
+				case fe::ArchiveError::Disc:
+					msg = "%s holds a Sega CD disc: discs are not played from inside a .7z. Unpack it into a folder of its own.";
+					log = "a disc image inside the 7z";
+					break;
+				case fe::ArchiveError::Damaged:
+					msg = "%s is damaged or is not a 7z archive.";
+					log = "the 7z is damaged";
+					break;
+				case fe::ArchiveError::Unsupported:
+					msg = "%s is packed with a compression method Genesis Plus GX PS5 can't read (it reads LZMA, LZMA2, PPMd and "
+						  "BCJ). Pack it again with 7-Zip's usual settings.";
+					log = "an unsupported compression method";
+					break;
+				case fe::ArchiveError::Encrypted:
+					msg = "%s is protected by a password: Genesis Plus GX PS5 can't open encrypted archives.";
+					log = "an encrypted 7z";
+					break;
+				case fe::ArchiveError::TooBig:
+					msg = "The game inside %s is too large (over 16 MiB), or unpacking it would need too much memory.";
+					log = "too large";
+					break;
+				case fe::ArchiveError::BlockTooBig:
+					msg = "%s keeps its game in a solid block over 64 MiB, too large to unpack. Pack it again as non-solid, or "
+						  "one game per archive.";
+					log = "a solid block over 64 MiB";
+					break;
+				case fe::ArchiveError::ReadError:
+					msg = "%s could not be read.";
+					log = "read error";
+					break;
+				default: break;
+			}
+			OrbisLog("[emu] could not start %s: %s", path.c_str(), log);
 			if (error)
-				*error = Fmt(T("There is no game Genesis Plus GX PS5 knows inside %s."), file.c_str());
+				*error = Fmt(T(msg), file.c_str());
 			g.path.clear();
+			g.rom.clear();
 			return false;
 		}
 		ext = ExtOf(inner);
