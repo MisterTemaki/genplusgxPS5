@@ -136,6 +136,44 @@ extern "C" int __ps5platform_wrap_fflush(FILE*);
 #define NETFS_NEXT_FCLOSE __ps5platform_wrap_fclose
 #define NETFS_NEXT_FFLUSH __ps5platform_wrap_fflush
 
+// The platform's own versions of names netfs wraps, which its recipe binds with --defsym (left out of this link, see the
+// Makefile: lld let that --defsym replace netfs's __wrap_ function): defined here, they are what __real_<name> reaches.
+#include <dirent.h>
+#include <netdb.h>
+extern "C"
+{
+int ps5_access(const char* path, int mode);
+DIR* ps5_opendir(const char* path);
+struct dirent* ps5_readdir(DIR* dir);
+int ps5_closedir(DIR* dir);
+int ps5_getaddrinfo(const char* node, const char* service, const struct addrinfo* hints, struct addrinfo** res);
+void ps5_freeaddrinfo(struct addrinfo* ai);
+int access(const char* path, int mode)
+{
+	return ps5_access(path, mode);
+}
+DIR* opendir(const char* path)
+{
+	return ps5_opendir(path);
+}
+struct dirent* readdir(DIR* dir)
+{
+	return ps5_readdir(dir);
+}
+int closedir(DIR* dir)
+{
+	return ps5_closedir(dir);
+}
+int getaddrinfo(const char* node, const char* service, const struct addrinfo* hints, struct addrinfo** res)
+{
+	return ps5_getaddrinfo(node, service, hints, res);
+}
+void freeaddrinfo(struct addrinfo* ai)
+{
+	ps5_freeaddrinfo(ai);
+}
+}
+
 // That link has no libc.a (the system's libc stubs and the platform layer stand in): the two lookups libsmb2 and libnfs
 // make that neither has, answered as they need them. getprotobyname: "tcp" for TCP_NODELAY (and "udp"); getnameinfo:
 // numeric addresses and ports only (libnfs's server discovery; nothing resolves names on the console).

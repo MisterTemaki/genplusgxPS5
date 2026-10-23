@@ -130,6 +130,7 @@ int __wrap_getaddrinfo(const char* node, const char* service, const addrinfo* hi
 	Result* r = (Result*)calloc(1, sizeof(Result));
 	if (!r)
 		return EAI_MEMORY;
+	r->sa.sin_len = sizeof r->sa; // FreeBSD's sockaddr_in has a length
 	r->sa.sin_family = AF_INET;
 	r->sa.sin_port = htons(port);
 	r->sa.sin_addr = addr;

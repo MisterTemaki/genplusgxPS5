@@ -35,7 +35,7 @@ libretro port's cheats aside). The frontend drives the
 core through its libretro interface -- the most complete of its ports -- and plays the part RetroArch plays on a
 PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
 
-> **Status (2.1):** builds with the ps5-payload-dev SDK into a signed native app, in two builds: **GPU** (RADV,
+> **Status (2.1.1):** builds with the ps5-payload-dev SDK into a signed native app, in two builds: **GPU** (RADV,
 > Mesa's Vulkan driver for AMD GPUs, ported to the PS5 by [PS5_Vulkan](https://github.com/mihawk-99/PS5_Vulkan),
 > linked into the app) and **CPU-only**. It passes 634 host tests, which run the same code (the core, the
 > frontend, the GPU renderer, every built-in slang shader, the shelf on the GPU) on Linux with the PS5 calls
@@ -44,7 +44,8 @@ PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
 > the GPU a frame and the Mega Bezel Standard 2-3 ms, and a Sega CD game from a `.chd` (Earnest Evans) played at
 > 60 fps with its CD music and no sound/picture drift. **What 2.0 and 2.1 add has only run in the host tests so far**:
 > the shader cache, the shader parameters, your own `.slangp` presets and the shelf drawn by the GPU, and **all of
-> 2.1** (network shares, shelf tabs, borders, the new covers, cheats). If the GPU
+> 2.1** (network shares, shelf tabs, borders, the new covers, cheats). 2.1 has started on a PS5 Pro (11.60), where its
+> GPU build could not reach a share (fixed in 2.1.1). If the GPU
 > fails to start, the app draws with the CPU (see [The GPU renderer](#the-gpu-renderer)). If something fails, turn
 > on Settings, SYSTEM, Debug logs, and send the logs in `/data/genplus/logs/`.
 
@@ -75,10 +76,17 @@ Genesis Plus GX PS5 only uses `/data/genplus/`, `/data/homebrew/PPSA99921/` and 
 
 ## Versions
 
-Every release carries its version in the file name: `GenesisPlusGXPS5-v2.1.elf` (GPU build),
-`GenesisPlusGXPS5-v2.1-cpu.elf` (CPU-only build) and `genplus-ps5-v2.1-src.zip`
+Every release carries its version in the file name: `GenesisPlusGXPS5-v2.1.1.elf` (GPU build),
+`GenesisPlusGXPS5-v2.1.1-cpu.elf` (CPU-only build) and `genplus-ps5-v2.1.1-src.zip`
 (`make dist`). When updating, replace the old ELF with the new one in your autoload or Payload Manager. In this
 README, "`GenesisPlusGXPS5.elf`" always means the current release's ELF.
+
+**2.1.1:** **a fix for network shares in the GPU build** (not yet confirmed on a PS5). In 2.1's GPU build (`GenesisPlusGXPS5-v2.1.elf`) every
+share failed with "No server named ... was found. Use its IP address.", even with an IP address: PS5_Vulkan's platform
+layer, linked in for the GPU driver, points some libc names at its own versions (its getaddrinfo always fails), and the
+linker let that replace the app's own address lookup and folder listing for shares. Now the app's own versions are the
+ones used; the build stops if that ever changes. The CPU-only build was not affected. Thanks to CroCop86 for the report
+and the comparison with SwanStationPS5.
 
 **2.1:** the features Snes9x PS5 2.7 got ([issue #3](https://github.com/MisterTemaki/genplusgxPS5/issues/3)),
 after the design of [thatboialex](https://github.com/thatboialex)'s pull request to Snes9x PS5
@@ -263,7 +271,7 @@ Drive's button names, and the shaders' names are not translated.
 
 1. **Send `GenesisPlusGXPS5.elf`** with PS5 Payload Manager, or from a PC on the same network:
    ```sh
-   nc -q0 PS5_IP 9021 < GenesisPlusGXPS5-v2.1.elf
+   nc -q0 PS5_IP 9021 < GenesisPlusGXPS5-v2.1.1.elf
    ```
    It installs the app in `/data/homebrew/PPSA99921/` (`eboot.bin`, `sce_module/libc.prx`, `param.json`, the
    icon and the backgrounds), shows **"Genesis Plus GX PS5 2.0 installed. Open it from the Genesis Plus GX PS5
@@ -738,7 +746,7 @@ screen columns, monoCRT has no beam jitter.
 
 ## The GPU renderer
 
-In the GPU build (`GenesisPlusGXPS5-v2.1.elf`), the game's picture is drawn by the PS5's GPU through Vulkan:
+In the GPU build (`GenesisPlusGXPS5-v2.1.1.elf`), the game's picture is drawn by the PS5's GPU through Vulkan:
 **RADV**, Mesa's driver for AMD GPUs, ported to the PS5 by [PS5_Vulkan](https://github.com/mihawk-99/PS5_Vulkan)
 and [PS5_Mesa](https://github.com/mihawk-99/PS5_Mesa) (mihawk-99), linked into the app; it already runs
 vkQuake, RetroArch's Vulkan cores and Dolphin on consoles. What changes:
@@ -760,7 +768,7 @@ vkQuake, RetroArch's Vulkan cores and Dolphin on consoles. What changes:
 - If the app dies while the GPU is being set up, the next start notices it (`logs/gpu-starting` is still there)
   and uses the CPU for that start.
 - Settings, SYSTEM, **Renderer: CPU** keeps the CPU for good (`renderer=0` in `genplus-ps5.ini`); or install the
-  **CPU-only build** (`GenesisPlusGXPS5-v2.1-cpu.elf`), which has no GPU driver inside at all.
+  **CPU-only build** (`GenesisPlusGXPS5-v2.1.1-cpu.elf`), which has no GPU driver inside at all.
 - The GPU driver was developed and checked by its author on his consoles (with etaHEN); 1.9's GPU renderer ran
   on a user's PS5 (RADV saw the GPU as NAVI21, 4K at 59.94 Hz, all 26 shaders loaded). Please report `boot.log`,
   `[gpu]` lines included (Debug logs on).

@@ -25,7 +25,7 @@
 PS5_PAYLOAD_SDK ?= /opt/ps5-payload-sdk
 PS5_HOST ?= ps5
 PS5_PORT ?= 9021
-VERSION ?= 2.1
+VERSION ?= 2.1.1
 CORE_VERSION := 1.7.4
 # the GPU's shader tables, generated from shaders/presets.txt (see "shaders:" below)
 SLANG_CPP := build/gen/slang_presets.cpp
@@ -179,6 +179,8 @@ GLSLANG_FLAGS := -std=c++17 -I$(GLSLANG) -w
 # slang shaders. Without it the app is the CPU-only build of 1.8. Use that checkout's payload SDK fork too
 # (PS5_PAYLOAD_SDK=$(PS5_VULKAN)/.deps/native/ps5-payload-sdk): RADV is built against it.
 PS5_VULKAN ?=
+empty :=
+space := $(empty) $(empty)
 ifneq ($(PS5_VULKAN),)
 RADV_DIR ?= $(PS5_VULKAN)/.deps/native/radv-release
 RADV_ARCHIVE ?= $(RADV_DIR)/lib/libvulkan_radeon.ps5.a
@@ -362,7 +364,11 @@ $(AGC_STUBS):
 	$(PS5_PAYLOAD_SDK)/bin/prospero-lld --shared -soname $(basename $(notdir $@)).prx -o $@ $@.o
 # The GPU build: PS5_Vulkan's platform layer wraps fclose and fflush (open_memstream) as netfs does. A copy of its
 # archive with those two wrappers renamed goes into the link instead, and netfs_wrap.cpp's own wrappers call them for the
-# FILEs that aren't on a share.
+# FILEs that aren't on a share. Its recipe also points some libc names at its own versions (--defsym=opendir=ps5_opendir,
+# getaddrinfo, access...): with --wrap, lld lets such a --defsym replace netfs's __wrap_ function itself (2.1: every
+# getaddrinfo failed, "No server named ... was found"). For a name netfs wraps, that --defsym is left out and
+# netfs_wrap.cpp defines the name itself as a call to the platform's version: what netfs's wrapper calls (__real_) for
+# what isn't on a share.
 ifneq ($(PS5_VULKAN),)
 PS5_PLATFORM_LIB = $(PS5_PAYLOAD_SDK)/target/lib/libps5platform.a
 $(PS5_OUT)/port/netfs/netfs_wrap.o: EXTRA_FLAGS = -DNETFS_CHAIN_PS5PLATFORM
@@ -374,8 +380,10 @@ endif
 build/app/radv-link.args: tools/radv_link_args.sh $(RADV_ARCHIVE) build/app/libps5platform-netfs.a
 	@mkdir -p $(dir $@)
 	bash tools/radv_link_args.sh $(abspath $(PS5_VULKAN)) $(abspath $(PS5_PAYLOAD_SDK)) $(abspath $(RADV_ARCHIVE)) \
-		| sed 's|^$(abspath $(PS5_PLATFORM_LIB))$$|$(abspath build/app/libps5platform-netfs.a)|' > $@
+		| sed -e 's|^$(abspath $(PS5_PLATFORM_LIB))$$|$(abspath build/app/libps5platform-netfs.a)|' \
+		$(foreach s,$(NETFS_WRAPPED) $(NETFS_WRAPPED_PS5),-e '/^--defsym=$(s)=/d') > $@
 	grep -qx '$(abspath build/app/libps5platform-netfs.a)' $@
+	! grep -E '^--defsym=($(subst $(space),|,$(strip $(NETFS_WRAPPED) $(NETFS_WRAPPED_PS5))))=' $@
 $(PS5_OUT)/slang_presets.o: $(SLANG_CPP) coreorbis/orbis-shims/ProsperoSlang.h
 	@mkdir -p $(dir $@)
 	$(PS5_CXX) -std=c++17 -O0 -fPIC -Icoreorbis/orbis-shims -c -o $@ $<
