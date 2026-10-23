@@ -76,9 +76,9 @@ Genesis Plus GX PS5 only uses `/data/genplus/`, `/data/homebrew/PPSA99921/` and 
 
 ## Versions
 
-Every release carries its version in the file name: `GenesisPlusGXPS5-v2.2.elf` (GPU build),
-`GenesisPlusGXPS5-v2.2-cpu.elf` (CPU-only build) and `genplus-ps5-v2.2-src.zip`
-(`make dist`). When updating, replace the old ELF with the new one in your autoload or Payload Manager. In this
+Every release carries its version in the file name: `GenesisPlusGXPS5-v2.2.elf` and `genplus-ps5-v2.2-src.zip`
+(`make dist`). One ELF does both: the GPU draws the picture, or the CPU with Settings, SYSTEM, Renderer (from 2.1.1
+on, releases no longer carry a separate CPU-only ELF; `make ps5` without PS5_VULKAN still builds one). When updating, replace the old ELF with the new one in your autoload or Payload Manager. In this
 README, "`GenesisPlusGXPS5.elf`" always means the current release's ELF.
 
 **2.2:** **games inside `.7z` archives** ([issue #3](https://github.com/MisterTemaki/genplusgxPS5/issues/3);
@@ -804,8 +804,9 @@ vkQuake, RetroArch's Vulkan cores and Dolphin on consoles. What changes:
   **CPU draws the picture**, as in 1.8, with the CPU shaders.
 - If the app dies while the GPU is being set up, the next start notices it (`logs/gpu-starting` is still there)
   and uses the CPU for that start.
-- Settings, SYSTEM, **Renderer: CPU** keeps the CPU for good (`renderer=0` in `genplus-ps5.ini`); or install the
-  **CPU-only build** (`GenesisPlusGXPS5-v2.1.1-cpu.elf`), which has no GPU driver inside at all.
+- Settings, SYSTEM, **Renderer: CPU** keeps the CPU for good (`renderer=0` in `genplus-ps5.ini`). If the app can't
+  start at all, the CPU-only build (no GPU driver inside) can be built from the source (`make ps5` without
+  PS5_VULKAN); 2.1's release still has one (`GenesisPlusGXPS5-v2.1-cpu.elf`).
 - The GPU driver was developed and checked by its author on his consoles (with etaHEN); 1.9's GPU renderer ran
   on a user's PS5 (RADV saw the GPU as NAVI21, 4K at 59.94 Hz, all 26 shaders loaded). Please report `boot.log`,
   `[gpu]` lines included (Debug logs on).
