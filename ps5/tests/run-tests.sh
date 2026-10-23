@@ -49,6 +49,21 @@ run() { # dir pad dumps [args...]
 	echo $?
 }
 nosan() { expect "! grep -q 'runtime error\|AddressSanitizer' $1/out.txt" "no sanitizer reports"; }
+# The middle card's placeholder (2.2.1): where the SNES pad's four coloured dots were (2.2 and before) none of them;
+# a Mega Drive card has three dark buttons in a row (the middle one at 1234,226), a Master System / Game Gear /
+# SG-1000 card two (1203,226 and 1266,226) and nothing between them.
+PH_DARK="34 34 40 16"
+no_snes_dots() { # ppm
+	local p c
+	for p in "1203 226" "1240 194" "1276 226" "1240 258"; do
+		for c in "225 60 70" "240 200 60" "70 180 90" "70 110 230"; do
+			$CHECK "$1" $p $c 40 >/dev/null 2>&1 && return 1
+		done
+	done
+	return 0
+}
+md_emblem() { $CHECK "$1" 1234 226 $PH_DARK >/dev/null && ! $CHECK "$1" 1203 226 $PH_DARK >/dev/null 2>&1; }
+sms_emblem() { $CHECK "$1" 1203 226 $PH_DARK >/dev/null && $CHECK "$1" 1266 226 $PH_DARK >/dev/null && ! $CHECK "$1" 1234 226 $PH_DARK >/dev/null 2>&1; }
 
 # A game for each system: picture where the log says, Cross -> green, quit from the pause menu.
 system_test() { # name ext label
@@ -274,6 +289,7 @@ expect "grep -q 'is a link to Streets of Rage 2 (Europe).png' $T/root/logs/boot.
 expect "! grep -q 'GET .*Golden%20Axe' $T/root/logs/boot.log" "your own cover (covers/MegaDrive/<ROM name>.png): nothing downloaded for it"
 expect "$CHECK $T/dump/flip00170.ppm 960 420 255 0 255 >/dev/null" "Alex Kidd shows the Master System (magenta) cover"
 expect "! $CHECK $T/dump/flip00220.ppm 960 420 255 0 0 >/dev/null 2>&1 && ! $CHECK $T/dump/flip00220.ppm 960 420 0 255 0 >/dev/null 2>&1" "no cover online: a placeholder card"
+expect "no_snes_dots $T/dump/flip00220.ppm && md_emblem $T/dump/flip00220.ppm" "the placeholder shows a Mega Drive pad's three buttons, not the SNES pad's coloured dots"
 expect "$CHECK $T/dump/flip00270.ppm 960 420 0 0 255 >/dev/null" "Golden Axe shows your own (blue) cover, not the server's"
 expect "$CHECK $T/dump/flip00320.ppm 960 420 255 0 0 >/dev/null" "Sonic shows the downloaded (red) cover"
 expect "$CHECK $T/dump/flip00370.ppm 960 420 0 255 0 >/dev/null" "Streets of Rage 2 shows the linked (green) cover"
@@ -300,6 +316,8 @@ expect "[ $rc = 0 ]" "exit code 0 (got $rc)"
 expect "grep -q '\[shelf\] tab Mega Drive: 1 game(s)' $T/root/logs/boot.log" "Down: the Mega Drive tab, one game"
 expect "grep -q 'loading .*Beta (USA).md' $T/root/logs/boot.log" "the Mega Drive game was started from its tab"
 expect "grep -q 'shelf_family=1' $T/root/genplus-ps5.ini" "the tab is remembered"
+expect "no_snes_dots $T/dump/flip00025.ppm && sms_emblem $T/dump/flip00025.ppm" "a Master System game's placeholder: two buttons (1 2), not the SNES pad's dots"
+expect "no_snes_dots $T/dump/flip00055.ppm && md_emblem $T/dump/flip00055.ppm" "a Mega Drive game's placeholder: three buttons (A B C)"
 expect "$CHECK $T/dump/flip00150.ppm 960 540 red >/dev/null" "the Mega Drive game runs"
 nosan "$T"
 fi

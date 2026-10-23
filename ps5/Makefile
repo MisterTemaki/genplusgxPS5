@@ -25,7 +25,7 @@
 PS5_PAYLOAD_SDK ?= /opt/ps5-payload-sdk
 PS5_HOST ?= ps5
 PS5_PORT ?= 9021
-VERSION ?= 2.2
+VERSION ?= 2.2.1
 CORE_VERSION := 1.7.4
 # the GPU's shader tables, generated from shaders/presets.txt (see "shaders:" below)
 SLANG_CPP := build/gen/slang_presets.cpp
@@ -402,13 +402,23 @@ build/app/libps5platform-netfs.a: $(PS5_PLATFORM_LIB)
 	$(PS5_PAYLOAD_SDK)/bin/llvm-objcopy --redefine-sym __wrap_fclose=__ps5platform_wrap_fclose \
 		--redefine-sym __wrap_fflush=__ps5platform_wrap_fflush $< $@
 endif
-build/app/radv-link.args: tools/radv_link_args.sh $(RADV_ARCHIVE) build/app/libps5platform-netfs.a
+# The names netfs_wrap.cpp defines under NETFS_CHAIN_PS5PLATFORM: the recipe's --defsym for these is dropped. If the
+# recipe ever binds another name netfs wraps, the link would lose netfs's wrapper for it (or its fall-back): the
+# recipe's own output is checked for that before anything is dropped (2.2.1: the check read the filtered file, so it
+# could never fire). The file depends on the Makefile too: one left by an older build keeps that build's filtering.
+NETFS_CHAINED := access opendir readdir closedir getaddrinfo freeaddrinfo
+NETFS_UNCHAINED := $(filter-out $(NETFS_CHAINED),$(NETFS_WRAPPED) $(NETFS_WRAPPED_PS5))
+build/app/radv-link.args: tools/radv_link_args.sh $(RADV_ARCHIVE) build/app/libps5platform-netfs.a Makefile
 	@mkdir -p $(dir $@)
-	bash tools/radv_link_args.sh $(abspath $(PS5_VULKAN)) $(abspath $(PS5_PAYLOAD_SDK)) $(abspath $(RADV_ARCHIVE)) \
-		| sed -e 's|^$(abspath $(PS5_PLATFORM_LIB))$$|$(abspath build/app/libps5platform-netfs.a)|' \
-		$(foreach s,$(NETFS_WRAPPED) $(NETFS_WRAPPED_PS5),-e '/^--defsym=$(s)=/d') > $@
-	grep -qx '$(abspath build/app/libps5platform-netfs.a)' $@
-	! grep -E '^--defsym=($(subst $(space),|,$(strip $(NETFS_WRAPPED) $(NETFS_WRAPPED_PS5))))=' $@
+	bash tools/radv_link_args.sh $(abspath $(PS5_VULKAN)) $(abspath $(PS5_PAYLOAD_SDK)) $(abspath $(RADV_ARCHIVE)) > $@.recipe
+	@if grep -E '^--defsym=($(subst $(space),|,$(strip $(NETFS_UNCHAINED))))=' $@.recipe; then \
+		echo "error: PS5_Vulkan's link recipe binds a name netfs wraps (above) that netfs_wrap.cpp does not chain" \
+			"(NETFS_CHAIN_PS5PLATFORM): add it there and to NETFS_CHAINED" >&2; exit 1; fi
+	sed -e 's|^$(abspath $(PS5_PLATFORM_LIB))$$|$(abspath build/app/libps5platform-netfs.a)|' \
+		$(foreach s,$(NETFS_CHAINED),-e '/^--defsym=$(s)=/d') $@.recipe > $@.tmp
+	grep -qx '$(abspath build/app/libps5platform-netfs.a)' $@.tmp
+	! grep -E '^--defsym=($(subst $(space),|,$(strip $(NETFS_WRAPPED) $(NETFS_WRAPPED_PS5))))=' $@.tmp
+	mv $@.tmp $@
 $(PS5_OUT)/slang_presets.o: $(SLANG_CPP) coreorbis/orbis-shims/ProsperoSlang.h
 	@mkdir -p $(dir $@)
 	$(PS5_CXX) -std=c++17 -O0 -fPIC -Icoreorbis/orbis-shims -c -o $@ $<

@@ -35,17 +35,18 @@ libretro port's cheats aside). The frontend drives the
 core through its libretro interface -- the most complete of its ports -- and plays the part RetroArch plays on a
 PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
 
-> **Status (2.2):** builds with the ps5-payload-dev SDK into a signed native app, in two builds: **GPU** (RADV,
+> **Status (2.2.1):** builds with the ps5-payload-dev SDK into a signed native app, in two builds: **GPU** (RADV,
 > Mesa's Vulkan driver for AMD GPUs, ported to the PS5 by [PS5_Vulkan](https://github.com/mihawk-99/PS5_Vulkan),
-> linked into the app) and **CPU-only**. It passes 682 host tests, which run the same code (the core, the
+> linked into the app) and **CPU-only**. It passes 685 host tests, which run the same code (the core, the
 > frontend, the GPU renderer, every built-in slang shader, the shelf on the GPU) on Linux with the PS5 calls
 > simulated and the GPU renderer on a software Vulkan driver (lavapipe). **1.9 has run on a PS5** (a user's
 > console, 4K at 59.94 Hz): the GPU renderer started, the 26 built-in shaders loaded, crt-easymode took 0.6 ms of
 > the GPU a frame and the Mega Bezel Standard 2-3 ms, and a Sega CD game from a `.chd` (Earnest Evans) played at
 > 60 fps with its CD music and no sound/picture drift. **What 2.0 and 2.1 add has only run in the host tests so far**:
 > the shader cache, the shader parameters, your own `.slangp` presets and the shelf drawn by the GPU, and **all of
-> 2.1** (network shares, shelf tabs, borders, the new covers, cheats). 2.1 has started on a PS5 Pro (11.60), where its
-> GPU build could not reach a share (fixed in 2.1.1). 2.2's `.7z` support has only run in the host tests. If the GPU
+> 2.1** (shelf tabs, borders, the new covers, cheats; network shares: below). 2.1 has started on a PS5 Pro (11.60), where its
+> GPU build could not reach a share; 2.1.1's fix was confirmed there by CroCop86 (NFS), and 2.2 too, on his PS5:
+> games in a `.7z` and on an NFS share work. If the GPU
 > fails to start, the app draws with the CPU (see [The GPU renderer](#the-gpu-renderer)). If something fails, turn
 > on Settings, SYSTEM, Debug logs, and send the logs in `/data/genplus/logs/`.
 
@@ -76,22 +77,30 @@ Genesis Plus GX PS5 only uses `/data/genplus/`, `/data/homebrew/PPSA99921/` and 
 
 ## Versions
 
-Every release carries its version in the file name: `GenesisPlusGXPS5-v2.2.elf` and `genplus-ps5-v2.2-src.zip`
+Every release carries its version in the file name: `GenesisPlusGXPS5-v2.2.1.elf` and `genplus-ps5-v2.2.1-src.zip`
 (`make dist`). One ELF does both: the GPU draws the picture, or the CPU with Settings, SYSTEM, Renderer (from 2.1.1
 on, releases no longer carry a separate CPU-only ELF; `make ps5` without PS5_VULKAN still builds one). When updating, replace the old ELF with the new one in your autoload or Payload Manager. In this
 README, "`GenesisPlusGXPS5.elf`" always means the current release's ELF.
+
+**2.2.1:** **a card for a game without a cover shows its own system's controller**
+([issue #4](https://github.com/MisterTemaki/genplusgxPS5/issues/4); thanks to CroCop86 for the report). The card's
+corner had the four coloured buttons of a Super Nintendo pad, left over from Snes9x PS5; now it draws three buttons in
+a row for a Mega Drive or Sega CD game and two for a Master System, Game Gear or SG-1000 game. Also two small fixes
+for network shares: a socket made blocking again stays blocking, and the GPU build's check that PS5_Vulkan's link
+recipe leaves the app's share functions alone now reads the recipe itself (in 2.2 it could never fire). 685 host tests.
 
 **2.2:** **games inside `.7z` archives** ([issue #3](https://github.com/MisterTemaki/genplusgxPS5/issues/3);
 thanks to CroCop86 for the request). Mega Drive, Master System, Game Gear and SG-1000 games can now sit in a `.7z` as
 they can in a `.zip`: on the shelf with their name, cover, border and cheats (named by the CRC the archive stores,
 nothing unpacked), started from the console's drive, a USB drive or a network share. Sega CD discs inside a `.7z` are
 not supported (see [Games in a .zip or .7z](#games-in-a-zip-or-7z)). A damaged, encrypted or too large archive says
-why on the screen. The decoder is the LZMA SDK's (7-Zip 26.05, public domain). Tested on the PC only so far: 682 host
+why on the screen. The decoder is the LZMA SDK's (7-Zip 26.05, public domain). Tested on the PC: 682 host
 tests, 48 of them new (a 7z named, covered, bordered, with cheats and played like its zip twin; a disc, broken,
 encrypted, unsupported and too large archives; a 7z on a share), and the reader's own 64 checks (LZMA, LZMA2, PPMd,
-BCJ, ARM, Delta, solid, empty, cut short, changed bytes). Not yet on a PS5.
+BCJ, ARM, Delta, solid, empty, cut short, changed bytes). Confirmed on a PS5 by CroCop86: "version 2.2 works well,
+both 7z files and NFS work".
 
-**2.1.1:** **a fix for network shares in the GPU build** (not yet confirmed on a PS5). In 2.1's GPU build (`GenesisPlusGXPS5-v2.1.elf`) every
+**2.1.1:** **a fix for network shares in the GPU build** (confirmed on a PS5 Pro, 11.60, by CroCop86 with NFS). In 2.1's GPU build (`GenesisPlusGXPS5-v2.1.elf`) every
 share failed with "No server named ... was found. Use its IP address.", even with an IP address: PS5_Vulkan's platform
 layer, linked in for the GPU driver, points some libc names at its own versions (its getaddrinfo always fails), and the
 linker let that replace the app's own address lookup and folder listing for shares. Now the app's own versions are the
@@ -281,7 +290,7 @@ Drive's button names, and the shaders' names are not translated.
 
 1. **Send `GenesisPlusGXPS5.elf`** with PS5 Payload Manager, or from a PC on the same network:
    ```sh
-   nc -q0 PS5_IP 9021 < GenesisPlusGXPS5-v2.1.1.elf
+   nc -q0 PS5_IP 9021 < GenesisPlusGXPS5-v2.2.1.elf
    ```
    It installs the app in `/data/homebrew/PPSA99921/` (`eboot.bin`, `sce_module/libc.prx`, `param.json`, the
    icon and the backgrounds), shows **"Genesis Plus GX PS5 2.0 installed. Open it from the Genesis Plus GX PS5
@@ -432,7 +441,8 @@ wordmark: **github.com/MisterTemaki**.
 - **Your own covers:** a `.png` or `.jpg` named after the ROM file, in `/data/genplus/covers/<system>/`
   (`covers/MegaDrive/Sonic.png` for `roms/MegaDrive/Sonic.md`), in `covers/` itself, or next to the ROM (not on a network share), takes
   priority over downloads.
-- **No cover:** the game gets a card with its title and system.
+- **No cover:** the game gets a card with its title, its system and, in the corner, its controller's buttons (three
+  in a row for the Mega Drive and the Sega CD, two for the Master System, the Game Gear and the SG-1000).
 - **Turning downloads off:** Settings, "Download covers".
 
 ### Downloading all the covers yourself
@@ -783,7 +793,7 @@ screen columns, monoCRT has no beam jitter.
 
 ## The GPU renderer
 
-In the GPU build (`GenesisPlusGXPS5-v2.1.1.elf`), the game's picture is drawn by the PS5's GPU through Vulkan:
+In the GPU build (`GenesisPlusGXPS5-v2.2.1.elf`), the game's picture is drawn by the PS5's GPU through Vulkan:
 **RADV**, Mesa's driver for AMD GPUs, ported to the PS5 by [PS5_Vulkan](https://github.com/mihawk-99/PS5_Vulkan)
 and [PS5_Mesa](https://github.com/mihawk-99/PS5_Mesa) (mihawk-99), linked into the app; it already runs
 vkQuake, RetroArch's Vulkan cores and Dolphin on consoles. What changes:
@@ -1068,7 +1078,7 @@ make ps5 -j$(nproc)              # build/ps5/GenesisPlusGXPS5.elf (installer + h
 make send PS5_HOST=192.168.0.10  # sends it to elfldr (port 9021)
 make dist                        # build/dist/GenesisPlusGXPS5-v<version>.elf, the release zip, the source zip
 make app                         # only build/app/PPSA99921/, to copy by hand
-make test                        # Linux builds (app, installer, helper) + 420 host tests (ASan/UBSan)
+make test                        # Linux builds (app, installer, helper) + 685 host tests (ASan/UBSan)
 make shader-bench                # the CRT shaders' time per frame on this computer
 ```
 
@@ -1177,7 +1187,7 @@ The build has three stages:
 - **`ps5/host/sce_host.cpp`** and **`ps5/tests/`**: the PS5 functions implemented on Linux, test programs for
   Mega Drive (NTSC and PAL), Master System and Game Gear (`make_test_rom.py`, tiny hand-assembled 68000 and Z80
   programs; `mdplus` asks an MD+ for a CD track, `cdbios` is a stand-in Sega CD BIOS; `cheat` reads its colour from RAM, for the RAM cheats), stand-in discs
-  (`make_test_cd.py`: `.cue`/`.bin`, `.wav`, `.chd`), the sound check (`check_tone.py`), and the 420 tests:
+  (`make_test_cd.py`: `.cue`/`.bin`, `.wav`, `.chd`), the sound check (`check_tone.py`), and the 685 tests:
   picture and input on each system, the Sega CD BIOS message and `.cue` tracks, Sega CD discs booting (cue, chd,
   the region's BIOS), MD+ CD music (bin, wav, chd), the safety copies of saves and states, settings for one game,
   save states, PAL timing, zip and 7z, sound latency, integer scale and scanlines, the shelf's tabs, the system

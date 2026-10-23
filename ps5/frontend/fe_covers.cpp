@@ -351,14 +351,52 @@ std::shared_ptr<CoverTex> Placeholder(const GameInfo& g)
 			px[size_t(y) * w + i] = edge;
 			px[size_t(y) * w + w - 1 - i] = edge;
 		}
-	// four coloured buttons, top right
-	const uint32_t dots[4] = {Pack(225, 60, 70), Pack(240, 200, 60), Pack(70, 180, 90), Pack(70, 110, 230)};
-	const int cx[4] = {w - 130, w - 95, w - 60, w - 95}, cy[4] = {80, 50, 80, 110};
-	for (int k = 0; k < 4; k++)
-		for (int y = -14; y <= 14; y++)
-			for (int x = -14; x <= 14; x++)
-				if (x * x + y * y <= 196)
-					px[size_t(cy[k] + y) * w + cx[k] + x] = dots[k];
+	// top right, the game's own controller in a few plain shapes (2.2.1; before, the SNES pad's four coloured
+	// buttons, from Snes9x PS5): dark buttons with a light rim, three in a row (A B C) for the Mega Drive and the
+	// Mega-CD, two (1 2) for the Master System, the Game Gear and the SG-1000.
+	{
+		const uint32_t rim = Pack(196, 196, 210), fill = Pack(34, 34, 40);
+		// coverage-blended rounded box (a circle when hw == hh == rad), centre (cx, cy)
+		auto shape = [&](float cx, float cy, float hw, float hh, float rad, uint32_t col) {
+			const int x0 = std::max(0, int(cx - hw - 2)), x1 = std::min(w - 1, int(cx + hw + 2));
+			const int y0 = std::max(0, int(cy - hh - 2)), y1 = std::min(h - 1, int(cy + hh + 2));
+			for (int y = y0; y <= y1; y++)
+				for (int x = x0; x <= x1; x++)
+				{
+					const float qx = std::abs(x - cx) - hw + rad, qy = std::abs(y - cy) - hh + rad;
+					const float out = std::sqrt(std::max(qx, 0.0f) * std::max(qx, 0.0f) + std::max(qy, 0.0f) * std::max(qy, 0.0f));
+					const float d = out + std::min(std::max(qx, qy), 0.0f) - rad;
+					const float a = std::clamp(0.5f - d, 0.0f, 1.0f);
+					if (a <= 0)
+						continue;
+					uint32_t& p = px[size_t(y) * w + x];
+					const auto mix = [&](int sh) {
+						return int(std::lround(((p >> sh) & 0xff) * (1 - a) + ((col >> sh) & 0xff) * a));
+					};
+					p = Pack(mix(0), mix(8), mix(16));
+				}
+		};
+		if (g.system == System::Md || g.system == System::SegaCd)
+		{
+			// A B C, the row rising a little to the right
+			for (int k = 0; k < 3; k++)
+			{
+				const float cx = float(w - 150 + 50 * k), cy = float(88 - 8 * k);
+				shape(cx, cy, 17, 17, 17, rim);
+				shape(cx, cy, 13.5f, 13.5f, 13.5f, fill);
+			}
+		}
+		else
+		{
+			// 1 2: two rounded squares side by side
+			for (int k = 0; k < 2; k++)
+			{
+				const float cx = float(w - 130 + 60 * k), cy = 80;
+				shape(cx, cy, 20, 20, 7, rim);
+				shape(cx, cy, 16.5f, 16.5f, 4.5f, fill);
+			}
+		}
+	}
 
 	Canvas canvas{px.data(), w, h, w};
 	// the title, word-wrapped, up to 4 lines
