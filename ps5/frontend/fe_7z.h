@@ -39,6 +39,8 @@ const char* StatusText(Status s); // "damaged", "encrypted"... (for the log)
 
 // What the decoder may allocate for one archive, the decoded block included.
 constexpr uint64_t kMemoryBudget = 136ull << 20;
+// The most files an archive may list (a ROM archive has a few).
+constexpr uint32_t kMaxFiles = 1u << 16;
 
 struct Entry
 {
@@ -57,8 +59,9 @@ public:
 	Archive(const Archive&) = delete;
 	Archive& operator=(const Archive&) = delete;
 
-	// Opens the archive and reads its list of files. cancel (when given): reading stops when it turns true.
-	Status Open(const std::string& path, const std::atomic<bool>* cancel = nullptr);
+	// Opens the archive and reads its list of files. cancel (when given): reading stops when it turns true. An archive of
+	// more than max_files files is refused as damaged (its list would be kept outside the decoder's memory budget).
+	Status Open(const std::string& path, const std::atomic<bool>* cancel = nullptr, uint32_t max_files = kMaxFiles);
 	const std::vector<Entry>& Entries() const;
 	// The size of the solid block that holds entry i (what has to be decoded to get it); 0 for an empty file.
 	uint64_t BlockSize(size_t i) const;

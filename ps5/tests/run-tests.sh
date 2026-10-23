@@ -2361,6 +2361,7 @@ expect "grep -q '\[games\] naming 3 network ROM(s) by CRC' $T/root/logs/boot.log
 expect "grep -q 'misc/pocket.7z \[md\]' $T/root/logs/boot.log && grep -q 'misc/pocket.7z \[gg\]' $T/root/logs/boot.log" "the 7z moves to the Game Gear once its list was read"
 expect "grep -q 'games/mystery.7z \[md\] -> \"Streets of Rage 2 (USA)\" (by CRC)' $T/root/logs/boot.log" "and is named by the CRC it stores"
 expect "grep -q 'misc/disc.7z \[md\]' $T/root/logs/boot.log && grep -q '^sys:/smb/10.0.0.5/games/misc/disc.7z	[0-9]*	[0-9]*	none' $T/root/covers/crc-cache.txt" "a disc 7z: listed until read, then remembered as none"
+expect "[ \$(grep -c 'misc/disc.7z: a disc image inside a 7z' $T/root/logs/boot.log) = 1 ] && grep -q '^/smb/10.0.0.5/games/misc/disc.7z	[0-9]*	[0-9]*	fail' $T/root/covers/crc-cache.txt" "the pass opened it once: no CRC to look for, remembered as such"
 nosan "$T"
 rc=$(GENPLUS_HOST_REALTIME=1 MAXFLIPS=200 GENPLUS_HOST_NETFS_DIR="$T/share" run "$T" "0:0" "")
 expect "! grep -q 'disc.7z \[' $T/root/logs/boot.log && grep -q 'misc/pocket.7z \[gg\]' $T/root/logs/boot.log && ! grep -q 'naming .* network ROM' $T/root/logs/boot.log" "the next start: the disc is gone, the rest named from the cache, nothing read"

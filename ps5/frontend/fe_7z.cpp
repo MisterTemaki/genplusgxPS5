@@ -188,9 +188,11 @@ bool HeaderIsEncrypted(FILE* f)
 	std::vector<uint8_t> h(size_t(size), 0);
 	if (fseeko(f, off_t(32 + offset), SEEK_SET) != 0 || fread(h.data(), 1, h.size(), f) != h.size())
 		return false;
+	// as a coder's method ID: after the coder's flags byte, whose low 4 bits say a 4-byte ID (the packed header's own
+	// coder list is not encrypted)
 	static const uint8_t kAes[4] = {0x06, 0xF1, 0x07, 0x01};
-	for (size_t i = 0; i + 4 <= h.size(); i++)
-		if (memcmp(h.data() + i, kAes, 4) == 0)
+	for (size_t i = 1; i + 4 <= h.size(); i++)
+		if ((h[i - 1] & 0x0F) == 4 && memcmp(h.data() + i, kAes, 4) == 0)
 			return true;
 	return false;
 }
@@ -281,7 +283,7 @@ const std::vector<Entry>& Archive::Entries() const
 	return m_i->entries;
 }
 
-Status Archive::Open(const std::string& path, const std::atomic<bool>* cancel)
+Status Archive::Open(const std::string& path, const std::atomic<bool>* cancel, uint32_t max_files)
 {
 	Impl& a = *m_i;
 	if (a.stream.f)
@@ -311,6 +313,8 @@ Status Archive::Open(const std::string& path, const std::atomic<bool>* cancel)
 		return s;
 	}
 	a.open = true;
+	if (a.db.NumFiles > max_files)
+		return Status::Damaged; // a list this long is no game's (and its entries would be outside the budget)
 	std::vector<UInt16> name;
 	a.entries.resize(a.db.NumFiles);
 	for (UInt32 i = 0; i < a.db.NumFiles; i++)
@@ -343,15 +347,15 @@ Status Archive::Extract(size_t i, std::vector<uint8_t>* out, uint64_t max_entry,
 	out->clear();
 	if (!a.open || i >= a.entries.size() || a.entries[i].dir)
 		return Status::Damaged;
+	const UInt32 folder = a.db.FileToFolder[i];
+	if (folder != UInt32(-1) && a.FolderEncrypted(folder))
+		return Status::Encrypted; // first: whatever its size, it can't be read
 	if (a.entries[i].size > max_entry)
 		return Status::TooBig;
-	const UInt32 folder = a.db.FileToFolder[i];
 	if (folder == UInt32(-1))
 		return Status::Ok; // an empty file
 	if (SzAr_GetFolderUnpackSize(&a.db.db, folder) > max_block)
 		return Status::BlockTooBig;
-	if (a.FolderEncrypted(folder))
-		return Status::Encrypted;
 	clearerr(a.stream.f);
 	a.stream.read_error = false;
 	UInt32 block = 0xFFFFFFFF;

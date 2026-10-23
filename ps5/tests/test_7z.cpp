@@ -195,6 +195,19 @@ int main(int argc, char** argv)
 	}
 	{
 		Archive a;
+		std::vector<uint8_t> out;
+		const Status s = a.Open(dir + "/encrypted.7z");
+		const Status x = s == Status::Ok ? a.Extract(0, &out, 1, 1) : s;
+		Check(x == Status::Encrypted, "encrypted.7z with limits it is over: still said to be encrypted (checked first) (" + Name(x) + ")");
+	}
+	{
+		Archive a, b;
+		const Status s = a.Open(dir + "/solid.7z", nullptr, 2);
+		const Status t = b.Open(dir + "/solid.7z", nullptr, 3);
+		Check(s == Status::Damaged && t == Status::Ok, "a list longer than the file limit is refused (3 files: limit 2 refused, limit 3 ok) (" + Name(s) + ")");
+	}
+	{
+		Archive a;
 		const Status s = a.Open(dir + "/encrypted-header.7z");
 		Check(s == Status::Encrypted, "encrypted-header.7z: refused as encrypted (" + Name(s) + ")");
 	}

@@ -37,7 +37,7 @@ PC; the GameCube/Wii user interface (`gx/`) and the other ports are not used.
 
 > **Status (2.2):** builds with the ps5-payload-dev SDK into a signed native app, in two builds: **GPU** (RADV,
 > Mesa's Vulkan driver for AMD GPUs, ported to the PS5 by [PS5_Vulkan](https://github.com/mihawk-99/PS5_Vulkan),
-> linked into the app) and **CPU-only**. It passes 681 host tests, which run the same code (the core, the
+> linked into the app) and **CPU-only**. It passes 682 host tests, which run the same code (the core, the
 > frontend, the GPU renderer, every built-in slang shader, the shelf on the GPU) on Linux with the PS5 calls
 > simulated and the GPU renderer on a software Vulkan driver (lavapipe). **1.9 has run on a PS5** (a user's
 > console, 4K at 59.94 Hz): the GPU renderer started, the 26 built-in shaders loaded, crt-easymode took 0.6 ms of
@@ -86,9 +86,9 @@ thanks to CroCop86 for the request). Mega Drive, Master System, Game Gear and SG
 they can in a `.zip`: on the shelf with their name, cover, border and cheats (named by the CRC the archive stores,
 nothing unpacked), started from the console's drive, a USB drive or a network share. Sega CD discs inside a `.7z` are
 not supported (see [Games in a .zip or .7z](#games-in-a-zip-or-7z)). A damaged, encrypted or too large archive says
-why on the screen. The decoder is the LZMA SDK's (7-Zip 26.05, public domain). Tested on the PC only so far: 681 host
-tests, 47 of them new (a 7z named, covered, bordered, with cheats and played like its zip twin; a disc, broken,
-encrypted, unsupported and too large archives; a 7z on a share), and the reader's own 62 checks (LZMA, LZMA2, PPMd,
+why on the screen. The decoder is the LZMA SDK's (7-Zip 26.05, public domain). Tested on the PC only so far: 682 host
+tests, 48 of them new (a 7z named, covered, bordered, with cheats and played like its zip twin; a disc, broken,
+encrypted, unsupported and too large archives; a 7z on a share), and the reader's own 64 checks (LZMA, LZMA2, PPMd,
 BCJ, ARM, Delta, solid, empty, cut short, changed bytes). Not yet on a PS5.
 
 **2.1.1:** **a fix for network shares in the GPU build** (not yet confirmed on a PS5). In 2.1's GPU build (`GenesisPlusGXPS5-v2.1.elf`) every

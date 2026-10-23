@@ -538,14 +538,17 @@ std::vector<std::string> CueTracks(const std::string& dir, CrcCache& cache)
 	return tracks;
 }
 
-bool ArchiveSystemWhy(const std::string& path, System* out, ArchiveError* why);
+bool ArchiveSystemWhy(const std::string& path, System* out, ArchiveError* why, const std::atomic<bool>* cancel = nullptr);
 
 // A zip's or 7z's system (the ROM inside it), from the cache while the archive hasn't changed: opening every archive
 // at every start is slow on a USB drive with a big library. "sys:<path>" -> "size\tmtime\t<system>".
 // read: false for an archive on a share (*known then says whether the cache had it; NetNaming opens it later).
+// *none (if given): false returned because the cache says, or now says, "none": the archive surely holds no ROM.
 bool CachedArchiveSystem(CrcCache& cache, const std::string& path, const struct stat& st, System* out, bool read = true,
-	bool* known = nullptr, const std::atomic<bool>* cancel = nullptr)
+	bool* known = nullptr, const std::atomic<bool>* cancel = nullptr, bool* none = nullptr)
 {
+	if (none)
+		*none = false;
 	const std::string key = "sys:" + path;
 	char stamp[64];
 	snprintf(stamp, sizeof(stamp), "%lld\t%lld\t", (long long)st.st_size, (long long)st.st_mtime);
@@ -559,7 +562,11 @@ bool CachedArchiveSystem(CrcCache& cache, const std::string& path, const struct 
 		{
 			const std::string v = it->second.substr(strlen(stamp));
 			if (v == "none")
+			{
+				if (none)
+					*none = true;
 				return false;
+			}
 			const int n = atoi(v.c_str());
 			if (n >= 0 && n < int(System::Count) && System(n) != System::SegaCd)
 			{
@@ -575,13 +582,17 @@ bool CachedArchiveSystem(CrcCache& cache, const std::string& path, const struct 
 		return false;
 	}
 	ArchiveError why = ArchiveError::None;
-	const bool ok = ArchiveSystemWhy(path, out, &why);
+	const bool ok = ArchiveSystemWhy(path, out, &why, cancel);
 	// "none" hides the archive from the shelf until it changes: only when it is really the archive's (FailureIsTheFiles).
 	// A 7z whose list was read whole (its CRC checked) and holds a disc or no ROM is: no need to read it all through
 	// (a disc 7z is usually too big for that).
 	const bool sure = why == ArchiveError::Disc || why == ArchiveError::NoGame || why == ArchiveError::Encrypted;
 	if (ok || (ExtOf(path) == ".7z" && sure) || FailureIsTheFiles(path, st, cancel))
+	{
 		cache.Put(key, std::string(stamp) + (ok ? std::to_string(int(*out)) : std::string("none")));
+		if (!ok && none)
+			*none = true;
+	}
 	return ok;
 }
 
@@ -891,13 +902,13 @@ bool IsArchiveExt(const std::string& ext)
 namespace
 {
 // ArchiveSystem, and why not (a zip: NoGame, whatever went wrong)
-bool ArchiveSystemWhy(const std::string& path, System* out, ArchiveError* why)
+bool ArchiveSystemWhy(const std::string& path, System* out, ArchiveError* why, const std::atomic<bool>* cancel)
 {
 	*why = ArchiveError::None;
 	if (ExtOf(path) == ".7z")
 	{
 		sevenzip::Archive a;
-		return First7zRom(a, path, out, why) >= 0;
+		return First7zRom(a, path, out, why, cancel) >= 0;
 	}
 	*why = ArchiveError::NoGame;
 	unzFile z = unzOpen(path.c_str());
@@ -1256,15 +1267,19 @@ struct NetNaming::Impl
 				tried.erase(path);
 				continue;
 			}
+			// an archive: the system of the ROM inside, for the next scan. One that surely holds no ROM (a disc 7z, an
+			// encrypted list, no ROM: "none") has no CRC either: remembered as such without reading it again (nor
+			// through, as FailureIsTheFiles would)
+			bool no_rom = false;
 			if (IsArchiveExt(ExtOf(path)))
 			{
 				System sys;
-				CachedArchiveSystem(cache, path, st, &sys, true, nullptr, &stop); // the system of the ROM inside, for the next scan
+				CachedArchiveSystem(cache, path, st, &sys, true, nullptr, &stop, &no_rom);
 			}
 			char key[64];
 			snprintf(key, sizeof(key), "%lld\t%lld\t", (long long)st.st_size, (long long)st.st_mtime);
 			uint32_t whole = 0, body = 0;
-			const bool ok = RomCrc32(path, &whole, &body, nullptr, &stop);
+			const bool ok = !no_rom && !stop.load() && RomCrc32(path, &whole, &body, nullptr, &stop);
 			if (stop.load())
 			{
 				// cancelled half way: nothing recorded, and it is the first to be read when the pass starts again
@@ -1279,7 +1294,7 @@ struct NetNaming::Impl
 				snprintf(val, sizeof(val), "%sfail", key);
 			// a read error is not remembered as "fail" (FailureIsTheFiles): the next visit of the shelf tries it again
 			// (not this one: it stays in `tried`, or every scan the pass's results bring would read it once more)
-			if (ok || FailureIsTheFiles(path, st, &stop))
+			if (ok || no_rom || FailureIsTheFiles(path, st, &stop))
 				cache.Put(path, val);
 			else if (stop.load())
 			{

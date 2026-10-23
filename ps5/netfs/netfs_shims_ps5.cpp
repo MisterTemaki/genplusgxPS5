@@ -2,7 +2,8 @@
 // Linked in with --wrap (NETFS_WRAPPED_PS5 in the Makefile), PS5 build only:
 //
 //  - fcntl(fd, F_SETFL/F_GETFL) on a socket: the console's own fcntl first (it works in SwanStationPS5's libnfs on
-//    a console); if it refuses, setsockopt(SO_NBIO), the console's own switch, and getsockopt to read it back.
+//    a console); if it refuses, setsockopt(SO_NBIO), the console's own switch, and getsockopt to read it back (also
+//    when F_GETFL works: O_NONBLOCK is added when SO_NBIO is on).
 //  - getaddrinfo jumps to address 0 in a native title (the module that holds it is not loaded). This one takes
 //    IPv4 literals itself and asks libSceNet's resolver for names, as fe_tlshttp.cpp does in the helper.
 //    IPv4 only, one result. Its results are freed by the freeaddrinfo below.
@@ -48,6 +49,15 @@ int __wrap_fcntl(int fd, int cmd, ...)
 	// The console's own fcntl first (SwanStationPS5's libnfs sets O_NONBLOCK on its sockets with it, and works);
 	// SO_NBIO only if that is refused.
 	const int r = __real_fcntl(fd, cmd, arg);
+	if (r != -1 && cmd == F_GETFL && !(r & O_NONBLOCK))
+	{
+		// an earlier F_SETFL may have fallen back to SO_NBIO: the flags the console's fcntl gives don't show it
+		int on = 0;
+		socklen_t len = sizeof on;
+		if (getsockopt(fd, SOL_SOCKET, SO_NBIO, &on, &len) == 0 && on)
+			return r | O_NONBLOCK;
+		return r;
+	}
 	if (r != -1 || (cmd != F_SETFL && cmd != F_GETFL))
 		return r;
 	if (cmd == F_SETFL)
