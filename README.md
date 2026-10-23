@@ -293,7 +293,7 @@ Drive's button names, and the shaders' names are not translated.
    nc -q0 PS5_IP 9021 < GenesisPlusGXPS5-v2.2.1.elf
    ```
    It installs the app in `/data/homebrew/PPSA99921/` (`eboot.bin`, `sce_module/libc.prx`, `param.json`, the
-   icon and the backgrounds), shows **"Genesis Plus GX PS5 2.0 installed. Open it from the Genesis Plus GX PS5
+   icon and the backgrounds), shows **"Genesis Plus GX PS5 2.2.1 installed. Open it from the Genesis Plus GX PS5
    icon on the home screen."** and stays running as the helper.
 2. **Open the Genesis Plus GX PS5 icon.** The game shelf appears and the controller works.
 3. **Copy your games** to their system's folder, over FTP for example. The app makes the folders on its first
